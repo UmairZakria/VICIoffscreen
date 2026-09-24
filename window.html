@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DNC & Identity Lookup</title>
+  <link rel="stylesheet" href="window.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <!-- Sleek Minimalist Header -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="status-dot" id="header-dot"></div>
+        <div class="brand-text">
+          <span class="brand-title">You Lookup</span>
+          <button id="settings-toggle-btn" class="settings-btn" title="Calibration & Settings" type="button">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="header-actions">
+        <button id="clear-btn" class="icon-btn" title="Clear / Reset" type="button">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path>
+            <path d="M21 3v5h-5"></path>
+            <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path>
+            <path d="M3 21v-5h5"></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <!-- Search Section -->
+    <section class="search-section">
+      <!-- Mode Toggle (Manual / Auto) -->
+      <div class="mode-toggle-bar">
+        <div class="mode-segmented">
+          <button id="mode-manual-btn" class="mode-btn active" type="button">Manual</button>
+          <button id="mode-auto-btn" class="mode-btn" type="button">
+            <span>Auto</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="auto-feedback-bar" class="auto-feedback-bar hidden">
+        <span id="auto-feedback-text">Auto mode active · Waiting for dialer number...</span>
+      </div>
+
+      <div class="input-wrapper">
+        <input
+          type="tel"
+          id="phone-input"
+          placeholder="(555) 555-5555"
+          maxlength="14"
+          spellcheck="false"
+          autocomplete="off"
+          autofocus
+        />
+        <button id="search-btn" type="button">Search</button>
+      </div>
+    </section>
+
+    <!-- Headless Status Spinner -->
+    <div id="status-container" class="status-banner hidden">
+      <div class="monochrome-spinner"></div>
+      <span id="status-text">Querying compliance & identity records...</span>
+    </div>
+
+    <!-- Error Banner -->
+    <div id="error-container" class="error-banner hidden">
+      <span class="error-symbol">!</span>
+      <span id="error-text"></span>
+    </div>
+
+    <!-- Main Results Area -->
+    <main id="results-container" class="results-area hidden">
+      <!-- Person Identity Card -->
+      <section id="person-card" class="card person-card hidden">
+        <!-- Slide Navigation Header (shown when multiple persons exist) -->
+        <div class="person-slide-header" id="person-slide-header" style="display: none;">
+        
+          <div class="slide-counter-badge">
+            <button id="person-prev-btn" class="slide-nav-btn" title="Previous record" type="button">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            </button>
+            <span id="person-slide-counter" class="slide-counter-text">1 / 1</span>
+            <button id="person-next-btn" class="slide-nav-btn" title="Next record" type="button">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="card-top-row">
+          <div class="person-identity">
+            <div class="person-meta">
+              <div class="name-row">
+                <h2 id="person-name" class="person-name">-</h2>
+                <div class="person-actions">
+                  <button id="copy-name-btn" class="mini-copy-btn" title="Copy Name" type="button">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+                    <span>Copy</span>
+                  </button>
+                  <button id="person-amica-btn" class="mini-btn vehicle-btn" type="button" title="Discover vehicles on Amica">Amica</button>
+                  <button id="person-mercury-btn" class="mini-btn vehicle-btn" type="button" title="Discover vehicles on Mercury">Mercury</button>
+                  <button id="person-dob-btn" class="mini-btn dob-btn" type="button" title="Deep research DOB on Unmask">DOB</button>
+                </div>
+              </div>
+              <div class="age-dob-row">
+                <span id="person-age" class="age-badge">-</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="address-box">
+          <div class="section-label">
+            <span>Primary address</span>
+            <button id="copy-addr-btn" class="mini-copy-btn" title="Copy Address" type="button">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
+              <span>Copy</span>
+            </button>
+          </div>
+          <div id="person-street" class="addr-street">-</div>
+          <div id="person-citystate" class="addr-sub">-</div>
+        </div>
+
+        <!-- Vehicle Progress Section -->
+        <div class="vehicle-progress-box hidden" id="card-vehicle-progress">
+          <div class="vehicle-progress-header">
+            <div class="vehicle-progress-left">
+              <span class="vehicle-provider-tag" id="vehicle-provider-tag">Amica</span>
+              <span class="vehicle-progress-status" id="vehicle-progress-status">Starting lookup...</span>
+            </div>
+            <button class="vehicle-cancel-btn" id="vehicle-cancel-btn" type="button">✕ Cancel</button>
+          </div>
+          <div class="vehicle-progress-track">
+            <div class="vehicle-progress-fill" id="vehicle-progress-fill" style="width: 15%;"></div>
+          </div>
+        </div>
+
+        <!-- Vehicle Results Section -->
+        <div class="vehicle-results-box hidden" id="card-vehicle-results">
+          <div class="vehicle-results-header">
+            <span class="section-label" id="vehicle-results-count-label">Discovered Vehicles</span>
+            <button class="mini-btn copy-vehicles-action" id="copy-all-vehicles-btn" type="button">Copy All</button>
+          </div>
+          <div class="vehicle-badges-container" id="vehicle-badges-container"></div>
+        </div>
+
+        <!-- DOB Results Section -->
+        <div class="dob-results-box hidden" id="card-dob-results">
+          <div class="dob-results-header">
+            <span class="section-label" id="dob-results-count-label">Date of Birth (DOB)</span>
+          </div>
+          <div class="dob-badges-container" id="dob-badges-container"></div>
+        </div>
+
+        <!-- Email Results Section -->
+        <div class="email-results-box hidden" id="card-email-results">
+          <div class="email-results-header">
+            <span class="section-label" id="email-results-count-label">Email Addresses</span>
+          </div>
+          <div class="email-badges-container" id="email-badges-container"></div>
+        </div>
+      </section>
+
+      <!-- Compliance Section (DNC, Litigator, Blacklist) -->
+      <section class="card compliance-card">
+        <div class="card-header">
+          <span class="section-label">Compliance status</span>
+        </div>
+
+        <div class="compliance-grid">
+          <div class="compliance-item">
+            <span class="item-label">DNC status</span>
+            <span id="val-dnc" class="badge">-</span>
+          </div>
+          <div class="compliance-item">
+            <span class="item-label">Litigator</span>
+            <span id="val-litigator" class="badge">-</span>
+          </div>
+          <div class="compliance-item">
+            <span class="item-label">Blacklist</span>
+            <span id="val-blacklist" class="badge">-</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Summary & 1-Click Copy All -->
+      <div class="summary-section">
+        <div class="summary-header">
+          <span class="section-label">Summary</span>
+          <button id="copy-all-btn" class="copy-all-btn" type="button">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect>
+              <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path>
+            </svg>
+            <span id="copy-all-label">Copy all details</span>
+          </button>
+        </div>
+        <pre id="raw-output" class="raw-output-box"></pre>
+      </div>
+    </main>
+  </div>
+
+  <!-- Settings & Recording Sidebar Drawer -->
+  <aside id="settings-sidebar" class="settings-sidebar closed">
+    <div class="sidebar-header">
+      <div class="sidebar-title">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+        <span>Settings & Calibration</span>
+      </div>
+      <button id="close-sidebar-btn" class="icon-btn close-sidebar-btn" title="Close" type="button">✕</button>
+    </div>
+
+    <div class="sidebar-body">
+      <div class="sidebar-section-header">
+        <span class="sidebar-section-title">Cursor Macro Calibration</span>
+        <span class="sidebar-section-desc">Record, recreate, or delete the Turnstile click point used for verification.</span>
+      </div>
+
+      <div id="rec-status-banner" class="rec-status-banner">
+        <div class="rec-status-indicator" id="rec-status-dot"></div>
+        <div class="rec-status-text-wrap">
+          <div class="rec-status-main" id="rec-status-title">Ready to Record</div>
+          <div class="rec-status-sub" id="rec-status-sub">Select a target below to record or manage its Turnstile click point.</div>
+          <button id="btn-cancel-recording" class="cancel-rec-btn hidden" type="button">Cancel Active Recording</button>
+        </div>
+      </div>
+
+      <!-- Unmask Macro Card -->
+      <div id="card-macro-unmask" class="rec-summary-card">
+        <div class="rec-summary-header">
+          <div class="rec-site-title-wrap">
+            <span class="rec-summary-title">Unmask.com</span>
+            <span id="badge-macro-unmask" class="rec-badge empty">Not Recorded</span>
+          </div>
+          <span class="rec-summary-time" id="time-macro-unmask">--</span>
+        </div>
+
+        <div id="stats-macro-unmask" class="rec-stats-content hidden">
+          <div class="rec-stats-grid">
+            <div class="rec-stat-box">
+              <span class="rec-stat-label">Duration</span>
+              <span class="rec-stat-val" id="duration-macro-unmask">0 ms</span>
+            </div>
+            <div class="rec-stat-box">
+              <span class="rec-stat-label">Waypoints</span>
+              <span class="rec-stat-val" id="points-macro-unmask">0 pts</span>
+            </div>
+            <div class="rec-stat-box">
+              <span class="rec-stat-label">Avg Speed</span>
+              <span class="rec-stat-val" id="speed-macro-unmask">0 px/s</span>
+            </div>
+            <div class="rec-stat-box">
+              <span class="rec-stat-label">First Click</span>
+              <span class="rec-stat-val" id="click-macro-unmask">(0, 0)</span>
+            </div>
+          </div>
+          <div class="rec-target-row">
+            <span class="rec-stat-label">Target:</span>
+            <span class="rec-target-elem" id="elem-macro-unmask">None</span>
+          </div>
+        </div>
+
+        <div id="empty-macro-unmask" class="rec-empty-state">
+          <span>No recorded movement saved.</span>
+        </div>
+
+        <div class="rec-card-actions">
+          <button id="btn-record-unmask" class="rec-action-btn primary-btn" type="button">
+            <span id="label-record-unmask">Record Unmask</span>
+          </button>
+          <button id="btn-delete-unmask" class="rec-action-btn delete-btn hidden" type="button" title="Delete Unmask Recording">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+            <span>Delete</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- ThatsThem Macro Card -->
+      <div id="card-macro-thatsthem" class="rec-summary-card">
+        <div class="rec-summary-header">
+          <div class="rec-site-title-wrap">
+            <span class="rec-summary-title">ThatsThem.com</span>
+            <span id="badge-macro-thatsthem" class="rec-badge empty">Not Recorded</span>
+          </div>
+          <span class="rec-summary-time" id="time-macro-thatsthem">--</span>
+        </div>
+
+        <div id="stats-macro-thatsthem" class="rec-stats-content hidden">
+          <div class="rec-stats-grid">
+            <div class="rec-stat-box">
+              <span class="rec-stat-label">Duration</span>
+              <span class="rec-stat-val" id="duration-macro-thatsthem">0 ms</span>
+            </div>
+            <div class="rec-stat-box">
+              <span class="rec-stat-label">Waypoints</span>
+              <span class="rec-stat-val" id="points-macro-thatsthem">0 pts</span>
+            </div>
+            <div class="rec-stat-box">
+              <span class="rec-stat-label">Avg Speed</span>
+              <span class="rec-stat-val" id="speed-macro-thatsthem">0 px/s</span>
+            </div>
+            <div class="rec-stat-box">
+              <span class="rec-stat-label">First Click</span>
+              <span class="rec-stat-val" id="click-macro-thatsthem">(0, 0)</span>
+            </div>
+          </div>
+          <div class="rec-target-row">
+            <span class="rec-stat-label">Target:</span>
+            <span class="rec-target-elem" id="elem-macro-thatsthem">None</span>
+          </div>
+        </div>
+
+        <div id="empty-macro-thatsthem" class="rec-empty-state">
+          <span>No recorded movement saved.</span>
+        </div>
+
+        <div class="rec-card-actions">
+          <button id="btn-record-thatsthem" class="rec-action-btn primary-btn" type="button">
+            <span id="label-record-thatsthem">Record ThatsThem</span>
+          </button>
+          <button id="btn-delete-thatsthem" class="rec-action-btn delete-btn hidden" type="button" title="Delete ThatsThem Recording">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+            <span>Delete</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  </aside>
+  <div id="sidebar-backdrop" class="sidebar-backdrop hidden"></div>
+
+  <script src="window.js"></script>
+</body>
+</html>

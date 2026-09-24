@@ -1,0 +1,129 @@
+{
+  "manifest_version": 3,
+  "name": "DNC & TCPA Compliance Lookup",
+  "version": "1.8.0",
+  "description": "Parallel automated compliance lookup (DNC, Litigator, Blacklist) and identity extraction from Vibegenx and Infolookup.site, with Amica, Mercury, and Unmask DOB automation.",
+  "permissions": [
+    "offscreen",
+    "declarativeNetRequest",
+    "storage",
+    "activeTab",
+    "scripting",
+    "tabs",
+    "clipboardWrite",
+    "cookies",
+    "debugger"
+  ],
+  "host_permissions": [
+    "https://vibegenx.com/*",
+    "https://infolookup.site/*",
+    "https://*.amica.com/*",
+    "https://amica.com/*",
+    "https://*.mercuryinsurance.com/*",
+    "https://mercuryinsurance.com/*",
+    "https://*.unmask.com/*",
+    "https://unmask.com/*",
+    "https://thatsthem.com/*",
+    "https://*.thatsthem.com/*",
+    "https://nominatim.openstreetmap.org/*",
+    "<all_urls>"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ruleset_1",
+        "enabled": true,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://vibegenx.com/infolookup*",
+        "https://infolookup.site/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.amica.com/*",
+        "https://amica.com/*"
+      ],
+      "js": [
+        "amica_automation.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.mercuryinsurance.com/*",
+        "https://mercuryinsurance.com/*"
+      ],
+      "js": [
+        "mercury_automation.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.unmask.com/*",
+        "https://unmask.com/*"
+      ],
+      "js": [
+        "unmask_automation.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://thatsthem.com/*",
+        "https://*.thatsthem.com/*"
+      ],
+      "js": [
+        "thatsthem_automation.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "recorder.js"
+      ],
+      "all_frames": true,
+      "match_about_blank": true,
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "widget.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "Toggle Sticky DNC & Identity Lookup"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "Poppins/*"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

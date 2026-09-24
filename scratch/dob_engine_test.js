@@ -1,0 +1,279 @@
+// Standalone regression harness for the Unmask DOB engine inside unmask_automation.js.
+// Run with:  node scratch/dob_engine_test.js
+//
+// It slices the DOB helper block out of the content script (the script itself is an
+// IIFE tied to window/chrome, so it cannot be required directly) and exercises it
+// with the real-world cases the extension has to get right.
+
+const fs = require('fs');
+const path = require('path');
+
+const SRC = path.join(__dirname, '..', 'unmask_automation.js');
+const src = fs.readFileSync(SRC, 'utf8');
+
+const start = src.indexOf('var DOB_YEAR_TOLERANCE');
+const end = src.indexOf('function isUnmaskAddressNotFound');
+if (start === -1 || end === -1 || end <= start) {
+  throw new Error('Could not locate the DOB engine block in unmask_automation.js');
+}
+
+const block = src.slice(start, end);
+const engine = new Function(
+  block +
+    '\nreturn { extractDobFromText, collectDobCandidates, pickBestDobCandidate, getExpectedBirthYear,' +
+    ' describeClosestRejectedDob, isProfileSummarySettled, cleanSummaryText,' +
+    ' DOB_YEAR_TOLERANCE, PROFILE_NO_DOB_SETTLE_MS };'
+)();
+
+let passed = 0;
+let failed = 0;
+
+function check(label, actual, expected) {
+  const ok = actual === expected;
+  if (ok) passed++;
+  else failed++;
+  console.log(`${ok ? 'PASS' : 'FAIL'}  ${label}\n      expected: ${JSON.stringify(expected)}\n      actual:   ${JSON.stringify(actual)}`);
+}
+
+const NOW = new Date().getFullYear();
+const AGE_72 = 72;               // record: "72 yrs (1954)"
+const YEAR_1954 = NOW - AGE_72;  // 1954
+
+console.log(`\n== DOB engine regression (current year ${NOW}, expected birth year ${YEAR_1954}) ==\n`);
+
+// 1. Age string is parsed into the expected birth year, explicit year wins.
+check('getExpectedBirthYear(72, null)', engine.getExpectedBirthYear(AGE_72, null), YEAR_1954);
+check('getExpectedBirthYear(72, 1954)', engine.getExpectedBirthYear(AGE_72, 1954), YEAR_1954);
+check('getExpectedBirthYear("72 yrs (1954)", null)', engine.getExpectedBirthYear('72 yrs (1954)', null), YEAR_1954);
+check('getExpectedBirthYear(null, null)', engine.getExpectedBirthYear(null, null), null);
+
+// 2. The plain profile sentence.
+check(
+  'born sentence',
+  engine.extractDobFromText(
+    'Benita Lopez Cantu is 72 years old and was born on August 15, 1954. She lives in Blossom, TX.',
+    AGE_72,
+    null
+  ),
+  'August 15, 1954'
+);
+
+// 3. "born in <Month> <Year>" wording.
+check(
+  'born in month year',
+  engine.extractDobFromText('Benita Lopez Cantu was born in August 1954 in Texas.', AGE_72, null),
+  'August 1954'
+);
+
+// 4. Numeric DOB.
+check(
+  'numeric DOB',
+  engine.extractDobFromText('DOB: 08/15/1954 (age 72)', AGE_72, null),
+  '08/15/1954'
+);
+
+// 5. THE reported bug: 1958 belongs to a relative and must never be returned.
+check(
+  'relative 1958 rejected, target 1954 returned',
+  engine.extractDobFromText(
+    'Benita Lopez Cantu, 72. Relatives: Maria Cantu, born on June 2, 1958; Manuel Cantu.',
+    AGE_72,
+    null
+  ),
+  null
+);
+
+// 6. Only out-of-range dates on the page -> report nothing instead of a wrong DOB.
+check(
+  'only 1958 on page -> null',
+  engine.extractDobFromText('Maria Cantu was born on June 2, 1958.', AGE_72, null),
+  null
+);
+check(
+  'only 1959/1948 on page -> null',
+  engine.extractDobFromText('Updated March 2019. Born March 3, 1959.', AGE_72, null),
+  null
+);
+
+// 7. Closest year wins between two in-range dates.
+check(
+  'closest year wins (1954 over 1957)',
+  engine.extractDobFromText(
+    'Relative: Maria Cantu born August 15, 1957. Benita Lopez Cantu born August 15, 1954.',
+    AGE_72,
+    null
+  ),
+  'August 15, 1954'
+);
+
+// 8. Acceptable neighbours from the ticket: 1953 / 1956 / 1957 pass, 1958 does not.
+check('1953 accepted', engine.extractDobFromText('born on August 15, 1953', AGE_72, null), 'August 15, 1953');
+check('1956 accepted', engine.extractDobFromText('born on August 15, 1956', AGE_72, null), 'August 15, 1956');
+check('1957 accepted', engine.extractDobFromText('born on August 15, 1957', AGE_72, null), 'August 15, 1957');
+check('1958 rejected', engine.extractDobFromText('born on August 15, 1958', AGE_72, null), null);
+
+// 9. Explicit "born ..." wording beats an unrelated bare date that is closer.
+check(
+  'explicit wording beats bare closer date',
+  engine.extractDobFromText(
+    'Updated March 1955. Benita Lopez Cantu was born in August 1957.',
+    AGE_72,
+    null
+  ),
+  'August 1957'
+);
+
+// 10. Explict year from the record drives the window even without an age.
+check(
+  'explicit record year used',
+  engine.extractDobFromText('Benita Cantu, born on April 4, 1954.', null, YEAR_1954),
+  'April 4, 1954'
+);
+check(
+  'explicit record year rejects 1958',
+  engine.extractDobFromText('Benita Cantu, born on April 4, 1958.', null, YEAR_1954),
+  null
+);
+
+// 11. No age on the record at all -> explicit phrase still works.
+check(
+  'no age on record falls back to explicit phrase',
+  engine.extractDobFromText('This profile was born on April 4, 1954. Updated May 2024.', null, null),
+  'April 4, 1954'
+);
+
+// 12. Non birth-date content yields nothing.
+check(
+  'no dates -> null',
+  engine.extractDobFromText('Unmask LLC, Austin Texas. All rights reserved.', AGE_72, null),
+  null
+);
+check(
+  'empty text -> null',
+  engine.extractDobFromText('', AGE_72, null),
+  null
+);
+
+// 13. Candidate collection sanity: every date-ish item is captured with a priority,
+//     years beyond the current year are dropped, duplicates from overlapping
+//     patterns are harmless because the highest-priority one wins.
+const cands = engine.collectDobCandidates('born on August 15, 1954. Also see June 1958, March 2019 and July 2099.');
+check(
+  'collect: year + priority of each candidate',
+  cands.map((c) => c.year + ':' + c.priority).join(', '),
+  '1954:4, 1954:1, 1958:0, 2019:0'
+);
+check(
+  'collect: picks the explicit 1954 even with other years present',
+  engine.pickBestDobCandidate(cands, AGE_72, null).text,
+  'August 15, 1954'
+);
+
+// ---------------------------------------------------------------------------
+// Part 1b: a matched profile with no DOB must be skipped straight away
+// (text taken verbatim from the real "Cristian Telles" summary section)
+// ---------------------------------------------------------------------------
+console.log('== Matched profile without a DOB (real profile markup) ==\n');
+
+const CRISTIAN_TEXT = 'Cristian currently lives in Houston, TX. View Full Background Report';
+const CRISTIAN_SECTION =
+  "Cristian Telles Houston, TX 3923 Dalmatian Drive, Houston, TX 77045 Cristian's Summary " +
+  'Cristian currently lives in Houston, TX. View Full Background Report Unmask Report';
+
+check('profile text has no DOB', engine.extractDobFromText(CRISTIAN_TEXT, 67, 1958), null);
+check('whole summary section has no DOB', engine.extractDobFromText(CRISTIAN_SECTION, 67, 1958), null);
+check('nothing to report as ignored', engine.describeClosestRejectedDob(CRISTIAN_SECTION, 67, 1958), null);
+
+// the very same profile, but with the DOB sentence -> still extracted (regression)
+check(
+  'same page with a born sentence still yields the DOB',
+  engine.extractDobFromText(
+    CRISTIAN_SECTION.replace(
+      'currently lives in',
+      'is 67 years old and was born on October 4, 1958. He currently lives in'
+    ),
+    67,
+    1958
+  ),
+  'October 4, 1958'
+);
+
+// the run loop only skips once the summary has stopped growing on a loaded page
+const cristianSnapshot = engine.cleanSummaryText(CRISTIAN_TEXT) + '|' + 1200;
+globalThis.document = { readyState: 'loading' };
+check('page still loading -> wait', engine.isProfileSummarySettled(cristianSnapshot), false);
+globalThis.document = { readyState: 'complete' };
+check('loaded + rendered summary -> skippable', engine.isProfileSummarySettled(cristianSnapshot), true);
+check('empty summary -> wait', engine.isProfileSummarySettled(''), false);
+check('barely rendered summary -> wait', engine.isProfileSummarySettled('Loading|12'), false);
+check(
+  'a growing page resets the grace period',
+  (engine.cleanSummaryText(CRISTIAN_TEXT) + '|' + 1200) !== (engine.cleanSummaryText(CRISTIAN_TEXT) + '|' + 1600),
+  true
+);
+check('skip happens well before the 12s timeout', engine.PROFILE_NO_DOB_SETTLE_MS <= 2000, true);
+check('summary text is whitespace collapsed', engine.cleanSummaryText('  Cristian   lives\n in Houston.  '), 'Cristian lives in Houston.');
+
+// ---------------------------------------------------------------------------
+// Part 2: search-result card scoring (the "which profile do we open" decision)
+// Slices the pure name/age helpers out of the content script - no DOM needed.
+// ---------------------------------------------------------------------------
+const namesStart = src.indexOf('function normalizeName(str) {');
+const namesEnd = src.indexOf('function isElementVisible(el) {');
+const ageStart = src.indexOf('function matchAliasScore(target, aliasStr) {');
+const ageEnd = src.indexOf('var DOB_YEAR_TOLERANCE');
+if (namesStart === -1 || namesEnd === -1 || ageStart === -1 || ageEnd === -1) {
+  throw new Error('Could not locate the name/age scoring helpers in unmask_automation.js');
+}
+
+const scoring = new Function(
+  src.slice(namesStart, namesEnd) +
+    '\n' +
+    src.slice(ageStart, ageEnd) +
+    '\nreturn { parseNameDetails, matchNameScore, matchAliasScore, evaluateAliasMatch, matchAgeScore, isAgeWithinTolerance };'
+)();
+
+const TARGET = scoring.parseNameDetails('Benita Lopez Cantu');
+const TARGET_AGE = 72; // record: "72 yrs (1954)"
+const ACCEPT_THRESHOLD = 80; // same threshold the card loop uses
+
+// Score a direct card exactly like the card loop does, plus its age gate.
+function evaluateDirectCard(cardName, cardAge) {
+  const nameScore = scoring.matchNameScore(TARGET, scoring.parseNameDetails(cardName));
+  const gated = nameScore > 0 && !scoring.isAgeWithinTolerance(TARGET_AGE, cardAge);
+  const score = nameScore + 60 + scoring.matchAgeScore(TARGET_AGE, cardAge);
+  return { nameScore, gated, score };
+}
+
+console.log('== Card age gate (record: 72 yrs -> 1954) ==\n');
+
+check('age tolerance: 68 is out (1958)', scoring.isAgeWithinTolerance(72, 68), false);
+check('age tolerance: 76 is out', scoring.isAgeWithinTolerance(72, 76), false);
+check('age tolerance: 69 is in (1957)', scoring.isAgeWithinTolerance(72, 69), true);
+check('age tolerance: 75 is in', scoring.isAgeWithinTolerance(72, 75), true);
+check('age tolerance: unknown age is not blocked', scoring.isAgeWithinTolerance(72, null), true);
+check('matchAgeScore gaps >3 is negative', scoring.matchAgeScore(72, 68), -50);
+
+const card1954 = evaluateDirectCard('Benita Lopez Cantu', 72);
+const card1957 = evaluateDirectCard('Benita Lopez Cantu', 69);
+const card1958 = evaluateDirectCard('Benita Lopez Cantu', 68);
+
+check('1954 card passes the gate', card1954.gated, false);
+check('1957 card passes the gate', card1957.gated, false);
+check('1958 card is gated out', card1958.gated, true);
+
+// The gate is load bearing: without it the 1958 card still clears the 80 threshold.
+check('1958 card raw score still clears threshold (why the gate exists)', card1958.score >= ACCEPT_THRESHOLD, true);
+check('1954 card outranks 1957 card', card1954.score > card1957.score, true);
+
+// The exact bug: perfect name + wrong age must never become the selected candidate.
+const cards = [card1958, card1954, card1957].filter((c) => !c.gated && c.score >= ACCEPT_THRESHOLD);
+check('selected candidate is the 1954 card', cards.sort((a, b) => b.score - a.score)[0] === card1954, true);
+
+// Alias path: alias named like the target but a contradicting age is rejected.
+check('alias "Benita Cantu" @68 rejected', scoring.evaluateAliasMatch(TARGET, 'Benita Cantu', 72, 68), 0);
+check('alias "Benita Cantu" @72 accepted', scoring.evaluateAliasMatch(TARGET, 'Benita Cantu', 72, 72) >= ACCEPT_THRESHOLD, true);
+
+console.log(`\n=== TOTAL: ${passed} passed, ${failed} failed ===\n`);
+process.exit(failed === 0 ? 0 : 1);
+

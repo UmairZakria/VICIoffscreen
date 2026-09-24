@@ -1,0 +1,3364 @@
+// Injected Sticky Draggable Widget on Web Pages
+// Minimalist Black & White Theme (White Main BG, Black Buttons & Text)
+// Parallel Dual-Source (infolookup.site & vibegenx.com) with deduplication & progressive streaming
+
+(function () {
+  // Only run in the top-level browsing context, never in iframes
+  if (window.self !== window.top) {
+    return;
+  }
+
+  // Prevent multiple injections
+  if (window.__dnc_widget_injected) {
+    return;
+  }
+  window.__dnc_widget_injected = true;
+
+  // Create Host Element & Shadow Root for 100% CSS Isolation
+  const host = document.createElement("div");
+  host.id = "dnc-compliance-widget-host";
+  document.documentElement.appendChild(host);
+
+  const shadow = host.attachShadow({ mode: "open" });
+
+  const fontRegular = chrome.runtime.getURL("Poppins/Poppins-Regular.ttf");
+  const fontMedium = chrome.runtime.getURL("Poppins/Poppins-Medium.ttf");
+  const fontSemiBold = chrome.runtime.getURL("Poppins/Poppins-SemiBold.ttf");
+  const fontBold = chrome.runtime.getURL("Poppins/Poppins-Bold.ttf");
+
+  // Stylesheet
+  const style = document.createElement("style");
+  style.textContent = `
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap');
+
+    @font-face {
+      font-family: 'Poppins';
+      font-weight: 400;
+      font-style: normal;
+      src: url('${fontRegular}') format('truetype');
+    }
+    @font-face {
+      font-family: 'Poppins';
+      font-weight: 500;
+      font-style: normal;
+      src: url('${fontMedium}') format('truetype');
+    }
+    @font-face {
+      font-family: 'Poppins';
+      font-weight: 600;
+      font-style: normal;
+      src: url('${fontSemiBold}') format('truetype');
+    }
+    @font-face {
+      font-family: 'Poppins';
+      font-weight: 700;
+      font-style: normal;
+      src: url('${fontBold}') format('truetype');
+    }
+
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .widget-container {
+      position: fixed;
+      top: 30px;
+      right: 30px;
+      z-index: 2147483647;
+      width: 395px;
+      background: #ffffff;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 16px;
+      box-shadow: 0 20px 48px -12px rgba(0, 0, 0, 0.14), 0 4px 16px rgba(0, 0, 0, 0.04);
+      font-family: 'Poppins', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 13px;
+      color: #09090b;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      user-select: text;
+    }
+
+    .widget-container.minimized .widget-body {
+      display: none !important;
+    }
+
+    /* Header / Drag Handle */
+    .widget-header {
+      background: #ffffff;
+      padding: 13px 16px;
+      border-bottom: 1px solid #f1f3f5;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      cursor: grab;
+      user-select: none;
+    }
+
+    .widget-header:active {
+      cursor: grabbing;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .drag-grip {
+      color: #a1a1aa;
+      font-size: 14px;
+      line-height: 1;
+      letter-spacing: -1px;
+    }
+
+    .brand-title {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: #09090b;
+    }
+
+    .brand-badge {
+      font-size: 10px;
+      font-weight: 500;
+      color: #71717a;
+      background: #f4f4f6;
+      padding: 2px 7px;
+      border-radius: 6px;
+    }
+
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .control-btn {
+      background: transparent;
+      border: none;
+      color: #71717a;
+      border-radius: 6px;
+      width: 26px;
+      height: 26px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      font-size: 12px;
+      font-family: 'Poppins', sans-serif;
+      transition: all 0.15s;
+    }
+
+    .control-btn:hover {
+      background: #f4f4f6;
+      color: #09090b;
+    }
+
+    /* Body */
+    .widget-body {
+      padding: 15px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      background: #ffffff;
+      max-height: 82vh;
+      overflow-y: auto;
+    }
+
+    .widget-body::-webkit-scrollbar {
+      width: 5px;
+    }
+    .widget-body::-webkit-scrollbar-track {
+      background: #fafafa;
+    }
+    .widget-body::-webkit-scrollbar-thumb {
+      background: #e4e4e7;
+      border-radius: 3px;
+    }
+
+    /* Mode Toggle (Manual / Auto) */
+    .mode-toggle-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #f4f4f6;
+      border-radius: 8px;
+      padding: 3px;
+    }
+
+    .mode-segmented {
+      display: flex;
+      width: 100%;
+      gap: 3px;
+    }
+
+    .mode-btn {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 5px 8px;
+      font-family: 'Poppins', sans-serif;
+      font-size: 11.5px;
+      font-weight: 500;
+      color: #71717a;
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      user-select: none;
+    }
+
+    .mode-btn:hover {
+      color: #09090b;
+    }
+
+    .mode-btn.active {
+      background: #ffffff;
+      color: #09090b;
+      font-weight: 600;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+    }
+
+
+
+
+    .auto-feedback-bar {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 6px 10px;
+      background: #f0fdf4;
+      border: 1px solid rgba(22, 163, 74, 0.15);
+      border-radius: 7px;
+      font-size: 11px;
+      font-weight: 500;
+      color: #166534;
+      transition: all 0.2s ease;
+    }
+
+    .auto-feedback-bar.waiting {
+      background: #f8fafc;
+      border-color: rgba(0, 0, 0, 0.06);
+      color: #64748b;
+    }
+
+    .auto-spinner {
+      width: 12px;
+      height: 12px;
+      border: 2px solid rgba(22, 101, 52, 0.25);
+      border-top-color: #166534;
+      border-radius: 50%;
+      animation: spin 0.65s linear infinite;
+      flex-shrink: 0;
+    }
+
+    .auto-feedback-dot {
+      font-size: 8px;
+      line-height: 1;
+      color: #16a34a;
+    }
+
+    .auto-feedback-bar.waiting .auto-feedback-dot {
+      color: #94a3b8;
+    }
+
+    /* Search Bar */
+    .search-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .phone-input {
+      flex: 1;
+      background: #ffffff;
+      border: 1px solid #e4e4e7;
+      border-radius: 9px;
+      padding: 9px 13px;
+      font-family: 'Poppins', sans-serif;
+      font-size: 13px;
+      font-weight: 500;
+      color: #09090b;
+      outline: none;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .phone-input:focus {
+      border-color: #09090b;
+      box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.05);
+    }
+
+    .phone-input::placeholder {
+      color: #a1a1aa;
+      font-weight: 400;
+    }
+
+    .search-btn {
+      background: #09090b;
+      color: #ffffff;
+      border: none;
+      border-radius: 9px;
+      padding: 0 16px;
+      font-family: 'Poppins', sans-serif;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s, opacity 0.15s;
+      white-space: nowrap;
+    }
+
+    .search-btn:hover {
+      background: #27272a;
+    }
+
+    .search-btn:active {
+      transform: scale(0.98);
+    }
+
+    /* Status Banner */
+    .status-banner {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 13px;
+      background: #fafafa;
+      border: 1px solid #f1f3f5;
+      border-radius: 8px;
+      font-size: 11.5px;
+      font-weight: 500;
+      color: #52525b;
+    }
+
+    .spinner {
+      width: 13px;
+      height: 13px;
+      border: 2px solid #e4e4e7;
+      border-top-color: #09090b;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* Error Banner */
+    .error-banner {
+      padding: 9px 13px;
+      background: #fafafa;
+      border: 1px solid #18181b;
+      border-radius: 8px;
+      font-size: 11.5px;
+      color: #09090b;
+      font-weight: 500;
+    }
+
+    /* Results */
+    .results-area {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* Card Base */
+    .card {
+      background: #ffffff;
+      border: 1px solid #f1f3f5;
+      border-radius: 12px;
+      padding: 13px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .record-header-tag {
+      font-size: 11px;
+      font-weight: 600;
+      color: #71717a;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 2px;
+    }
+
+    /* Identity Card */
+    .person-card {
+      background: #fafafa;
+      border: 1px solid #f1f3f5;
+    }
+
+    /* Person Slide Carousel Navigation */
+    .person-slide-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding-bottom: 4px;
+      border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+      margin-bottom: 4px;
+    }
+
+    .slide-counter-badge {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      background: #f4f4f6;
+      border-radius: 6px;
+      padding: 2px 4px;
+    }
+
+    .slide-nav-btn {
+      background: #ffffff;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 4px;
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: #09090b;
+      padding: 0;
+      transition: all 0.15s ease;
+    }
+
+    .slide-nav-btn:hover {
+      background: #09090b;
+      color: #ffffff;
+      border-color: #09090b;
+    }
+
+    .slide-counter-text {
+      font-size: 11px;
+      font-weight: 600;
+      color: #52525b;
+      padding: 0 4px;
+      letter-spacing: -0.2px;
+    }
+
+    .person-header-row {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+    }
+
+    .avatar {
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: #09090b;
+      color: #ffffff;
+      font-size: 13px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .person-meta {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 0;
+    }
+
+    .name-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .person-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: #09090b;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .age-badge {
+      font-size: 11.5px;
+      color: #71717a;
+      font-weight: 400;
+    }
+
+    .mini-btn {
+      background: #ffffff;
+      border: 1px solid #e4e4e7;
+      color: #09090b;
+      border-radius: 5px;
+      padding: 2px 7px;
+      font-family: 'Poppins', sans-serif;
+      font-size: 10.5px;
+      font-weight: 500;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      transition: all 0.15s;
+    }
+
+    .mini-btn:hover {
+      background: #09090b;
+      color: #ffffff;
+      border-color: #09090b;
+    }
+
+    .person-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      flex-shrink: 0;
+    }
+
+    .vehicle-btn {
+      background: #f4f4f5;
+      color: #27272a;
+      border: 1px solid #e4e4e7;
+      font-size: 10px;
+      padding: 2px 6px;
+      font-weight: 500;
+    }
+
+    .vehicle-btn:hover {
+      background: #09090b;
+      color: #ffffff;
+      border-color: #09090b;
+    }
+
+    .vehicle-btn.running {
+      background: #09090b;
+      color: #ffffff;
+      border-color: #09090b;
+      opacity: 0.85;
+    }
+
+    .dob-btn {
+      background: #f4f4f5;
+      color: #09090b;
+      border: 1px solid #e4e4e7;
+      font-size: 10px;
+      padding: 2px 6px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+    }
+
+    .dob-btn:hover {
+      background: #2563eb;
+      color: #ffffff;
+      border-color: #2563eb;
+    }
+
+    .age-dob-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .dob-badge-container {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      background: #eff6ff;
+      border: 1px solid #bfdbfe;
+      border-radius: 4px;
+      padding: 1px 6px;
+      font-size: 10.5px;
+    }
+
+    .dob-badge-label {
+      color: #1e40af;
+      font-weight: 600;
+      font-size: 9.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.2px;
+    }
+
+    .dob-badge-val {
+      color: #1e3a8a;
+      font-weight: 600;
+    }
+
+    /* Vehicle Progress & Lookup Box */
+    .vehicle-progress-box {
+      margin-top: 8px;
+      padding: 8px 10px;
+      background: #f8fafc;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 7px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .vehicle-progress-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+
+    .vehicle-progress-left {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-width: 0;
+      flex: 1;
+    }
+
+    .vehicle-provider-tag {
+      background: #09090b;
+      color: #ffffff;
+      font-size: 9.5px;
+      font-weight: 600;
+      padding: 1px 5px;
+      border-radius: 4px;
+      letter-spacing: 0.2px;
+      flex-shrink: 0;
+    }
+
+    .vehicle-progress-status {
+      color: #334155;
+      font-weight: 500;
+      font-size: 10.5px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .vehicle-cancel-btn {
+      background: none;
+      border: none;
+      color: #94a3b8;
+      font-size: 10px;
+      cursor: pointer;
+      padding: 1px 4px;
+      font-family: 'Poppins', sans-serif;
+      transition: color 0.15s;
+      flex-shrink: 0;
+    }
+
+    .vehicle-cancel-btn:hover {
+      color: #ef4444;
+    }
+
+    .vehicle-progress-track {
+      width: 100%;
+      height: 4px;
+      background: #e2e8f0;
+      border-radius: 2px;
+      overflow: hidden;
+    }
+
+    .vehicle-progress-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #10b981, #059669);
+      border-radius: 2px;
+      transition: width 0.35s ease;
+    }
+
+    /* Vehicle Discovered Results Box */
+    .vehicle-results-box {
+      margin-top: 8px;
+      padding: 8px 10px;
+      background: #f8fafc;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .vehicle-results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .vehicle-badges-container {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .vehicle-badge-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 6px;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-weight: 500;
+      color: #0f172a;
+    }
+
+    .vehicle-badge-name {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .vehicle-empty-notice {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: #fffbeb;
+      border: 1px solid #fef3c7;
+      border-radius: 6px;
+      padding: 6px 9px;
+      font-size: 11px;
+      font-weight: 500;
+      color: #b45309;
+    }
+
+    /* DOB Discovered Results Box */
+    .dob-results-box {
+      margin-top: 8px;
+      padding: 8px 10px;
+      background: #f0fdf4;
+      border: 1px solid rgba(22, 163, 74, 0.2);
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .dob-results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .dob-badges-container {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .dob-badge-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #ffffff;
+      border: 1px solid #bbf7d0;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 11.5px;
+      font-weight: 600;
+      color: #15803d;
+    }
+
+    .dob-badge-name {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+
+    .dob-badge-source {
+      display: inline-block;
+      min-width: 56px;
+      padding: 1px 6px;
+      border-radius: 999px;
+      background: #f0fdf4;
+      border: 1px solid #bbf7d0;
+      color: #166534;
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+      text-align: center;
+    }
+
+    .dob-badge-item--placeholder .dob-badge-source {
+      background: #fffbeb;
+      border-color: #fde68a;
+      color: #92400e;
+    }
+
+    .dob-badge-note {
+      font-size: 10px;
+      font-weight: 500;
+      color: #b45309;
+    }
+
+    .dob-cake-icon {
+      font-size: 13px;
+    }
+
+    /* Email Discovered Results Box */
+    .email-results-box {
+      margin-top: 8px;
+      padding: 8px 10px;
+      background: #f0f9ff;
+      border: 1px solid rgba(14, 165, 233, 0.25);
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .email-results-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .email-badges-container {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .email-badge-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #ffffff;
+      border: 1px solid #bae6fd;
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #0369a1;
+    }
+
+    .email-badge-name {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      word-break: break-all;
+    }
+
+    /* Address Box */
+    .address-box {
+      background: #ffffff;
+      border: 1px solid #f1f3f5;
+      border-radius: 8px;
+      padding: 9px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .address-title-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 3px;
+    }
+
+    .sub-label {
+      font-size: 10px;
+      font-weight: 600;
+      color: #71717a;
+    }
+
+    .street-line {
+      font-size: 12.5px;
+      font-weight: 600;
+      color: #09090b;
+    }
+
+    .city-line {
+      font-size: 11.5px;
+      color: #52525b;
+      font-weight: 400;
+    }
+
+    /* Compliance Card */
+    .compliance-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+
+    .compliance-cell {
+      background: #fafafa;
+      border: 1px solid #f1f3f5;
+      border-radius: 8px;
+      padding: 9px 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      align-items: center;
+      text-align: center;
+    }
+
+    .cell-label {
+      font-size: 10px;
+      font-weight: 500;
+      color: #71717a;
+    }
+
+    .badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 6px;
+      border-radius: 5px;
+      width: 100%;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      box-sizing: border-box;
+    }
+
+    .badge-clean {
+      background: #dcfce7;
+      color: #166534;
+      border: 1px solid rgba(22, 101, 52, 0.2);
+    }
+
+    .badge-flagged {
+      background: #fee2e2;
+      color: #991b1b;
+      border: 1px solid rgba(185, 28, 28, 0.2);
+    }
+
+    .badge-neutral {
+      background: #f4f4f5;
+      color: #71717a;
+      border: 1px solid rgba(0, 0, 0, 0.05);
+    }
+
+    /* Summary & Copy All */
+    .copy-all-btn {
+      background: #09090b;
+      color: #ffffff;
+      border: none;
+      border-radius: 9px;
+      padding: 10px 14px;
+      font-family: 'Poppins', sans-serif;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: background 0.15s;
+    }
+
+    .copy-all-btn:hover {
+      background: #27272a;
+    }
+
+    .raw-box {
+      background: #fafafa;
+      border: 1px solid #f1f3f5;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      color: #27272a;
+      white-space: pre-wrap;
+      line-height: 1.5;
+    }
+
+    /* Settings Button */
+    .settings-btn {
+      padding: 3px 5px;
+      border-radius: 5px;
+      color: #71717a;
+      background: transparent;
+      border: 1px solid transparent;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .settings-btn:hover {
+      background: #f4f4f6;
+      border-color: #e4e4e7;
+      color: #09090b;
+      transform: rotate(20deg);
+    }
+
+    /* Settings Sidebar Drawer */
+    .settings-sidebar {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      background: #ffffff;
+      z-index: 100;
+      display: flex;
+      flex-direction: column;
+      transform: translateX(0);
+      transition: transform 0.28s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .settings-sidebar.closed {
+      transform: translateX(100%);
+      pointer-events: none;
+    }
+
+    .sidebar-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 13px 16px;
+      border-bottom: 1px solid #f1f3f5;
+      background: #ffffff;
+    }
+
+    .sidebar-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #09090b;
+    }
+
+    .close-sidebar-btn {
+      font-size: 12px;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #ffffff;
+      border: 1px solid #e4e4e7;
+      border-radius: 6px;
+      cursor: pointer;
+      color: #71717a;
+    }
+
+    .close-sidebar-btn:hover {
+      color: #09090b;
+      border-color: #09090b;
+    }
+
+    .sidebar-body {
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    .sidebar-section-header {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .sidebar-section-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      color: #71717a;
+    }
+
+    .sidebar-section-desc {
+      font-size: 12px;
+      color: #52525b;
+      line-height: 1.45;
+    }
+
+    .record-buttons-group {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .macro-record-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      padding: 11px 16px;
+      background: #09090b;
+      color: #ffffff;
+      border: 1px solid #09090b;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+    }
+
+    .macro-record-btn:hover {
+      background: #27272a;
+      border-color: #27272a;
+      transform: translateY(-1px);
+      box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15);
+    }
+
+    .macro-record-btn:active {
+      transform: translateY(0);
+    }
+
+    .macro-record-btn.recording {
+      background: #dc2626;
+      border-color: #dc2626;
+    }
+
+    .rec-dot-icon {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #ef4444;
+      display: inline-block;
+      box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
+    }
+
+    .macro-record-btn.recording .rec-dot-icon {
+      background: #ffffff;
+      animation: pulse 1s infinite alternate;
+    }
+
+    .rec-status-banner {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 12px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+    }
+
+    .rec-status-indicator {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #10b981;
+      margin-top: 4px;
+      flex-shrink: 0;
+    }
+
+    .rec-status-indicator.busy {
+      background: #f59e0b;
+      animation: pulse 1s infinite alternate;
+    }
+
+    .rec-status-indicator.recording {
+      background: #ef4444;
+      animation: pulse 0.8s infinite alternate;
+    }
+
+    .rec-status-text-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .rec-status-main {
+      font-size: 12px;
+      font-weight: 600;
+      color: #0f172a;
+    }
+
+    .rec-status-sub {
+      font-size: 11px;
+      color: #64748b;
+      line-height: 1.4;
+    }
+
+    .rec-summary-card {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      padding: 14px;
+      background: #fafafa;
+      border: 1px solid #e4e4e7;
+      border-radius: 8px;
+    }
+
+    .rec-summary-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .rec-summary-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #09090b;
+    }
+
+    .rec-summary-time {
+      font-size: 10px;
+      color: #71717a;
+      background: #f4f4f6;
+      padding: 2px 6px;
+      border-radius: 4px;
+    }
+
+    .rec-stats-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 8px;
+    }
+
+    .rec-stat-box {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 8px;
+      background: #ffffff;
+      border: 1px solid #f1f3f5;
+      border-radius: 6px;
+    }
+
+    .rec-stat-label {
+      font-size: 10px;
+      color: #71717a;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+
+    .rec-stat-val {
+      font-size: 12px;
+      font-weight: 600;
+      color: #09090b;
+    }
+
+    .rec-target-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      padding-top: 4px;
+      border-top: 1px solid #f1f3f5;
+    }
+
+    .rec-target-elem {
+      font-family: monospace;
+      font-size: 11px;
+      color: #09090b;
+      background: #f1f3f5;
+      padding: 1px 5px;
+      border-radius: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .rec-site-title-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .rec-badge {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 2px 7px;
+      border-radius: 9999px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .rec-badge.saved {
+      background: #dcfce7;
+      color: #15803d;
+      border: 1px solid #bbf7d0;
+    }
+
+    .rec-badge.empty {
+      background: #f4f4f5;
+      color: #71717a;
+      border: 1px solid #e4e4e7;
+    }
+
+    .rec-empty-state {
+      font-size: 11px;
+      color: #71717a;
+      padding: 8px 0;
+      font-style: italic;
+    }
+
+    .rec-card-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 4px;
+      justify-content: flex-end;
+    }
+
+    .rec-action-btn {
+      flex: 1;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 500;
+      border-radius: 6px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.15s ease;
+      border: 1px solid #e4e4e7;
+      background: #ffffff;
+      color: #09090b;
+    }
+
+    .rec-action-btn:hover {
+      border-color: #d4d4d8;
+      background: #fafafa;
+    }
+
+    .rec-action-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .rec-action-btn.delete-btn {
+      flex: 0 0 auto;
+      background: #ffffff;
+      color: #dc2626;
+      border-color: #fecaca;
+    }
+
+    .rec-action-btn.delete-btn:hover {
+      background: #fee2e2;
+      border-color: #fca5a5;
+      color: #b91c1c;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+  `;
+
+  // HTML Structure
+  const container = document.createElement("div");
+  container.className = "widget-container";
+  container.innerHTML = `
+    <div class="widget-header" id="widget-header">
+      <div class="header-left">
+        <span class="drag-grip">⋮⋮</span>
+        <span class="brand-title">You Lookup</span>
+        <button id="settings-toggle-btn" class="settings-btn" title="Calibration & Settings" type="button">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+      </div>
+      <div class="header-controls" style="display: flex; gap: 6px; align-items: center; justify-content: center;" >
+        <button id="min-btn" class="control-btn" title="Minimize" type="button">-</button>
+        <button id="close-btn" class="control-btn" title="Close" type="button">✕</button>
+      </div>
+    </div>
+
+    <div class="widget-body" id="widget-body">
+      <!-- Mode Toggle (Manual / Auto) -->
+      <div class="mode-toggle-bar">
+        <div class="mode-segmented">
+          <button id="mode-manual-btn" class="mode-btn active" type="button">Manual</button>
+          <button id="mode-auto-btn" class="mode-btn" type="button">
+            <span>Auto</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="auto-feedback-bar" class="auto-feedback-bar hidden">
+        <div id="auto-spinner" class="auto-spinner hidden"></div>
+        <span id="auto-feedback-text">Auto mode active · Waiting for dialer number...</span>
+      </div>
+
+      <!-- Search Input -->
+      <div class="search-row">
+        <input
+          type="tel"
+          id="phone-input"
+          class="phone-input"
+          placeholder="(555) 555-5555"
+          maxlength="14"
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <button id="search-btn" class="search-btn" type="button">Search</button>
+      </div>
+
+      <!-- Error Message -->
+      <div id="error-container" class="error-banner hidden">
+        <span id="error-text"></span>
+      </div>
+
+      <!-- Results Area -->
+      <div id="results-container" class="results-area hidden">
+        <div id="records-list"></div>
+      </div>
+    </div>
+
+    <!-- Settings & Recording Sidebar Drawer -->
+    <aside id="settings-sidebar" class="settings-sidebar closed">
+      <div class="sidebar-header">
+        <div class="sidebar-title">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+          <span>Settings & Calibration</span>
+        </div>
+        <button id="close-sidebar-btn" class="close-sidebar-btn" title="Close" type="button">✕</button>
+      </div>
+
+      <div class="sidebar-body">
+        <div class="sidebar-section-header">
+          <span class="sidebar-section-title">Cursor Macro Recording</span>
+          <span class="sidebar-section-desc">Record the click coordinates used for Turnstile verification.</span>
+        </div>
+
+        <div class="record-buttons-group">
+          <button id="btn-record-unmask" class="macro-record-btn" type="button">
+            <span class="rec-btn-text" id="label-record-unmask">Unmask Record</span>
+          </button>
+          <button id="btn-record-thatsthem" class="macro-record-btn" type="button">
+            <span class="rec-btn-text" id="label-record-thatsthem">ThatsThem Record</span>
+          </button>
+        </div>
+
+        <div id="rec-status-banner" class="rec-status-banner">
+          <div class="rec-status-indicator" id="rec-status-dot"></div>
+          <div class="rec-status-text-wrap">
+            <div class="rec-status-main" id="rec-status-title">Ready to Record</div>
+            <div class="rec-status-sub" id="rec-status-sub">Click a button above to record the Turnstile click point.</div>
+          </div>
+        </div>
+
+        <!-- Unmask Macro Card -->
+        <div id="card-macro-unmask" class="rec-summary-card">
+          <div class="rec-summary-header">
+            <div class="rec-site-title-wrap">
+              <span class="rec-summary-title">Unmask.com</span>
+              <span id="badge-macro-unmask" class="rec-badge empty">Not Recorded</span>
+            </div>
+            <span class="rec-summary-time" id="time-macro-unmask">--</span>
+          </div>
+
+          <div id="stats-macro-unmask" class="rec-stats-content hidden">
+            <div class="rec-stats-grid">
+              <div class="rec-stat-box">
+                <span class="rec-stat-label">Duration</span>
+                <span class="rec-stat-val" id="duration-macro-unmask">0 ms</span>
+              </div>
+              <div class="rec-stat-box">
+                <span class="rec-stat-label">Waypoints</span>
+                <span class="rec-stat-val" id="points-macro-unmask">0 pts</span>
+              </div>
+              <div class="rec-stat-box">
+                <span class="rec-stat-label">Avg Speed</span>
+                <span class="rec-stat-val" id="speed-macro-unmask">0 px/s</span>
+              </div>
+              <div class="rec-stat-box">
+                <span class="rec-stat-label">First Click</span>
+                <span class="rec-stat-val" id="click-macro-unmask">(0, 0)</span>
+              </div>
+            </div>
+            <div class="rec-target-row">
+              <span class="rec-stat-label">Target:</span>
+              <span class="rec-target-elem" id="elem-macro-unmask">None</span>
+            </div>
+          </div>
+
+          <div id="empty-macro-unmask" class="rec-empty-state">
+            <span>No recorded movement saved.</span>
+          </div>
+
+          <div class="rec-card-actions">
+            <button id="btn-delete-unmask" class="rec-action-btn delete-btn hidden" type="button" title="Delete Unmask Recording">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+              <span>Delete</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- ThatsThem Macro Card -->
+        <div id="card-macro-thatsthem" class="rec-summary-card">
+          <div class="rec-summary-header">
+            <div class="rec-site-title-wrap">
+              <span class="rec-summary-title">ThatsThem.com</span>
+              <span id="badge-macro-thatsthem" class="rec-badge empty">Not Recorded</span>
+            </div>
+            <span class="rec-summary-time" id="time-macro-thatsthem">--</span>
+          </div>
+
+          <div id="stats-macro-thatsthem" class="rec-stats-content hidden">
+            <div class="rec-stats-grid">
+              <div class="rec-stat-box">
+                <span class="rec-stat-label">Duration</span>
+                <span class="rec-stat-val" id="duration-macro-thatsthem">0 ms</span>
+              </div>
+              <div class="rec-stat-box">
+                <span class="rec-stat-label">Waypoints</span>
+                <span class="rec-stat-val" id="points-macro-thatsthem">0 pts</span>
+              </div>
+              <div class="rec-stat-box">
+                <span class="rec-stat-label">Avg Speed</span>
+                <span class="rec-stat-val" id="speed-macro-thatsthem">0 px/s</span>
+              </div>
+              <div class="rec-stat-box">
+                <span class="rec-stat-label">First Click</span>
+                <span class="rec-stat-val" id="click-macro-thatsthem">(0, 0)</span>
+              </div>
+            </div>
+            <div class="rec-target-row">
+              <span class="rec-stat-label">Target:</span>
+              <span class="rec-target-elem" id="elem-macro-thatsthem">None</span>
+            </div>
+          </div>
+
+          <div id="empty-macro-thatsthem" class="rec-empty-state">
+            <span>No recorded movement saved.</span>
+          </div>
+
+          <div class="rec-card-actions">
+            <button id="btn-delete-thatsthem" class="rec-action-btn delete-btn hidden" type="button" title="Delete ThatsThem Recording">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+              <span>Delete</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </aside>
+  `;
+
+  shadow.appendChild(style);
+  shadow.appendChild(container);
+
+  // DOM Elements
+  const header = shadow.getElementById("widget-header");
+  const minBtn = shadow.getElementById("min-btn");
+  const closeBtn = shadow.getElementById("close-btn");
+  const phoneInput = shadow.getElementById("phone-input");
+  const searchBtn = shadow.getElementById("search-btn");
+  const statusContainer = shadow.getElementById("status-container");
+  const statusText = shadow.getElementById("status-text");
+  const errorContainer = shadow.getElementById("error-container");
+  const errorText = shadow.getElementById("error-text");
+  const resultsContainer = shadow.getElementById("results-container");
+  const sourceStatusText = shadow.getElementById("source-status-text");
+  const verifiedPill = shadow.getElementById("verified-pill");
+  const recordsList = shadow.getElementById("records-list");
+  const copyAllBtn = shadow.getElementById("copy-all-btn");
+  const copyAllLabel = shadow.getElementById("copy-all-label");
+  const rawOutput = shadow.getElementById("raw-output");
+
+  // Mode Toggle Elements
+  const modeManualBtn = shadow.getElementById("mode-manual-btn");
+  const modeAutoBtn = shadow.getElementById("mode-auto-btn");
+  const autoPulseDot = shadow.getElementById("auto-pulse-dot");
+  const autoFeedbackBar = shadow.getElementById("auto-feedback-bar");
+  const autoFeedbackText = shadow.getElementById("auto-feedback-text");
+  const autoSpinner = shadow.getElementById("auto-spinner");
+
+  let currentLookupMode = "manual"; // "manual" | "auto"
+  let autoPollTimer = null;
+  let autoDomObserver = null;
+  let lastAutoLookedUpPhone = "";
+
+  function cleanPhoneNumber(val) {
+    if (!val) return "";
+    let digits = String(val).replace(/\D/g, "");
+    if (digits.length === 11 && digits.startsWith("1")) {
+      digits = digits.substring(1);
+    }
+    if (digits.length === 10 && !/^0+$/.test(digits)) {
+      return digits;
+    }
+    return "";
+  }
+
+  function extractDialerPhoneFromDoc(doc) {
+    if (!doc) return "";
+    try {
+      // 1. Vicidial Manual Dial input fields
+      const mdInput =
+        doc.getElementById("MDPhOnEnUmBeR") ||
+        doc.querySelector("input#MDPhOnEnUmBeR") ||
+        doc.querySelector('input[name="MDPhOnEnUmBeR"]') ||
+        doc.getElementById("MDphoneNumber") ||
+        doc.querySelector('input[name="MDphoneNumber"]') ||
+        doc.querySelector('input[name="manual_dial_phone"]');
+      if (mdInput && mdInput.value) {
+        const cleaned = cleanPhoneNumber(mdInput.value);
+        if (cleaned) return cleaned;
+      }
+
+      // 2. Standard input with id="phone_number" or name="phone_number"
+      const inputEl =
+        doc.getElementById("phone_number") ||
+        doc.querySelector("input#phone_number") ||
+        doc.querySelector('input[name="phone_number"]');
+      if (inputEl && inputEl.value) {
+        const cleaned = cleanPhoneNumber(inputEl.value);
+        if (cleaned) return cleaned;
+      }
+
+      // 3. Element with id="phone_numberDISP"
+      const dispEl =
+        doc.getElementById("phone_numberDISP") ||
+        doc.querySelector("#phone_numberDISP");
+      if (dispEl) {
+        const text = dispEl.innerText || dispEl.textContent;
+        const cleaned = cleanPhoneNumber(text);
+        if (cleaned) return cleaned;
+      }
+    } catch (e) {}
+    return "";
+  }
+
+  function scanForDialerPhone() {
+    // 1. Check current top document
+    let phone = extractDialerPhoneFromDoc(document);
+    if (phone) return phone;
+
+    // 2. Check iframes / frames on the page (e.g. Vicidial agent frames)
+    try {
+      const frames = document.querySelectorAll("iframe, frame");
+      for (let i = 0; i < frames.length; i++) {
+        try {
+          const fDoc =
+            frames[i].contentDocument || frames[i].contentWindow?.document;
+          if (fDoc) {
+            phone = extractDialerPhoneFromDoc(fDoc);
+            if (phone) return phone;
+
+            // Check nested frames
+            const subFrames = fDoc.querySelectorAll("iframe, frame");
+            for (let j = 0; j < subFrames.length; j++) {
+              try {
+                const sfDoc =
+                  subFrames[j].contentDocument ||
+                  subFrames[j].contentWindow?.document;
+                if (sfDoc) {
+                  phone = extractDialerPhoneFromDoc(sfDoc);
+                  if (phone) return phone;
+                }
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
+
+    return "";
+  }
+
+  function startAutoLookup() {
+    stopAutoLookup();
+    lastAutoLookedUpPhone = "";
+    checkAutoNumber();
+
+    // High frequency interval (every 500ms) for reliable detection of JS value changes
+    autoPollTimer = setInterval(checkAutoNumber, 500);
+
+    // MutationObserver for instant DOM updates
+    try {
+      autoDomObserver = new MutationObserver(() => {
+        checkAutoNumber();
+      });
+      autoDomObserver.observe(document.body || document.documentElement, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+    } catch (e) {}
+  }
+
+  function stopAutoLookup() {
+    if (autoPollTimer) {
+      clearInterval(autoPollTimer);
+      autoPollTimer = null;
+    }
+    if (autoDomObserver) {
+      autoDomObserver.disconnect();
+      autoDomObserver = null;
+    }
+  }
+
+  function checkAutoNumber() {
+    if (currentLookupMode !== "auto") return;
+
+    const rawPhone = scanForDialerPhone();
+    if (rawPhone && rawPhone.length === 10) {
+      if (rawPhone !== lastAutoLookedUpPhone) {
+        lastAutoLookedUpPhone = rawPhone;
+        const formatted = `(${rawPhone.slice(0, 3)}) ${rawPhone.slice(3, 6)}-${rawPhone.slice(6, 10)}`;
+
+        if (phoneInput) phoneInput.value = formatted;
+        if (autoFeedbackBar) autoFeedbackBar.classList.remove("waiting");
+        if (autoSpinner) autoSpinner.classList.remove("hidden");
+        if (autoFeedbackText)
+          autoFeedbackText.textContent = `Auto-detected: ${rawPhone} · Looking up...`;
+
+        // Broadcast to other extension views (window / popup)
+        chrome.runtime
+          .sendMessage({
+            action: "PAGE_PHONE_DETECTED",
+            phone: rawPhone,
+          })
+          .catch(() => {});
+
+        // Automatically execute search
+        if (searchBtn) searchBtn.click();
+      }
+    } else {
+      if (!lastAutoLookedUpPhone) {
+        if (autoSpinner) autoSpinner.classList.add("hidden");
+        if (autoFeedbackBar) autoFeedbackBar.classList.add("waiting");
+        if (autoFeedbackText)
+          autoFeedbackText.textContent =
+            "Auto mode active · Waiting for dialer number...";
+      } else {
+        // Dialer cleared between calls
+        lastAutoLookedUpPhone = "";
+        if (autoSpinner) autoSpinner.classList.add("hidden");
+        if (autoFeedbackBar) autoFeedbackBar.classList.add("waiting");
+        if (autoFeedbackText)
+          autoFeedbackText.textContent =
+            "Auto mode active · Waiting for next dialer number...";
+      }
+    }
+  }
+
+  function setLookupMode(mode, save = true) {
+    currentLookupMode = mode;
+    if (save) {
+      chrome.storage.local.set({ lookupMode: mode });
+    }
+
+    if (mode === "auto") {
+      if (modeManualBtn) modeManualBtn.classList.remove("active");
+      if (modeAutoBtn) modeAutoBtn.classList.add("active");
+      if (autoPulseDot) autoPulseDot.classList.remove("hidden");
+      if (autoFeedbackBar) autoFeedbackBar.classList.remove("hidden");
+      startAutoLookup();
+    } else {
+      if (modeAutoBtn) modeAutoBtn.classList.remove("active");
+      if (modeManualBtn) modeManualBtn.classList.add("active");
+      if (autoPulseDot) autoPulseDot.classList.add("hidden");
+      if (autoFeedbackBar) autoFeedbackBar.classList.add("hidden");
+      if (autoSpinner) autoSpinner.classList.add("hidden");
+      stopAutoLookup();
+      setLoading(false);
+      hideStatus();
+      hideError();
+    }
+  }
+
+  if (modeManualBtn)
+    modeManualBtn.addEventListener("click", () => setLookupMode("manual"));
+  if (modeAutoBtn)
+    modeAutoBtn.addEventListener("click", () => setLookupMode("auto"));
+
+  // Restore saved lookup mode
+  chrome.storage.local.get(["lookupMode"], (res) => {
+    if (res.lookupMode === "auto") {
+      setLookupMode("auto", false);
+    } else {
+      setLookupMode("manual", false);
+    }
+  });
+
+  // Track results from both sources
+  let activeResults = []; // [{ source, data }]
+
+  // Restore saved position & visibility
+  chrome.storage.local.get(["widgetPosition", "widgetVisible"], (res) => {
+    if (res.widgetPosition) {
+      const { top, left } = res.widgetPosition;
+      container.style.top = `${Math.max(10, Math.min(top, window.innerHeight - 80))}px`;
+      container.style.left = `${Math.max(10, Math.min(left, window.innerWidth - 410))}px`;
+      container.style.right = "auto";
+    }
+
+    if (res.widgetVisible === false) {
+      container.classList.add("hidden");
+    }
+  });
+
+  // Dragging Logic
+  let isDragging = false;
+  let startX = 0,
+    startY = 0;
+  let initialLeft = 0,
+    initialTop = 0;
+
+  header.addEventListener("mousedown", (e) => {
+    if (e.target.closest("button")) return;
+
+    isDragging = true;
+    startX = e.clientX;
+    startY = e.clientY;
+
+    const rect = container.getBoundingClientRect();
+    initialLeft = rect.left;
+    initialTop = rect.top;
+
+    e.preventDefault();
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (!isDragging) return;
+
+    const dx = e.clientX - startX;
+    const dy = e.clientY - startY;
+
+    let newLeft = initialLeft + dx;
+    let newTop = initialTop + dy;
+
+    const maxLeft = window.innerWidth - container.offsetWidth - 10;
+    const maxTop = window.innerHeight - 40;
+
+    newLeft = Math.max(10, Math.min(newLeft, maxLeft));
+    newTop = Math.max(10, Math.min(newTop, maxTop));
+
+    container.style.left = `${newLeft}px`;
+    container.style.top = `${newTop}px`;
+    container.style.right = "auto";
+  });
+
+  document.addEventListener("mouseup", () => {
+    if (isDragging) {
+      isDragging = false;
+      const rect = container.getBoundingClientRect();
+      chrome.storage.local.set({
+        widgetPosition: { top: rect.top, left: rect.left },
+      });
+    }
+  });
+
+  // Minimize Toggle
+  minBtn.addEventListener("click", () => {
+    const isMin = container.classList.toggle("minimized");
+    minBtn.textContent = isMin ? "□" : "_";
+    minBtn.title = isMin ? "Expand" : "Minimize";
+  });
+
+  // Close Button
+  closeBtn.addEventListener("click", () => {
+    container.classList.add("hidden");
+    chrome.storage.local.set({ widgetVisible: false });
+  });
+
+  // Phone input formatting
+  phoneInput.addEventListener("input", (e) => {
+    const raw = e.target.value.replace(/\D/g, "");
+    let formatted = "";
+    if (raw.length > 0) formatted = "(" + raw.substring(0, 3);
+    if (raw.length >= 4) formatted += ") " + raw.substring(3, 6);
+    if (raw.length >= 7) formatted += "-" + raw.substring(6, 10);
+    e.target.value = formatted || raw;
+  });
+
+  phoneInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      searchBtn.click();
+    }
+  });
+
+  let currentSearchSession = 0;
+
+  // Search Action
+  searchBtn.addEventListener("click", async () => {
+    const phone = phoneInput.value.trim();
+    const digits = phone.replace(/\D/g, "");
+
+    if (digits.length < 10) {
+      showError("Please enter a valid 10-digit phone number.");
+      return;
+    }
+
+    const session = ++currentSearchSession;
+
+    hideError();
+    hideResults();
+    activeResults = [];
+    recordsList.innerHTML = "";
+    if (verifiedPill) verifiedPill.classList.add("hidden");
+    setLoading(true);
+
+    try {
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Lookup timed out. Please try again.")), 12000)
+      );
+
+      const response = await Promise.race([
+        chrome.runtime.sendMessage({
+          action: "LOOKUP_PHONE",
+          phone: phone,
+          session: session,
+        }),
+        timeoutPromise,
+      ]);
+
+      // If user triggered a newer search while waiting, ignore this response
+      if (session !== currentSearchSession) {
+        return;
+      }
+
+      if (!response) {
+        throw new Error("No response from background service worker.");
+      }
+
+      if (response.success && response.data) {
+        handleIncomingStreamResult({
+          source: response.source || "fastest",
+          data: response.data,
+          isFirst: true,
+          isAllDone: response.isAllDone,
+          session: session,
+        });
+      } else if (!response.success && activeResults.length === 0) {
+        showError(response.error || "Failed to retrieve compliance records.");
+        hideStatus();
+        setLoading(false);
+      }
+    } catch (err) {
+      if (session !== currentSearchSession) return;
+      if (activeResults.length === 0) {
+        showError(err.message || "Error during parallel lookup.");
+        hideStatus();
+        setLoading(false);
+      }
+    }
+  });
+
+  // Progressive Stream Listener from background
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.action === "PARALLEL_STREAM_RESULT") {
+      // Discard results from previous searches if a new search was started
+      if (msg.session && msg.session !== currentSearchSession) {
+        return;
+      }
+
+      if (msg.data) {
+        handleIncomingStreamResult(msg);
+      } else if (msg.error) {
+        if (activeResults.length > 0) {
+          // Say which source failed instead of silently showing one record only.
+          const okSources = activeResults.map((r) => r.source).join(" & ");
+          sourceStatusText.textContent = `Completed (${okSources}) - ${msg.source || "the other source"} failed`;
+          hideStatus();
+          setLoading(false);
+        } else if (msg.isAllDone) {
+          showError(msg.error || "Failed to retrieve compliance records.");
+          hideStatus();
+          setLoading(false);
+        }
+      }
+
+      if (msg.isAllDone) {
+        hideStatus();
+        setLoading(false);
+      }
+    }
+
+    if (msg.action === "TOGGLE_WIDGET") {
+      const isHidden = container.classList.contains("hidden");
+      if (isHidden) {
+        container.classList.remove("hidden");
+        container.classList.remove("minimized");
+        minBtn.textContent = "_";
+        phoneInput.focus();
+        chrome.storage.local.set({ widgetVisible: true });
+      } else {
+        container.classList.add("hidden");
+        chrome.storage.local.set({ widgetVisible: false });
+      }
+    }
+  });
+
+  // Handle results arriving as soon as possible
+  function handleIncomingStreamResult(msg) {
+    const { source, data, isAllDone } = msg;
+
+    // Check if we already added a result from this exact source
+    const existingFromSource = activeResults.find((r) => r.source === source);
+    if (existingFromSource) return;
+
+    hideError();
+
+    // Check if this result is identical to an already displayed result
+    if (activeResults.length > 0) {
+      const isDuplicate = activeResults.some((r) =>
+        areResultsEqual(r.data, data),
+      );
+      if (isDuplicate) {
+        // Same result found on both sites! Show only once at the bottom
+        activeResults.push({ source, data, isDuplicate: true });
+        if (sourceStatusText) {
+          sourceStatusText.textContent = `Verified Match Across Both Sites (${activeResults.map((r) => r.source).join(" & ")})`;
+        }
+        if (verifiedPill) {
+          verifiedPill.textContent = "✓ Verified Match";
+          verifiedPill.classList.remove("hidden");
+        }
+
+        // Update existing card header tag to show both sources
+        const firstHeaderTag = shadow.querySelector(".record-header-tag span");
+        if (firstHeaderTag) {
+          firstHeaderTag.textContent = `Compliance · ${activeResults.map((r) => r.source).join(" & ")} (Verified)`;
+        }
+
+        // If the first result didn't have person details, but the secondary duplicate has person details, upgrade it
+        const existingRecord = activeResults[0];
+        const existingPerson = getEffectivePerson(existingRecord.data);
+        const newPerson = getEffectivePerson(data);
+        if (!existingPerson && newPerson) {
+          existingRecord.data.person = newPerson;
+          existingRecord.data.persons = data.persons || [newPerson];
+          recordsList.innerHTML = "";
+          renderResultCard(existingRecord.source, existingRecord.data, 1);
+          const updatedHeader = shadow.querySelector(".record-header-tag span");
+          if (updatedHeader) {
+            updatedHeader.textContent = `Compliance · ${activeResults.map((r) => r.source).join(" & ")} (Verified)`;
+          }
+        }
+
+        hideStatus();
+        setLoading(false);
+        updateRawSummary();
+        return;
+      }
+    }
+
+    // New unique result: Add to list
+    activeResults.push({ source, data, isDuplicate: false });
+
+    // Render the card
+    renderResultCard(source, data, activeResults.length);
+
+    resultsContainer.classList.remove("hidden");
+
+    if (activeResults.length === 1) {
+      if (isAllDone) {
+        if (sourceStatusText) sourceStatusText.textContent = `Completed (${source})`;
+        hideStatus();
+        setLoading(false);
+      } else {
+        if (sourceStatusText) sourceStatusText.textContent = `Fastest Result: ${source} (awaiting secondary...)`;
+        hideStatus();
+        setLoading(false);
+      }
+    } else {
+      if (sourceStatusText) {
+        sourceStatusText.textContent = `Multiple Records Found (${activeResults.map((r) => r.source).join(" & ")})`;
+      }
+      hideStatus();
+      setLoading(false);
+    }
+
+    if (isAllDone) {
+      hideStatus();
+      setLoading(false);
+    }
+
+    updateRawSummary();
+  }
+
+  function normalizeCompliance(val) {
+    const s = (val || "").toLowerCase().trim();
+    if (!s || s === "-" || s === "--" || s.includes("load")) return "unknown";
+    if (
+      s === "clean" ||
+      s.includes("clean") ||
+      s.includes("not listed") ||
+      s.includes("no record") ||
+      s === "pass" ||
+      s === "no"
+    ) {
+      return "clean";
+    }
+    const hasFed = s.includes("federal") || s.includes("national");
+    const hasState = s.includes("state");
+    if (hasFed && hasState) return "fed_state_dnc";
+    if (hasFed) return "fed_dnc";
+    if (hasState) return "state_dnc";
+    if (s.includes("listed") || s.includes("flagged") || s === "yes") {
+      return "flagged";
+    }
+    return s.replace(/[^a-z0-9]/g, "");
+  }
+
+  function getEffectivePerson(d) {
+    if (!d) return null;
+    const p = d.person || (d.persons && d.persons.length > 0 ? d.persons[0] : null);
+    if (!p) return null;
+    const name = (p.name || "").trim();
+    const street = (p.address?.street || p.address?.full || "").trim();
+    if (!name && !street) return null;
+    if (/^(unknown|no result|no owner|search result|null|undefined|-)$/i.test(name)) return null;
+    return p;
+  }
+
+  function arePersonsEqual(p1, p2) {
+    if (!p1 && !p2) return true;
+    if (!p1 || !p2) return true; // One site has person details, one doesn't -> same person context
+
+    const normName = (str) =>
+      (str || "")
+        .toLowerCase()
+        .replace(/[^a-z\s]/g, " ")
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+    const parts1 = normName(p1.name);
+    const parts2 = normName(p2.name);
+
+    if (parts1.length > 0 && parts2.length > 0) {
+      const first1 = parts1[0];
+      const first2 = parts2[0];
+      const last1 = parts1[parts1.length - 1];
+      const last2 = parts2[parts2.length - 1];
+
+      const firstMatch =
+        first1 === first2 || first1.startsWith(first2) || first2.startsWith(first1);
+      const lastMatch = last1 === last2;
+
+      if (!firstMatch || !lastMatch) {
+        return false; // Conflicting names -> show twice
+      }
+    }
+
+    const addr1 = (p1.address?.street || p1.address?.full || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+    const addr2 = (p2.address?.street || p2.address?.full || "")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, "");
+
+    if (
+      addr1 &&
+      addr2 &&
+      addr1 !== addr2 &&
+      !addr1.includes(addr2) &&
+      !addr2.includes(addr1)
+    ) {
+      return false; // Conflicting addresses -> show twice
+    }
+
+    return true;
+  }
+
+  // Deduplication comparator: show only once if same, twice if different
+  function areResultsEqual(d1, d2) {
+    if (!d1 || !d2) return false;
+
+    // 1. Compliance comparison: DNC, Litigator, Blacklist must be semantically identical
+    const compSame =
+      normalizeCompliance(d1.dnc) === normalizeCompliance(d2.dnc) &&
+      normalizeCompliance(d1.litigator) === normalizeCompliance(d2.litigator) &&
+      normalizeCompliance(d1.blacklist) === normalizeCompliance(d2.blacklist);
+
+    if (!compSame) return false; // Different compliance -> show twice!
+
+    // 2. Person comparison
+    const p1 = getEffectivePerson(d1);
+    const p2 = getEffectivePerson(d2);
+
+    return arePersonsEqual(p1, p2);
+  }
+
+  // Render individual card block in order
+  function renderResultCard(source, data, index) {
+    const cardWrapper = document.createElement("div");
+    cardWrapper.className = "card-item-group";
+    cardWrapper.style.display = "flex";
+    cardWrapper.style.flexDirection = "column";
+    cardWrapper.style.gap = "8px";
+    cardWrapper.style.marginBottom = "8px";
+
+    const dnc = data.dnc || "Clean";
+    const litigator = data.litigator || "Clean";
+    const blacklist = data.blacklist || "Clean";
+
+    const personsList =
+      data.persons && data.persons.length > 0
+        ? data.persons
+        : data.person
+          ? [data.person]
+          : [];
+    let currentPersonIdx = 0;
+
+    const personCardContainer = document.createElement("div");
+
+    function updatePersonCardView(pIdx) {
+      const p = personsList[pIdx];
+      if (!p) return;
+
+      const avatar =
+        p.avatar || (p.name ? p.name.slice(0, 2).toUpperCase() : "--");
+      const name = p.name || "Unknown Name";
+      const age = p.age || "";
+      const cityStateZip =
+        [p.address?.city, p.address?.state].filter(Boolean).join(", ") +
+        (p.address?.zip ? ` ${p.address.zip}` : "");
+
+      let streetDisplay = "";
+      let cityDisplay = "";
+
+      if (p.address?.street) {
+        streetDisplay = p.address.street;
+        cityDisplay = cityStateZip;
+      } else if (cityStateZip) {
+        streetDisplay = cityStateZip;
+        cityDisplay = p.address?.zip ? `ZIP ${p.address.zip}` : "";
+      } else if (p.address?.full) {
+        streetDisplay = p.address.full;
+        cityDisplay = "";
+      } else {
+        streetDisplay = "No address record found";
+        cityDisplay = "";
+      }
+
+      const fullAddr =
+        p.address?.full ||
+        [streetDisplay, cityDisplay].filter(Boolean).join(", ") ||
+        streetDisplay;
+
+      const slideNavHtml =
+        personsList.length > 1
+          ? `
+        <div class="person-slide-header">
+         
+          <div class="slide-counter-badge">
+            <button class="slide-nav-btn prev-card-slide" title="Previous record" type="button">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            </button>
+            <span class="slide-counter-text">${pIdx + 1} / ${personsList.length}</span>
+            <button class="slide-nav-btn next-card-slide" title="Next record" type="button">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            </button>
+          </div>
+        </div>
+      `
+          : "";
+
+      personCardContainer.innerHTML = `
+        <div class="card person-card">
+          <div class="record-header-tag">
+            <span>Record ${index} · ${source}</span>
+          </div>
+          ${slideNavHtml}
+          <div class="person-header-row">
+            <div class="person-meta">
+              <div class="name-wrapper">
+                <span class="person-name">${name}</span>
+                <div class="person-actions">
+                  <button class="mini-btn copy-name-action" data-copy="${escapeHtml(name)}" type="button">Copy</button>
+                  <button class="mini-btn vehicle-btn amica-action-btn" type="button" title="Discover vehicles on Amica">Amica</button>
+                  <button class="mini-btn vehicle-btn mercury-action-btn" type="button" title="Discover vehicles on Mercury">Mercury</button>
+                  <button class="mini-btn dob-btn dob-action-btn" type="button" title="Deep research DOB on Unmask">DOB</button>
+                </div>
+              </div>
+              <div class="age-dob-row">
+                <span class="age-badge">${age}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="address-box">
+            <div class="address-title-row">
+              <span class="sub-label">Primary address</span>
+              <button class="mini-btn copy-addr-action" data-copy="${escapeHtml(fullAddr)}" type="button">Copy</button>
+            </div>
+            <div class="street-line">${escapeHtml(streetDisplay)}</div>
+            ${cityDisplay ? `<div class="city-line">${escapeHtml(cityDisplay)}</div>` : ""}
+          </div>
+
+          <!-- Vehicle Progress Section -->
+          <div class="vehicle-progress-box hidden" id="card-vehicle-progress">
+            <div class="vehicle-progress-header">
+              <div class="vehicle-progress-left">
+                <span class="vehicle-provider-tag" id="vehicle-provider-tag">Amica</span>
+                <span class="vehicle-progress-status" id="vehicle-progress-status">Starting lookup...</span>
+              </div>
+              <button class="vehicle-cancel-btn" id="vehicle-cancel-btn" type="button">✕ Cancel</button>
+            </div>
+            <div class="vehicle-progress-track">
+              <div class="vehicle-progress-fill" id="vehicle-progress-fill" style="width: 15%;"></div>
+            </div>
+          </div>
+
+          <!-- Vehicle Results Section -->
+          <div class="vehicle-results-box hidden" id="card-vehicle-results">
+            <div class="vehicle-results-header">
+              <span class="sub-label" id="vehicle-results-count-label">Discovered Vehicles</span>
+              <button class="mini-btn copy-vehicles-action" id="copy-all-vehicles-btn" type="button">Copy All</button>
+            </div>
+            <div class="vehicle-badges-container" id="vehicle-badges-container"></div>
+          </div>
+
+          <!-- DOB Results Section -->
+          <div class="dob-results-box hidden" id="card-dob-results">
+            <div class="dob-results-header">
+              <span class="sub-label" id="dob-results-count-label">Date of Birth (DOB)</span>
+            </div>
+            <div class="dob-badges-container" id="dob-badges-container"></div>
+          </div>
+
+          <!-- Email Results Section -->
+          <div class="email-results-box hidden" id="card-email-results">
+            <div class="email-results-header">
+              <span class="sub-label" id="email-results-count-label">Email Addresses</span>
+            </div>
+            <div class="email-badges-container" id="email-badges-container"></div>
+          </div>
+        </div>
+      `;
+
+      // Bind slide nav buttons
+      const prevBtn = personCardContainer.querySelector(".prev-card-slide");
+      const nextBtn = personCardContainer.querySelector(".next-card-slide");
+
+      if (prevBtn) {
+        prevBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          currentPersonIdx =
+            (currentPersonIdx - 1 + personsList.length) % personsList.length;
+          updatePersonCardView(currentPersonIdx);
+        });
+      }
+
+      if (nextBtn) {
+        nextBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          currentPersonIdx = (currentPersonIdx + 1) % personsList.length;
+          updatePersonCardView(currentPersonIdx);
+        });
+      }
+
+      // Bind copy buttons for this slide
+      personCardContainer
+        .querySelectorAll(".copy-name-action, .copy-addr-action")
+        .forEach((btn) => {
+          btn.addEventListener("click", (e) => {
+            const text = e.currentTarget.getAttribute("data-copy");
+            if (text) copyText(text, e.currentTarget);
+          });
+        });
+
+      // Bind vehicle lookup buttons
+      const amicaBtn = personCardContainer.querySelector(".amica-action-btn");
+      const mercuryBtn = personCardContainer.querySelector(".mercury-action-btn");
+      const dobBtn = personCardContainer.querySelector(".dob-action-btn");
+      const cancelBtn = personCardContainer.querySelector("#vehicle-cancel-btn");
+
+      if (amicaBtn) {
+        amicaBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          startVehicleAutomation("amica", p);
+        });
+      }
+
+      if (mercuryBtn) {
+        mercuryBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          startVehicleAutomation("mercury", p);
+        });
+      }
+
+      if (dobBtn) {
+        dobBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          startDobAutomation(p);
+        });
+      }
+
+      if (cancelBtn) {
+        cancelBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          cancelVehicleAutomation();
+          cancelDobAutomation();
+        });
+      }
+
+      // If this person already had vehicles discovered, render them
+      if (p.vehicles && p.vehicles.length > 0) {
+        renderDiscoveredVehicles(p.vehicles);
+      }
+
+      // If this person already had DOB discovered, render it prominently
+      if (p.dob || p.dob1 || p.dob2) {
+        const firstDob = p.dob1 || p.dob;
+        renderDiscoveredDob({
+          dob1: firstDob,
+          dob1Source: p.dob1Source,
+          dob1Note: p.dob1Note || (isJanuaryPlaceholder(firstDob) ? "month/day unknown" : ""),
+          dob2: p.dob2,
+          dob2Source: p.dob2Source
+        });
+      } else {
+        const dobBox = shadow.getElementById("card-dob-results");
+        if (dobBox) dobBox.classList.add("hidden");
+      }
+
+      // If this person already had emails discovered, render them
+      if (p.emails && p.emails.length > 0) {
+        renderDiscoveredEmails(p.emails);
+      } else {
+        const emailBox = shadow.getElementById("card-email-results");
+        if (emailBox) emailBox.classList.add("hidden");
+      }
+    }
+
+    if (
+      personsList.length > 0 &&
+      (personsList[0].name || personsList[0].address)
+    ) {
+      updatePersonCardView(0);
+      cardWrapper.appendChild(personCardContainer);
+    }
+
+    const dncBadgeClass = getBadgeClass(dnc);
+    const litBadgeClass = getBadgeClass(litigator);
+    const blackBadgeClass = getBadgeClass(blacklist);
+
+    const complianceCard = document.createElement("div");
+    complianceCard.innerHTML = `
+      <div class="card compliance-card">
+        <div class="record-header-tag">
+          <span>Compliance · ${source}</span>
+        </div>
+        <div class="compliance-grid">
+          <div class="compliance-cell">
+            <span class="cell-label">DNC status</span>
+            <span class="badge ${dncBadgeClass}">${dnc}</span>
+          </div>
+          <div class="compliance-cell">
+            <span class="cell-label">Litigator</span>
+            <span class="badge ${litBadgeClass}">${litigator}</span>
+          </div>
+          <div class="compliance-cell">
+            <span class="cell-label">Blacklist</span>
+            <span class="badge ${blackBadgeClass}">${blacklist}</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    cardWrapper.appendChild(complianceCard);
+    recordsList.appendChild(cardWrapper);
+  }
+
+  function getBadgeClass(val) {
+    const lower = (val || "").toLowerCase().trim();
+    if (
+      !lower ||
+      lower === "-" ||
+      lower === "--" ||
+      lower.includes("loading")
+    ) {
+      return "badge-neutral";
+    }
+    if (
+      lower === "clean" ||
+      lower.includes("clean") ||
+      lower.includes("not listed") ||
+      lower.includes("no record") ||
+      lower.includes("pass") ||
+      lower === "no"
+    ) {
+      return "badge-clean";
+    }
+    return "badge-flagged";
+  }
+
+  function updateRawSummary() {
+    let summary = "";
+    const uniqueRecords = activeResults.filter((r) => !r.isDuplicate);
+
+    uniqueRecords.forEach((r, idx) => {
+      const { source, data } = r;
+      if (uniqueRecords.length > 1) {
+        summary += `--- RECORD ${idx + 1} (${source}) ---\n`;
+      }
+      const persons =
+        data.persons && data.persons.length > 0
+          ? data.persons
+          : data.person
+            ? [data.person]
+            : [];
+      persons.forEach((p, pIdx) => {
+        if (persons.length > 1) {
+          summary += `[Person ${pIdx + 1}]\n`;
+        }
+        if (p.name) summary += `Name: ${p.name}\n`;
+        if (p.age) summary += `Age: ${p.age}\n`;
+        if (p.dob) summary += `DOB: ${p.dob}\n`;
+        if (p.emails && p.emails.length > 0) {
+          summary += `Emails (${p.emails.length}): ${p.emails.join(", ")}\n`;
+        }
+        if (p.address?.full) summary += `Address: ${p.address.full}\n`;
+        if (p.vehicles && p.vehicles.length > 0) {
+          summary += `Vehicles (${p.vehicles.length}):\n${p.vehicles.map((v) => `  • ${v}`).join("\n")}\n`;
+        }
+        summary += "\n";
+      });
+      summary += `DNC: ${data.dnc || "Clean"}\n`;
+      summary += `Litigator: ${data.litigator || "Clean"}\n`;
+      summary += `Blacklist: ${data.blacklist || "Clean"}\n\n`;
+    });
+
+    if (rawOutput) rawOutput.textContent = summary.trim();
+  }
+
+  // Copy All button
+  if (copyAllBtn) {
+    copyAllBtn.addEventListener("click", () => {
+      const text = rawOutput ? rawOutput.textContent : "";
+      if (text) {
+        copyText(text, null, copyAllLabel);
+      }
+    });
+  }
+
+  // Respond to popup or standalone window requests for the page phone
+  chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+    if (msg.action === "GET_PAGE_PHONE") {
+      const phone = scanForDialerPhone();
+      sendResponse({ phone: phone });
+      return true;
+    }
+  });
+
+  function copyText(text, btnElement, labelElement) {
+    navigator.clipboard.writeText(text).then(() => {
+      if (labelElement) {
+        const orig = labelElement.textContent;
+        labelElement.textContent = "Copied!";
+        setTimeout(() => {
+          labelElement.textContent = orig;
+        }, 1800);
+      } else if (btnElement) {
+        const orig = btnElement.textContent;
+        btnElement.textContent = "✓";
+        setTimeout(() => {
+          btnElement.textContent = orig;
+        }, 1500);
+      }
+    });
+  }
+
+  function escapeHtml(str) {
+    if (!str) return "";
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  function showStatus(text) {
+    statusText.textContent = text;
+    statusContainer.classList.remove("hidden");
+  }
+
+  function hideStatus() {
+    statusContainer.classList.add("hidden");
+  }
+
+  function showError(msg) {
+    errorText.textContent = msg;
+    errorContainer.classList.remove("hidden");
+  }
+
+  function hideError() {
+    errorContainer.classList.add("hidden");
+  }
+
+  function hideResults() {
+    resultsContainer.classList.add("hidden");
+  }
+
+  function setLoading(loading) {
+    // Keep phone input and search button enabled at all times so user can type or search a new number
+    phoneInput.disabled = false;
+    searchBtn.disabled = false;
+    if (loading) {
+      searchBtn.textContent = "Searching...";
+      searchBtn.style.opacity = "0.85";
+      if (currentLookupMode === "auto" && autoSpinner) {
+        autoSpinner.classList.remove("hidden");
+      }
+    } else {
+      searchBtn.textContent = "Search";
+      searchBtn.style.opacity = "1";
+      if (autoSpinner) {
+        autoSpinner.classList.add("hidden");
+      }
+      if (currentLookupMode === "auto" && lastAutoLookedUpPhone && autoFeedbackText) {
+        autoFeedbackText.textContent = `Auto-detected: ${lastAutoLookedUpPhone} · Ready`;
+      }
+    }
+  }
+
+  // ==========================================
+  // VEHICLE DISCOVERY AUTOMATION (Amica / Mercury)
+  // ==========================================
+  let activeVehicleSession = null;
+
+  function isPoBox(addrStr) {
+    if (!addrStr) return false;
+    const s = String(addrStr).toLowerCase().trim();
+    return /\b(p\.?\s*o\.?\s*box|post\s+office\s+box|\d+\s+po\s+box|po\s+box\s+\d+|box\s+\d+)\b/i.test(s) ||
+           /^\s*p\.?\s*o\.?\s*box\b/i.test(s) ||
+           /^\s*box\s+\d+/i.test(s) ||
+           /\bpobox\b/i.test(s);
+  }
+
+  function selectPhysicalAddressForVehicle(person) {
+    let chosen = person?.address || null;
+    const all = Array.isArray(person?.allAddresses) ? person.allAddresses : [];
+    if (!chosen && all.length > 0) {
+      chosen = all[0];
+    }
+
+    const getStreet = (a) => {
+      if (!a) return "";
+      if (typeof a === "string") return a;
+      return a.street || a.full || "";
+    };
+
+    const primaryStreet = getStreet(chosen);
+
+    // If primary address contains a PO Box, check the second, third, etc. address in allAddresses
+    if (isPoBox(primaryStreet) && all.length > 0) {
+      const nonPoBox = all.find(a => {
+        const st = getStreet(a);
+        return st && !isPoBox(st);
+      });
+      if (nonPoBox) {
+        console.log(`[Vehicle Lookup] Address "${primaryStreet}" is a PO Box. Using physical address:`, nonPoBox);
+        return { address: nonPoBox, skippedPoBox: true, originalPoBox: primaryStreet };
+      }
+    }
+
+    return { address: chosen, skippedPoBox: false, originalPoBox: "" };
+  }
+
+  function formatDobToSlash(str) {
+    if (!str) return "";
+    const s = String(str).trim();
+    if (/^\d{1,2}\/\d{1,2}\/\d{4}$/.test(s)) {
+      const parts = s.split("/");
+      return `${parts[0].padStart(2, "0")}/${parts[1].padStart(2, "0")}/${parts[2]}`;
+    }
+    const months = {
+      january: "01", february: "02", march: "03", april: "04", may: "05", june: "06",
+      july: "07", august: "08", september: "09", october: "10", november: "11", december: "12",
+      jan: "01", feb: "02", mar: "03", apr: "04", jun: "06", jul: "07", aug: "08", sep: "09", oct: "10", nov: "11", dec: "12"
+    };
+    const m = s.match(/([A-Za-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(19\d\d|20\d\d)/i);
+    if (m) {
+      const mo = months[m[1].toLowerCase()] || "06";
+      const da = m[2].padStart(2, "0");
+      return `${mo}/${da}/${m[3]}`;
+    }
+    const m2 = s.match(/([A-Za-z]+)\s+(19\d\d|20\d\d)/i);
+    if (m2) {
+      const mo = months[m2[1].toLowerCase()] || "06";
+      return `${mo}/15/${m2[2]}`;
+    }
+    const m3 = s.match(/\b(19\d\d|20\d\d)\b/);
+    if (m3) {
+      return `06/15/${m3[1]}`;
+    }
+    return "";
+  }
+
+  function extractProfileForVehicleLookup(person, phoneVal) {
+    const fullName = (person?.name || "").trim();
+    const nameParts = fullName.split(/\s+/).filter(Boolean);
+    let first = "Customer", middle = "", last = "User", suffix = "";
+
+    if (nameParts.length === 1) {
+      first = nameParts[0];
+      last = nameParts[0];
+    } else if (nameParts.length === 2) {
+      first = nameParts[0];
+      last = nameParts[1];
+    } else if (nameParts.length >= 3) {
+      first = nameParts[0];
+      const lastPart = nameParts[nameParts.length - 1];
+      if (["jr", "sr", "ii", "iii", "iv", "v"].includes(lastPart.toLowerCase().replace(/\./g, ""))) {
+        suffix = lastPart;
+        last = nameParts[nameParts.length - 2];
+        middle = nameParts.slice(1, nameParts.length - 2).join(" ");
+      } else {
+        middle = nameParts.slice(1, nameParts.length - 1).join(" ");
+        last = lastPart;
+      }
+    }
+
+    const resolved = selectPhysicalAddressForVehicle(person);
+    const chosenAddr = resolved.address || {};
+    let street = (chosenAddr?.street || (typeof chosenAddr === "string" ? chosenAddr : "")).trim();
+    let city = (chosenAddr?.city || "").trim();
+    let state = (chosenAddr?.state || "").trim();
+    let zip = (chosenAddr?.zip || "").trim();
+
+    if (!city && !state && chosenAddr?.full) {
+      const m = chosenAddr.full.match(/^(.*?)[,\n]+([^,\n]+)[,\n\s]+([A-Za-z]{2})(?:[,\s]+(\d{5}))?/);
+      if (m) {
+        if (!street) street = m[1].trim();
+        city = m[2].trim();
+        state = m[3].trim().toUpperCase();
+        if (m[4]) zip = m[4].trim();
+      } else if (!street) {
+        street = chosenAddr.full.trim();
+      }
+    }
+
+    const rawPhone = (phoneVal || phoneInput?.value || "").replace(/\D/g, "") || (person?.phone || person?.phoneNumber || "").replace(/\D/g, "") || "8172944402";
+
+    let dob = "08/15/1975";
+    if (person?.dob) {
+      const formatted = formatDobToSlash(person.dob);
+      if (formatted) dob = formatted;
+    } else if (person?.age) {
+      const yearMatch = person.age.match(/\b(19\d\d|20\d\d)\b/);
+      if (yearMatch) {
+        dob = `06/15/${yearMatch[1]}`;
+      }
+    }
+
+    const email = (Array.isArray(person?.emails) && person.emails.length > 0)
+      ? person.emails[0]
+      : (person?.email || "customer782@gmail.com");
+
+    return {
+      fullName,
+      name: { first, middle, last, suffix },
+      address: { street, unit: chosenAddr?.unit || "", city, state, zip },
+      allAddresses: person?.allAddresses || [],
+      skippedPoBox: resolved.skippedPoBox,
+      originalPoBox: resolved.originalPoBox,
+      phone: rawPhone,
+      dob,
+      email,
+      gender: "M"
+    };
+  }
+
+  function startVehicleAutomation(provider, person) {
+    const profile = extractProfileForVehicleLookup(person, phoneInput ? phoneInput.value : "");
+    activeVehicleSession = {
+      provider,
+      person,
+      profile,
+      vehicles: []
+    };
+
+    const providerTitle = provider === "amica" ? "Amica" : "Mercury";
+    const initMsg = profile.skippedPoBox
+      ? `Initializing ${providerTitle} (using ${profile.address.street})...`
+      : `Initializing ${providerTitle} vehicle lookup...`;
+
+    showVehicleProgress(provider, 15, initMsg);
+
+    chrome.runtime.sendMessage({
+      action: "START_VEHICLE_LOOKUP",
+      provider,
+      profile
+    }, (res) => {
+      if (res && !res.success) {
+        showVehicleProgress(provider, 100, `Error: ${res.error || "Failed to start"}`);
+      }
+    });
+  }
+
+  function cancelVehicleAutomation() {
+    chrome.runtime.sendMessage({ action: "CANCEL_VEHICLE_LOOKUP" }).catch(() => {});
+    hideVehicleProgress();
+    activeVehicleSession = null;
+  }
+
+  function showVehicleProgress(provider, pct, message, isWarning = false) {
+    const box = shadow.getElementById("card-vehicle-progress");
+    const tag = shadow.getElementById("vehicle-provider-tag");
+    const status = shadow.getElementById("vehicle-progress-status");
+    const fill = shadow.getElementById("vehicle-progress-fill");
+    const cancelBtn = shadow.getElementById("vehicle-cancel-btn");
+
+    if (!box) return;
+    box.classList.remove("hidden");
+    if (tag) tag.textContent = provider === "amica" ? "Amica" : (provider === "DOB" ? "DOB" : "Mercury");
+    if (status) status.textContent = message || "Processing...";
+    if (fill) {
+      fill.style.width = `${Math.min(100, Math.max(8, pct))}%`;
+      if (isWarning) {
+        fill.style.background = "linear-gradient(90deg, #f59e0b, #d97706)";
+      } else {
+        fill.style.background = "linear-gradient(90deg, #10b981, #059669)";
+      }
+    }
+    if (isWarning && cancelBtn) {
+      cancelBtn.classList.add("hidden");
+    } else if (cancelBtn) {
+      cancelBtn.classList.remove("hidden");
+    }
+  }
+
+  function hideVehicleProgress() {
+    const box = shadow.getElementById("card-vehicle-progress");
+    if (box) box.classList.add("hidden");
+  }
+
+  function renderEmptyVehicleNotice(provider, message) {
+    const box = shadow.getElementById("card-vehicle-results");
+    const countLabel = shadow.getElementById("vehicle-results-count-label");
+    const container = shadow.getElementById("vehicle-badges-container");
+    const copyAllVehiclesBtn = shadow.getElementById("copy-all-vehicles-btn");
+
+    if (!box || !container) return;
+    const providerName = provider === "amica" ? "Amica" : "Mercury";
+    const text = message || `No vehicle found on ${providerName}`;
+
+    if (countLabel) countLabel.textContent = `Vehicle Lookup (${providerName})`;
+    if (copyAllVehiclesBtn) copyAllVehiclesBtn.classList.add("hidden");
+
+    container.innerHTML = `
+      <div class="vehicle-empty-notice">
+        <span>⚠️</span>
+        <span>${escapeHtml(text)}</span>
+      </div>
+    `;
+
+    box.classList.remove("hidden");
+  }
+
+  function renderDiscoveredVehicles(vehicles) {
+    const box = shadow.getElementById("card-vehicle-results");
+    const countLabel = shadow.getElementById("vehicle-results-count-label");
+    const container = shadow.getElementById("vehicle-badges-container");
+    const copyAllVehiclesBtn = shadow.getElementById("copy-all-vehicles-btn");
+
+    if (!box || !container) return;
+
+    if (!vehicles || vehicles.length === 0) {
+      box.classList.add("hidden");
+      return;
+    }
+
+    if (copyAllVehiclesBtn) copyAllVehiclesBtn.classList.remove("hidden");
+    if (countLabel) countLabel.textContent = `Discovered Vehicles (${vehicles.length})`;
+
+    container.innerHTML = vehicles
+      .map(
+        (v) => `
+      <div class="vehicle-badge-item">
+        <span class="vehicle-badge-name">
+          <span>${escapeHtml(v)}</span>
+        </span>
+        <button class="mini-btn copy-single-vehicle" data-copy="${escapeHtml(v)}" type="button">Copy</button>
+      </div>
+    `
+      )
+      .join("");
+
+    container.querySelectorAll(".copy-single-vehicle").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        const text = e.currentTarget.getAttribute("data-copy");
+        if (text) copyText(text, e.currentTarget);
+      });
+    });
+
+    if (copyAllVehiclesBtn) {
+      copyAllVehiclesBtn.onclick = () => {
+        copyText(vehicles.join("\n"), copyAllVehiclesBtn);
+      };
+    }
+
+    box.classList.remove("hidden");
+  }
+
+  // "January 1954" / "January 1, 1954" is the placeholder Unmask shows when the real
+  // month and day are unknown (50/50), so the badge says so explicitly.
+  function isJanuaryPlaceholder(str) {
+    const s = String(str || "").trim();
+    return /^jan(uary)?\.?\s+(?:1(?:st)?,?\s+)?\d{4}$/i.test(s);
+  }
+
+  function dobSourceLabel(source) {
+    if (source === "unmask.com") return "Unmask";
+    if (source === "thatsthem.com") return "ThatSthem";
+    return source || "";
+  }
+
+  // DOB 1 (first source, possibly a placeholder / year-only value) and DOB 2 (the
+  // confirmed date) are shown side by side so both can be compared and copied.
+  function renderDiscoveredDob(info) {
+    const data = info || {};
+    const box = shadow.getElementById("card-dob-results");
+    const container = shadow.getElementById("dob-badges-container");
+
+    if (!box || !container) return;
+
+    const entries = [];
+    if (data.dob1) entries.push({ source: data.dob1Source || "", note: data.dob1Note || "", value: data.dob1 });
+    if (data.dob2) entries.push({ source: data.dob2Source || "", note: data.dob2Note || "", value: data.dob2 });
+
+    if (entries.length === 0) {
+      box.classList.add("hidden");
+      return;
+    }
+
+    container.innerHTML = entries
+      .map(
+        (entry) => `
+      <div class="dob-badge-item${entry.note ? " dob-badge-item--placeholder" : ""}">
+        <span class="dob-badge-name">
+          ${entry.source ? `<span class="dob-badge-source">${escapeHtml(dobSourceLabel(entry.source))}</span>` : ""}
+          <span class="dob-val-text">${escapeHtml(entry.value)}</span>
+          ${entry.note ? `<span class="dob-badge-note">${escapeHtml(entry.note)}</span>` : ""}
+        </span>
+        <button class="mini-btn copy-single-dob" data-copy="${escapeHtml(entry.value)}" type="button">Copy</button>
+      </div>`
+      )
+      .join("");
+
+    container.querySelectorAll(".copy-single-dob").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        const value = e.currentTarget.getAttribute("data-copy") || "";
+        copyText(value, e.currentTarget);
+      });
+    });
+
+    box.classList.remove("hidden");
+  }
+
+  function renderDiscoveredEmails(emails) {
+    const box = shadow.getElementById("card-email-results");
+    const container = shadow.getElementById("email-badges-container");
+
+    if (!box || !container) return;
+
+    if (!emails || emails.length === 0) {
+      box.classList.add("hidden");
+      return;
+    }
+
+    container.innerHTML = emails
+      .map(
+        (em) => `
+      <div class="email-badge-item">
+        <span class="email-badge-name" title="${escapeHtml(em)}">
+          <span class="email-val-text">${escapeHtml(em)}</span>
+        </span>
+        <button class="mini-btn copy-single-email" data-copy="${escapeHtml(em)}" type="button">Copy</button>
+      </div>
+    `
+      )
+      .join("");
+
+    container.querySelectorAll(".copy-single-email").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        const text = e.currentTarget.getAttribute("data-copy");
+        if (text) copyText(text, e.currentTarget);
+      });
+    });
+
+    box.classList.remove("hidden");
+  }
+
+  let activeDobSession = null;
+
+  function startDobAutomation(person) {
+    activeDobSession = { person };
+    showVehicleProgress("DOB", 15, `Searching Unmask for ${person.name || "person"}...`);
+
+    const phone = (phoneInput?.value || "").replace(/\D/g, "") || person?.phone || person?.phoneNumber || "";
+
+    chrome.runtime.sendMessage({
+      action: "START_DOB_LOOKUP",
+      person,
+      phone
+    }, (res) => {
+      if (res && !res.success) {
+        showVehicleProgress("DOB", 100, `Error: ${res.error || "Failed to start"}`, true);
+      }
+    });
+  }
+
+  function cancelDobAutomation() {
+    chrome.runtime.sendMessage({ action: "CANCEL_DOB_LOOKUP" }).catch(() => {});
+    hideVehicleProgress();
+    activeDobSession = null;
+  }
+
+  // Listen for vehicle & DOB discovery messages from background
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.action === "VEHICLE_LOOKUP_PROGRESS") {
+      const pct = Math.round((msg.step / msg.totalSteps) * 100);
+      showVehicleProgress(msg.provider, pct, msg.message);
+    } else if (msg.action === "VEHICLE_LOOKUP_EMPTY") {
+      const providerName = msg.provider === "amica" ? "Amica" : "Mercury";
+      const emptyMsg = msg.message || `No vehicle found on ${providerName}`;
+      showVehicleProgress(msg.provider, 100, emptyMsg, true);
+      renderEmptyVehicleNotice(msg.provider, emptyMsg);
+      setTimeout(() => {
+        hideVehicleProgress();
+      }, 4000);
+    } else if (msg.action === "VEHICLE_LOOKUP_SUCCESS") {
+      if (!msg.vehicles || msg.vehicles.length === 0) {
+        const providerName = msg.provider === "amica" ? "Amica" : "Mercury";
+        const emptyMsg = msg.message || `No vehicle found on ${providerName}`;
+        showVehicleProgress(msg.provider, 100, emptyMsg, true);
+        renderEmptyVehicleNotice(msg.provider, emptyMsg);
+        setTimeout(() => {
+          hideVehicleProgress();
+        }, 4000);
+        return;
+      }
+      showVehicleProgress(msg.provider, 100, `Vehicles discovered (${msg.vehicles.length})!`);
+      if (activeVehicleSession && activeVehicleSession.person) {
+        activeVehicleSession.person.vehicles = msg.vehicles;
+      }
+      renderDiscoveredVehicles(msg.vehicles);
+      copyText(msg.vehicles.join("\n"));
+      setTimeout(() => {
+        hideVehicleProgress();
+      }, 2500);
+      updateRawSummary();
+    } else if (msg.action === "VEHICLE_LOOKUP_ERROR") {
+      showVehicleProgress(msg.provider, 100, msg.error || "No vehicles discovered", true);
+      renderEmptyVehicleNotice(msg.provider, msg.error || "No vehicles discovered");
+      setTimeout(() => {
+        hideVehicleProgress();
+      }, 4000);
+    }
+
+    // DOB Messages from Unmask
+    if (msg.action === "DOB_LOOKUP_PROGRESS") {
+      const pct = Math.round((msg.step / msg.totalSteps) * 100);
+      showVehicleProgress("DOB", pct, msg.message);
+    } else if (msg.action === "DOB_LOOKUP_SUCCESS") {
+      const firstDob = msg.dob1 || (msg.dob2 ? "" : msg.dob);
+      const secondDob = msg.dob2 || "";
+      const bestDob = secondDob || firstDob || msg.dob;
+      const dob1Source = msg.dob1Source || msg.source || "unmask.com";
+      const dob1Note = msg.dob1Note || (msg.yearOnly ? "year only" : msg.placeholder ? "month/day unknown" : "");
+      const dob2Source = msg.dob2Source || (secondDob ? msg.source || "" : "");
+
+      if (activeDobSession && activeDobSession.person) {
+        if (firstDob) {
+          activeDobSession.person.dob1 = firstDob;
+          activeDobSession.person.dob1Source = dob1Source;
+          activeDobSession.person.dob1Note = dob1Note;
+        }
+        if (secondDob) {
+          activeDobSession.person.dob2 = secondDob;
+          activeDobSession.person.dob2Source = dob2Source;
+        }
+        activeDobSession.person.dob = bestDob;
+        if (msg.emails && msg.emails.length > 0) {
+          activeDobSession.person.emails = msg.emails;
+        }
+      }
+
+      renderDiscoveredDob({
+        dob1: firstDob,
+        dob1Source,
+        dob1Note,
+        dob2: secondDob,
+        dob2Source
+      });
+      if (msg.emails && msg.emails.length > 0) {
+        renderDiscoveredEmails(msg.emails);
+      }
+      copyText(bestDob);
+
+      if (msg.searchContinues) {
+        // Only a placeholder / year-only value so far - DOB 1 is already on screen and
+        // the run keeps looking for a fuller date.
+        showVehicleProgress("DOB", 60, `${dob1Source === "thatsthem.com" ? "ThatSthem" : "Unmask"} ${firstDob} - checking for a fuller date...`);
+      } else {
+        showVehicleProgress(
+          "DOB",
+          100,
+          secondDob
+            ? `DOB 1 (${dob1Source === "thatsthem.com" ? "ThatSthem" : "Unmask"}): ${firstDob}  •  DOB 2 (ThatSthem): ${secondDob}`
+            : `DOB discovered: ${msg.dob}!`
+        );
+        setTimeout(() => {
+          hideVehicleProgress();
+        }, 3000);
+      }
+      updateRawSummary();
+    } else if (msg.action === "DOB_LOOKUP_EMPTY") {
+      showVehicleProgress("DOB", 100, msg.message || "No DOB found on Unmask", true);
+      setTimeout(() => {
+        hideVehicleProgress();
+      }, 4000);
+    } else if (msg.action === "DOB_LOOKUP_ERROR") {
+      showVehicleProgress("DOB", 100, msg.error || "DOB lookup error", true);
+      setTimeout(() => {
+        hideVehicleProgress();
+      }, 4000);
+    }
+  });
+
+  // Settings & Calibration Sidebar Logic for In-Page Widget
+  function initWidgetSettingsSidebar() {
+    const settingsToggleBtn = shadow.getElementById("settings-toggle-btn");
+    const settingsSidebar = shadow.getElementById("settings-sidebar");
+    const closeSidebarBtn = shadow.getElementById("close-sidebar-btn");
+    const btnRecordUnmask = shadow.getElementById("btn-record-unmask");
+    const btnRecordThatsThem = shadow.getElementById("btn-record-thatsthem");
+
+    const recStatusDot = shadow.getElementById("rec-status-dot");
+    const recStatusTitle = shadow.getElementById("rec-status-title");
+    const recStatusSub = shadow.getElementById("rec-status-sub");
+
+    if (!settingsToggleBtn || !settingsSidebar) return;
+
+    // Each site owns one recording slot that can be re-recorded or deleted.
+    const MACRO_TARGETS = [
+      { key: "unmask", site: "Unmask.com", storageKey: "recorded_macro_unmask", defaultLabel: "Unmask Record" },
+      { key: "thatsthem", site: "ThatsThem.com", storageKey: "recorded_macro_thatsthem", defaultLabel: "ThatsThem Record" }
+    ];
+
+    function el(id) {
+      return shadow.getElementById(id);
+    }
+
+    function macroEls(key) {
+      return {
+        badge: el(`badge-macro-${key}`),
+        time: el(`time-macro-${key}`),
+        stats: el(`stats-macro-${key}`),
+        duration: el(`duration-macro-${key}`),
+        points: el(`points-macro-${key}`),
+        speed: el(`speed-macro-${key}`),
+        click: el(`click-macro-${key}`),
+        elem: el(`elem-macro-${key}`),
+        empty: el(`empty-macro-${key}`),
+        recordBtn: el(`btn-record-${key}`),
+        recordLabel: el(`label-record-${key}`),
+        deleteBtn: el(`btn-delete-${key}`)
+      };
+    }
+
+    function openSidebar() {
+      settingsSidebar.classList.remove("closed");
+      loadMacroStats();
+    }
+
+    function closeSidebar() {
+      settingsSidebar.classList.add("closed");
+    }
+
+    settingsToggleBtn.addEventListener("click", openSidebar);
+    if (closeSidebarBtn) closeSidebarBtn.addEventListener("click", closeSidebar);
+
+    function setStatus(state, title, subtitle) {
+      if (!recStatusDot || !recStatusTitle || !recStatusSub) return;
+      recStatusDot.className = "rec-status-indicator";
+      if (state === "recording") recStatusDot.classList.add("recording");
+      else if (state === "busy") recStatusDot.classList.add("busy");
+
+      recStatusTitle.textContent = title;
+      recStatusSub.textContent = subtitle;
+    }
+
+    function formatMacroTime(iso) {
+      try {
+        return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      } catch (e) {
+        return "Recent";
+      }
+    }
+
+    // Records saved before per-site slots existed only live in last_macro_recording.
+    function macroForTarget(store, target) {
+      const direct = store[target.storageKey];
+      if (direct && direct.path) return direct;
+      const legacy = store.last_macro_recording;
+      if (legacy && legacy.path && legacy.target === target.key) return legacy;
+      return null;
+    }
+
+    // One site card: stats when a macro is saved, empty state + hidden Delete otherwise.
+    function renderMacroCard(target, rec) {
+      const e = macroEls(target.key);
+      const hasRec = !!(rec && rec.path);
+
+      if (e.badge) {
+        e.badge.textContent = hasRec ? "Recorded" : "Not Recorded";
+        e.badge.classList.toggle("saved", hasRec);
+        e.badge.classList.toggle("empty", !hasRec);
+      }
+      if (e.time) e.time.textContent = hasRec ? formatMacroTime(rec.recordedAt) : "--";
+      if (e.stats) e.stats.classList.toggle("hidden", !hasRec);
+      if (e.empty) e.empty.classList.toggle("hidden", hasRec);
+      if (e.recordLabel) e.recordLabel.textContent = hasRec ? `${target.site} Re-record` : target.defaultLabel;
+      if (e.deleteBtn) {
+        e.deleteBtn.classList.toggle("hidden", !hasRec);
+        e.deleteBtn.disabled = false;
+        delete e.deleteBtn.dataset.armed;
+        const lbl = e.deleteBtn.querySelector("span");
+        if (lbl) lbl.textContent = "Delete";
+      }
+
+      if (!hasRec) return;
+
+      if (e.duration) e.duration.textContent = `${rec.durationMs || 0} ms`;
+      if (e.points) e.points.textContent = `${rec.pointCount || (rec.path && rec.path.length) || 0} pts`;
+      if (e.speed) e.speed.textContent = `${rec.avgSpeedPxPerSec || 0} px/s`;
+      if (e.click) {
+        const c = rec.click;
+        e.click.textContent = c ? `(${c.x}, ${c.y})` : "N/A";
+      }
+      if (e.elem) {
+        const c = rec.click;
+        if (c && c.targetTag) {
+          const idStr = c.targetId ? `#${c.targetId}` : "";
+          const classStr = c.targetClass ? `.${c.targetClass.trim().split(/\s+/)[0]}` : "";
+          e.elem.textContent = `<${c.targetTag.toLowerCase()}${idStr}${classStr}>`;
+          e.elem.title = `${c.targetTag} ${c.targetText ? `"${c.targetText}"` : ""}`;
+        } else {
+          e.elem.textContent = "None";
+          e.elem.title = "";
+        }
+      }
+    }
+
+    function loadMacroStats() {
+      const keys = ["last_macro_recording", "active_mouse_recording"].concat(MACRO_TARGETS.map((t) => t.storageKey));
+      chrome.storage.local.get(keys, (res) => {
+        const store = res || {};
+        const active = store.active_mouse_recording;
+        if (active && active.active) {
+          const targetName = active.target === "unmask" ? "Unmask.com" : "ThatsThem.com";
+          setStatus("recording", `Recording on ${targetName}...`, "Move cursor and click target element on the tab to finish.");
+        } else {
+          setStatus("ready", "Ready to Record", "Record a fresh macro, or delete an old one and record it again.");
+        }
+        MACRO_TARGETS.forEach((target) => renderMacroCard(target, macroForTarget(store, target)));
+      });
+    }
+
+    // First click arms the button, second click removes the saved macro.
+    async function deleteRecording(target) {
+      const e = macroEls(target.key);
+      const label = e.deleteBtn ? e.deleteBtn.querySelector("span") : null;
+
+      if (e.deleteBtn && e.deleteBtn.dataset.armed !== "1") {
+        e.deleteBtn.dataset.armed = "1";
+        if (label) label.textContent = "Confirm?";
+        setTimeout(() => {
+          if (e.deleteBtn && e.deleteBtn.dataset.armed === "1") {
+            delete e.deleteBtn.dataset.armed;
+            if (label) label.textContent = "Delete";
+          }
+        }, 3000);
+        return;
+      }
+
+      if (e.deleteBtn) {
+        delete e.deleteBtn.dataset.armed;
+        e.deleteBtn.disabled = true;
+      }
+
+      let deleteError = null;
+      try {
+        await chrome.runtime.sendMessage({ action: "DELETE_MOUSE_RECORDING", target: target.key });
+      } catch (err) {
+        console.error("Failed to delete recording:", err);
+        deleteError = err.message || "Could not delete the saved macro.";
+      }
+      // Refresh first: loadMacroStats() rewrites the status banner, so the result is set after it.
+      loadMacroStats();
+      setStatus(
+        "ready",
+        deleteError ? "Delete Failed" : `${target.site} recording deleted`,
+        deleteError || "Click the record button above to capture a fresh macro."
+      );
+    }
+
+    async function triggerRecording(target) {
+      const isUnmask = target === "unmask";
+      const targetName = isUnmask ? "Unmask.com" : "ThatsThem.com";
+      const btn = isUnmask ? btnRecordUnmask : btnRecordThatsThem;
+      const otherBtn = isUnmask ? btnRecordThatsThem : btnRecordUnmask;
+
+      if (btn) btn.classList.add("recording");
+      if (otherBtn) otherBtn.disabled = true;
+
+      setStatus("recording", `Recording on ${targetName}...`, "Tab opened. Move cursor & click anywhere on that tab to capture.");
+
+      try {
+        await chrome.runtime.sendMessage({
+          action: "START_MOUSE_RECORDING",
+          target: target
+        });
+      } catch (err) {
+        console.error("Failed to trigger recording:", err);
+        setStatus("ready", "Recording Failed", err.message || "Could not start recording session.");
+        if (btn) btn.classList.remove("recording");
+        if (otherBtn) otherBtn.disabled = false;
+      }
+    }
+
+    if (btnRecordUnmask) {
+      btnRecordUnmask.addEventListener("click", () => triggerRecording("unmask"));
+    }
+    if (btnRecordThatsThem) {
+      btnRecordThatsThem.addEventListener("click", () => triggerRecording("thatsthem"));
+    }
+
+    // Delete buttons on the recording cards
+    MACRO_TARGETS.forEach((target) => {
+      const deleteBtn = el(`btn-delete-${target.key}`);
+      if (deleteBtn) {
+        deleteBtn.addEventListener("click", () => deleteRecording(target));
+      }
+    });
+
+    // Listen for recording finished
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (msg.action === "MOUSE_RECORDING_SAVED") {
+        if (btnRecordUnmask) {
+          btnRecordUnmask.classList.remove("recording");
+          btnRecordUnmask.disabled = false;
+        }
+        if (btnRecordThatsThem) {
+          btnRecordThatsThem.classList.remove("recording");
+          btnRecordThatsThem.disabled = false;
+        }
+        const site = msg.target === "unmask" ? "Unmask.com" : "ThatsThem.com";
+        setStatus("ready", `Saved ${site} Macro!`, `Captured ${msg.result?.pointCount || 0} points & click at (${msg.result?.click?.x}, ${msg.result?.click?.y}).`);
+        loadMacroStats();
+      } else if (msg.action === "MOUSE_RECORDING_DELETED") {
+        loadMacroStats();
+        const site = msg.target === "unmask" ? "Unmask.com" : "ThatsThem.com";
+        setStatus("ready", `${site} recording deleted`, "Record a fresh macro whenever you are ready.");
+      } else if (msg.action === "MOUSE_RECORDING_CANCELLED") {
+        loadMacroStats();
+      }
+    });
+
+    loadMacroStats();
+  }
+
+  initWidgetSettingsSidebar();
+})();
