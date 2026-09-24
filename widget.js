@@ -878,6 +878,113 @@
       font-weight: 400;
     }
 
+    .address-title-actions {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .addr-nav {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      background: #f4f4f6;
+      border-radius: 6px;
+      padding: 2px 4px;
+    }
+
+    .addr-nav-btn {
+      background: #ffffff;
+      border: 1px solid rgba(0, 0, 0, 0.08);
+      border-radius: 4px;
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: #09090b;
+      padding: 0;
+      transition: all 0.15s ease;
+    }
+
+    .addr-nav-btn:hover {
+      background: #09090b;
+      color: #ffffff;
+      border-color: #09090b;
+    }
+
+    .addr-nav-counter {
+      font-size: 10px;
+      font-weight: 600;
+      color: #52525b;
+      min-width: 22px;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ZIP filter on the record navigation row */
+    .zip-filter-box {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .zip-filter-input {
+      width: 74px;
+      padding: 3px 6px;
+      font-family: 'Poppins', sans-serif;
+      font-size: 10.5px;
+      font-weight: 500;
+      letter-spacing: 0.4px;
+      color: #09090b;
+      background: #ffffff;
+      border: 1px solid #e4e4e7;
+      border-radius: 5px;
+      outline: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .zip-filter-input::placeholder {
+      color: #a1a1aa;
+      font-weight: 400;
+      letter-spacing: 0;
+    }
+
+    .zip-filter-input:focus {
+      border-color: #09090b;
+      box-shadow: 0 0 0 2px rgba(9, 9, 11, 0.08);
+    }
+
+    .zip-filter-clear {
+      background: #ffffff;
+      border: 1px solid #e4e4e7;
+      border-radius: 5px;
+      color: #52525b;
+      width: 18px;
+      height: 18px;
+      font-size: 10px;
+      line-height: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      padding: 0;
+      transition: all 0.15s ease;
+    }
+
+    .zip-filter-clear:hover {
+      background: #09090b;
+      color: #ffffff;
+      border-color: #09090b;
+    }
+
+    .zip-filter-note {
+      font-size: 11.5px;
+      color: #71717a;
+      padding: 6px 0 2px;
+    }
+
     /* Compliance Card */
     .compliance-grid {
       display: grid;
@@ -1890,6 +1997,8 @@
     hideResults();
     activeResults = [];
     recordsList.innerHTML = "";
+    // A new search starts unfiltered, so a ZIP left over from the last one cannot hide records.
+    setZipFilter("");
     if (verifiedPill) verifiedPill.classList.add("hidden");
     setLoading(true);
 
@@ -2177,6 +2286,195 @@
     return arePersonsEqual(p1, p2);
   }
 
+  // ---------------------------------------------------------------------------
+  // Record addresses
+  //
+  // A record normally carries more than one address: the primary one plus the history the
+  // sources returned. The card shows one at a time, and the chevrons next to the copy button
+  // step through them (the index is remembered on the person, so it survives re-renders).
+  // ---------------------------------------------------------------------------
+  function addressListForPerson(person) {
+    const list = [];
+    const seen = Object.create(null);
+
+    const add = (addr) => {
+      if (!addr) return;
+      const entry = {
+        street: String(addr.street || addr.full || "").trim(),
+        unit: String(addr.unit || "").trim(),
+        city: String(addr.city || "").trim(),
+        state: String(addr.state || "").trim(),
+        zip: String(addr.zip || "").trim()
+      };
+      if (!entry.street && !entry.city && !entry.zip) return;
+
+      const key = [entry.street, entry.unit, entry.city, entry.state, entry.zip]
+        .join("|")
+        .toLowerCase()
+        .replace(/[^a-z0-9|]/g, "");
+      if (seen[key]) return;
+      seen[key] = true;
+      list.push(entry);
+    };
+
+    add(person && person.address);
+    const history = Array.isArray(person && person.allAddresses) ? person.allAddresses : [];
+    history.forEach(add);
+    return list;
+  }
+
+  function clampAddressIndex(index, total) {
+    const value = Math.floor(Number(index));
+    if (!total || total < 1 || !isFinite(value)) return 0;
+    return Math.min(Math.max(0, value), total - 1);
+  }
+
+  // Wraps around, so both chevrons always do something.
+  function stepAddressIndex(index, total, delta) {
+    if (!total || total < 1) return 0;
+    const current = clampAddressIndex(index, total);
+    return (current + delta + total) % total;
+  }
+
+  function addressLabelForIndex(index, total) {
+    const position = clampAddressIndex(index, total || 1);
+    if (position <= 0) return "Primary address";
+    return "Address " + (position + 1);
+  }
+
+  // The two lines of the card, mirroring the fallbacks used when a source returns no street.
+  function addressLinesForOption(option) {
+    if (!option) return null;
+    const street = option.unit ? option.street + " " + option.unit : option.street;
+    const cityStateZip =
+      [option.city, option.state].filter(Boolean).join(", ") + (option.zip ? " " + option.zip : "");
+
+    if (street) return { street: street, city: cityStateZip };
+    if (cityStateZip) return { street: cityStateZip, city: option.zip ? "ZIP " + option.zip : "" };
+    return { street: "No address record found", city: "" };
+  }
+
+  // Chevron up / down on the right side of the address card, only when there is more than one.
+  function addressNavHtml(index, total) {
+    if (!total || total < 2) return "";
+    return `
+                <div class="addr-nav" role="group" aria-label="Address ${index + 1} of ${total}">
+                  <button class="addr-nav-btn addr-prev-address" type="button" title="Previous address" aria-label="Previous address">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>
+                  </button>
+                  <span class="addr-nav-counter">${index + 1}/${total}</span>
+                  <button class="addr-nav-btn addr-next-address" type="button" title="Next address" aria-label="Next address">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  </button>
+                </div>
+              `;
+  }
+
+  // ---------------------------------------------------------------------------
+  // ZIP filter on the record cards
+  //
+  // The navigation row of every record card carries a small 5 digit ZIP box: typing a ZIP shows
+  // only the people of that record whose addresses include it. The value is shared, so both
+  // record cards (infolookup.site and vibegenx.com) filter together and either box can clear it.
+  // ---------------------------------------------------------------------------
+  let zipFilterValue = "";
+  const zipFilterRepaints = []; // [{ element, repaint }]
+
+  function normalizeZipFilter(value) {
+    return String(value == null ? "" : value)
+      .replace(/\D/g, "")
+      .slice(0, 5);
+  }
+
+  // Only a complete ZIP filters - 1-4 digits are still being typed.
+  function activeZipFilter(value) {
+    const zip = normalizeZipFilter(value == null ? zipFilterValue : value);
+    return zip.length === 5 ? zip : "";
+  }
+
+  // A ZIP matches when a 5 digit run of the address carries those digits. House numbers are
+  // never 5 digits long, so "112 Comal Peak" can never pass for a ZIP.
+  function addressMatchesZip(address, filter) {
+    if (!address || !filter) return false;
+    const runs = [address.zip, address.full, address.street]
+      .filter(Boolean)
+      .join(" ")
+      .match(/\d{5}/g);
+    return !!runs && runs.some((zip) => zip.indexOf(filter) !== -1);
+  }
+
+  function personMatchesZipFilter(person, filter) {
+    if (!filter) return true;
+    return addressListForPerson(person).some((address) => addressMatchesZip(address, filter));
+  }
+
+  function filterPersonsByZip(persons, filter) {
+    const list = Array.isArray(persons) ? persons : [];
+    if (!filter) return list.slice();
+    return list.filter((person) => personMatchesZipFilter(person, filter));
+  }
+
+  // Applies a new filter to every record card on screen (stale cards are dropped).
+  function setZipFilter(value) {
+    zipFilterValue = normalizeZipFilter(value);
+    for (let i = zipFilterRepaints.length - 1; i >= 0; i--) {
+      const entry = zipFilterRepaints[i];
+      if (!entry || !entry.element || !entry.element.isConnected) {
+        zipFilterRepaints.splice(i, 1);
+        continue;
+      }
+      try {
+        entry.repaint();
+      } catch (e) {}
+    }
+  }
+
+  // The navigation row of a record card: record chevrons on the left, ZIP box on the right.
+  function recordNavRowHtml(index, total) {
+    return `
+        <div class="person-slide-header">
+          <div class="slide-counter-badge"${total > 1 ? "" : ' style="display:none;"'}>
+            <button class="slide-nav-btn prev-card-slide" title="Previous record" type="button">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
+            </button>
+            <span class="slide-counter-text">${index + 1} / ${total}</span>
+            <button class="slide-nav-btn next-card-slide" title="Next record" type="button">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
+            </button>
+          </div>
+          <div class="zip-filter-box">
+            <input class="zip-filter-input" type="text" inputmode="numeric" autocomplete="off" maxlength="5" placeholder="ZIP code" title="Show only the people whose address is in this ZIP" aria-label="Filter this record by ZIP code" value="${escapeHtml(zipFilterValue)}" />
+            <button class="zip-filter-clear${zipFilterValue ? "" : " hidden"}" type="button" title="Clear the ZIP filter" aria-label="Clear the ZIP filter">✕</button>
+          </div>
+        </div>
+      `;
+  }
+
+  // Keeps a rendered card's ZIP box in step with the shared filter (the input the user is
+  // typing in is left alone, so their keystrokes are never overwritten).
+  function syncZipFilterBox(container) {
+    if (!container) return;
+    const input = container.querySelector(".zip-filter-input");
+    const clear = container.querySelector(".zip-filter-clear");
+    const focused = shadow && shadow.activeElement ? shadow.activeElement : null;
+    if (input && input !== focused && input.value !== zipFilterValue) {
+      input.value = zipFilterValue;
+    }
+    if (clear) clear.classList.toggle("hidden", !zipFilterValue);
+  }
+
+  function zipFilterNoteHtml(index, source, hiddenCount) {
+    return `
+        <div class="card person-card">
+          <div class="record-header-tag">
+            <span>Record ${index} · ${escapeHtml(source)}</span>
+          </div>
+          ${recordNavRowHtml(0, 0)}
+          <div class="zip-filter-note">No address of this record is in ZIP ${escapeHtml(activeZipFilter())} - ${hiddenCount} ${hiddenCount === 1 ? "person" : "people"} hidden.</div>
+        </div>
+      `;
+  }
+
   // Render individual card block in order
   function renderResultCard(source, data, index) {
     const cardWrapper = document.createElement("div");
@@ -2190,12 +2488,14 @@
     const litigator = data.litigator || "Clean";
     const blacklist = data.blacklist || "Clean";
 
-    const personsList =
+    const allPersons =
       data.persons && data.persons.length > 0
         ? data.persons
         : data.person
           ? [data.person]
           : [];
+    // The ZIP box on the navigation row narrows this list down to the matching people.
+    let personsList = filterPersonsByZip(allPersons, activeZipFilter());
     let currentPersonIdx = 0;
 
     const personCardContainer = document.createElement("div");
@@ -2212,10 +2512,20 @@
         [p.address?.city, p.address?.state].filter(Boolean).join(", ") +
         (p.address?.zip ? ` ${p.address.zip}` : "");
 
+      // The card shows one of the record's addresses - the chevrons step through the rest.
+      const addrOptions = addressListForPerson(p);
+      const addrTotal = addrOptions.length;
+      const addrIdx = clampAddressIndex(p.addressIndex, addrTotal);
+      if (p.addressIndex !== addrIdx) p.addressIndex = addrIdx;
+      const addrLines = addressLinesForOption(addrOptions[addrIdx]);
+
       let streetDisplay = "";
       let cityDisplay = "";
 
-      if (p.address?.street) {
+      if (addrLines) {
+        streetDisplay = addrLines.street;
+        cityDisplay = addrLines.city;
+      } else if (p.address?.street) {
         streetDisplay = p.address.street;
         cityDisplay = cityStateZip;
       } else if (cityStateZip) {
@@ -2230,27 +2540,11 @@
       }
 
       const fullAddr =
-        p.address?.full ||
         [streetDisplay, cityDisplay].filter(Boolean).join(", ") ||
+        p.address?.full ||
         streetDisplay;
 
-      const slideNavHtml =
-        personsList.length > 1
-          ? `
-        <div class="person-slide-header">
-         
-          <div class="slide-counter-badge">
-            <button class="slide-nav-btn prev-card-slide" title="Previous record" type="button">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"></polyline></svg>
-            </button>
-            <span class="slide-counter-text">${pIdx + 1} / ${personsList.length}</span>
-            <button class="slide-nav-btn next-card-slide" title="Next record" type="button">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
-            </button>
-          </div>
-        </div>
-      `
-          : "";
+      const slideNavHtml = recordNavRowHtml(pIdx, personsList.length);
 
       personCardContainer.innerHTML = `
         <div class="card person-card">
@@ -2277,8 +2571,11 @@
 
           <div class="address-box">
             <div class="address-title-row">
-              <span class="sub-label">Primary address</span>
-              <button class="mini-btn copy-addr-action" data-copy="${escapeHtml(fullAddr)}" type="button">Copy</button>
+              <span class="sub-label">${escapeHtml(addressLabelForIndex(addrIdx, addrTotal))}</span>
+              <div class="address-title-actions">
+                <button class="mini-btn copy-addr-action" data-copy="${escapeHtml(fullAddr)}" type="button">Copy</button>
+                ${addressNavHtml(addrIdx, addrTotal)}
+              </div>
             </div>
             <div class="street-line">${escapeHtml(streetDisplay)}</div>
             ${cityDisplay ? `<div class="city-line">${escapeHtml(cityDisplay)}</div>` : ""}
@@ -2356,6 +2653,29 @@
           });
         });
 
+      // Step through the record's other addresses with the chevrons on the address card
+      const prevAddrBtn = personCardContainer.querySelector(".addr-prev-address");
+      const nextAddrBtn = personCardContainer.querySelector(".addr-next-address");
+      const stepAddress = (delta) => {
+        const total = addrOptions.length;
+        p.addressIndex = stepAddressIndex(p.addressIndex, total, delta);
+        updatePersonCardView(pIdx);
+      };
+
+      if (prevAddrBtn) {
+        prevAddrBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          stepAddress(-1);
+        });
+      }
+
+      if (nextAddrBtn) {
+        nextAddrBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          stepAddress(1);
+        });
+      }
+
       // Bind vehicle lookup buttons
       const amicaBtn = personCardContainer.querySelector(".amica-action-btn");
       const mercuryBtn = personCardContainer.querySelector(".mercury-action-btn");
@@ -2418,15 +2738,91 @@
         const emailBox = shadow.getElementById("card-email-results");
         if (emailBox) emailBox.classList.add("hidden");
       }
+
+      // The ZIP box travelled with the navigation row that was just rebuilt.
+      bindZipFilterBox();
+      syncZipFilterBox(personCardContainer);
     }
 
-    if (
-      personsList.length > 0 &&
-      (personsList[0].name || personsList[0].address)
-    ) {
-      updatePersonCardView(0);
+    // Keeps the caret in the ZIP box while the card is rebuilt on every keystroke.
+    function isZipInputFocused() {
+      const focused = shadow && shadow.activeElement ? shadow.activeElement : null;
+      return !!(focused && focused.classList && focused.classList.contains("zip-filter-input"));
+    }
+
+    function focusZipInput() {
+      const input = personCardContainer.querySelector(".zip-filter-input");
+      if (!input) return;
+      try {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      } catch (e) {}
+    }
+
+    function bindZipFilterBox() {
+      const input = personCardContainer.querySelector(".zip-filter-input");
+      if (input) {
+        input.addEventListener("input", (e) => {
+          e.stopPropagation();
+          setZipFilter(e.target.value);
+        });
+        input.addEventListener("click", (e) => e.stopPropagation());
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") e.preventDefault();
+        });
+      }
+
+      const clearBtn = personCardContainer.querySelector(".zip-filter-clear");
+      if (clearBtn) {
+        clearBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          setZipFilter("");
+          focusZipInput();
+        });
+      }
+    }
+
+    // Rebuilds the card for the current filter - either the filtered person or, when nothing of
+    // this record is in that ZIP, a note that says how many people are hidden.
+    function renderPersonSection() {
+      const wasTyping = isZipInputFocused();
+      const person = personsList[currentPersonIdx];
+
+      if (!person) {
+        personCardContainer.innerHTML = zipFilterNoteHtml(index, source, allPersons.length);
+        bindZipFilterBox();
+        syncZipFilterBox(personCardContainer);
+      } else {
+        updatePersonCardView(currentPersonIdx);
+      }
+
+      if (wasTyping) focusZipInput();
+    }
+
+    // The card is only worth showing when there is a person behind it, or when the note has to
+    // explain that the ZIP filter hid everyone.
+    function shouldShowPersonSection() {
+      const first = personsList[0];
+      if (first && (first.name || first.address)) return true;
+      return allPersons.length > 0 && personsList.length === 0;
+    }
+
+    if (shouldShowPersonSection()) {
+      renderPersonSection();
       cardWrapper.appendChild(personCardContainer);
     }
+
+    // Any ZIP box on screen filters every record card, so the two records stay in step.
+    zipFilterRepaints.push({
+      element: cardWrapper,
+      repaint: () => {
+        personsList = filterPersonsByZip(allPersons, activeZipFilter());
+        currentPersonIdx = 0;
+        if (!shouldShowPersonSection()) return;
+        renderPersonSection();
+        if (!personCardContainer.parentNode) cardWrapper.appendChild(personCardContainer);
+      }
+    });
 
     const dncBadgeClass = getBadgeClass(dnc);
     const litBadgeClass = getBadgeClass(litigator);

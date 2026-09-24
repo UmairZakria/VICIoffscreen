@@ -127,7 +127,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // DOB Lookup Actions (Unmask.com)
   if (request.action === 'START_DOB_LOOKUP') {
-    startDobLookup(request.person, request.phone, sendResponse);
+    startDobLookup(request.person, request.phone, sendResponse, sender);
     return true;
   }
   if (request.action === 'CANCEL_DOB_LOOKUP') {
@@ -157,15 +157,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   if (request.action === 'DOB_LOOKUP_EMPTY' || request.action === 'DOB_LOOKUP_ERROR') {
     broadcastDobMessage(request);
-    if (activeDobLookup && activeDobLookup.tabId) {
-      setTimeout(() => {
-        if (activeDobLookup && activeDobLookup.tabId) {
-          chrome.tabs.remove(activeDobLookup.tabId).catch(() => {});
-          activeDobLookup = null;
-        }
-      }, 1500);
-    }
-    chrome.storage.local.remove(['unmask_pending_lookup', THATSTHEM_STORAGE_KEY]).catch(() => {});
+    // Let the user read the last line, then hand their tab back to them.
+    endDobLookup(activeDobLookup && activeDobLookup.session, 1500);
   }
 
   // Mouse movement & click recording automation
@@ -215,6 +208,30 @@ chrome.tabs.onRemoved.addListener((tabId) => {
       }
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// Where the user came from
+//
+// A DOB run is started from the widget (a content script, so `sender.tab` names the page), from
+// the popup or from the standalone window - neither of the last two is a tab, so the last web
+// tab the user was on is remembered instead. That is the tab they are put back on when the run
+// ends, after they were taken to Unmask to watch a Cloudflare check being solved.
+// ---------------------------------------------------------------------------
+let lastUserTabId = null;
+
+function isWebPageUrl(url) {
+  return !!url && !/^(chrome|edge|about|devtools|chrome-extension|edge-extension|moz-extension):/i.test(url);
+}
+
+chrome.tabs.onActivated.addListener((info) => {
+  if (!info || !info.tabId) return;
+  chrome.tabs
+    .get(info.tabId)
+    .then((tab) => {
+      if (tab && isWebPageUrl(tab.url)) lastUserTabId = tab.id;
+    })
+    .catch(() => {});
 });
 
 function isPoBox(addrStr) {
@@ -988,7 +1005,75 @@ function normalizeAddressList(person) {
   return list;
 }
 
-async function startDobLookup(person, phone, sendResponse) {
+// The session of the run that is currently on screen - from memory while the worker lives,
+// from storage after it was restarted.
+async function storedDobSession() {
+  try {
+    const stored = await chrome.storage.local.get(['unmask_pending_lookup', THATSTHEM_STORAGE_KEY]);
+    return stored.unmask_pending_lookup || stored[THATSTHEM_STORAGE_KEY] || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// The tab a DOB run was started from. The widget hands its own tab over as `sender.tab`; the
+// popup and the standalone window are not tabs, so the last web tab the user was on is used.
+async function resolveCallerTabId(sender) {
+  if (sender && sender.tab && sender.tab.id) return sender.tab.id;
+  if (lastUserTabId) return lastUserTabId;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    const tab = tabs && tabs[0];
+    return tab && tab.id && isWebPageUrl(tab.url) ? tab.id : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Puts the user back on the tab the run was started from. This only happens while they are
+// still watching the lookup tab (it is the one on screen) - if they already moved on, their
+// choice wins and nothing is stolen from them.
+async function restoreCallerTab(session, lookupTabId) {
+  const callerTabId = (session && session.callerTabId) || lastUserTabId || null;
+  if (!callerTabId || !lookupTabId || callerTabId === lookupTabId) return false;
+
+  try {
+    const lookupTab = await chrome.tabs.get(lookupTabId).catch(() => null);
+    if (lookupTab && !lookupTab.active) return false;
+
+    const callerTab = await chrome.tabs.get(callerTabId).catch(() => null);
+    if (!callerTab) return false;
+
+    await chrome.tabs.update(callerTabId, { active: true });
+    if (callerTab.windowId !== undefined) {
+      await chrome.windows.update(callerTab.windowId, { focused: true }).catch(() => {});
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Ends a DOB run: the user is taken back to where they started, the lookup tab closes (after a
+// beat, so the final line stays readable) and the pending session is dropped.
+async function endDobLookup(session, delayMs) {
+  const pending = session || (await storedDobSession());
+  const lookupTabId = (activeDobLookup && activeDobLookup.tabId) || null;
+
+  if (lookupTabId) {
+    await restoreCallerTab(pending, lookupTabId);
+    setTimeout(() => {
+      if (activeDobLookup && activeDobLookup.tabId === lookupTabId) {
+        chrome.tabs.remove(lookupTabId).catch(() => {});
+        activeDobLookup = null;
+      }
+    }, Math.max(0, delayMs || 0));
+  }
+
+  chrome.storage.local.remove(['unmask_pending_lookup', THATSTHEM_STORAGE_KEY]).catch(() => {});
+}
+
+async function startDobLookup(person, phone, sendResponse, sender) {
   if (typeof phone === 'function') {
     sendResponse = phone;
     phone = null;
@@ -1071,6 +1156,10 @@ async function startDobLookup(person, phone, sendResponse) {
       addressIndex: 0,
       status: 'searching'
     };
+
+    // Where the user was when they started this run: they are taken to Unmask when a
+    // Cloudflare check appears, and put back on this tab once the run is over.
+    session.callerTabId = await resolveCallerTabId(sender);
 
     if (addresses.length === 0) {
       const phoneUrl = buildUnmaskUrlForPhone(rawPhone);
@@ -1525,23 +1614,12 @@ async function handleDobSuccess(msg, sender) {
 }
 
 function finishDobLookup() {
-  if (activeDobLookup && activeDobLookup.tabId) {
-    setTimeout(() => {
-      if (activeDobLookup && activeDobLookup.tabId) {
-        chrome.tabs.remove(activeDobLookup.tabId).catch(() => {});
-        activeDobLookup = null;
-      }
-    }, 1500);
-  }
-  chrome.storage.local.remove(['unmask_pending_lookup', THATSTHEM_STORAGE_KEY]).catch(() => {});
+  // Answer found: put the user back on the tab they started from, then close the lookup tab.
+  endDobLookup(activeDobLookup && activeDobLookup.session, 1500);
 }
 
 function cancelDobLookup(sendResponse) {
-  if (activeDobLookup && activeDobLookup.tabId) {
-    chrome.tabs.remove(activeDobLookup.tabId).catch(() => {});
-    activeDobLookup = null;
-  }
-  chrome.storage.local.remove(['unmask_pending_lookup', THATSTHEM_STORAGE_KEY]).catch(() => {});
+  endDobLookup(activeDobLookup && activeDobLookup.session, 0);
   if (sendResponse) sendResponse({ success: true });
 }
 

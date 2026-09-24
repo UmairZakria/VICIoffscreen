@@ -1065,7 +1065,7 @@
       challengeReplayInProgress: false,
       challengeClicks: 0,
       challengeLastClickAt: 0,
-      challengeFocusAsked: false,
+      challengeFocusSteps: 0,
       lastCalibratedCoords: null,
     };
 
@@ -1135,12 +1135,21 @@
           return;
         }
 
-        // A stubborn check gets a human nudge as well: surface the tab once, while the
-        // trusted clicks keep coming.
-        if (state.challengeClicks >= TRUSTED_CLICK_FOCUS_AFTER && !state.challengeFocusAsked) {
-          state.challengeFocusAsked = true;
+        // The user should be able to watch the check being solved: the lookup tab is brought to
+        // the front the moment the check appears, and once more if it survives a few clicks.
+        // The trusted clicks keep landing on the widget either way - surfacing the tab only
+        // makes them visible.
+        var focusStep = state.challengeClicks >= TRUSTED_CLICK_FOCUS_AFTER ? 2 : 1;
+        if ((state.challengeFocusSteps || 0) < focusStep) {
+          state.challengeFocusSteps = focusStep;
           focusThisTab();
-          sendProgress(1, 4, "Security check is still up - retrying the click; please click Turnstile in the Unmask tab too...");
+          sendProgress(
+            1,
+            4,
+            focusStep === 1
+              ? "Security check on Unmask - bringing the tab forward to solve it here..."
+              : "Unmask is still checking - retrying the click here, please hold..."
+          );
           return;
         }
 
@@ -1152,7 +1161,7 @@
         state.challengeDetectedAt = 0;
         state.challengeClicks = 0;
         state.challengeLastClickAt = 0;
-        state.challengeFocusAsked = false;
+        state.challengeFocusSteps = 0;
         state.startedAt = Date.now();
         sendProgress(2, 4, "Security check passed. Reading Unmask results...");
       }

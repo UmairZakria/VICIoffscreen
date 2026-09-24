@@ -176,7 +176,8 @@ function makeTimeline(spec) {
     challengeReplayInProgress: false,
     challengeClicks: 0,
     challengeLastClickAt: 0,
-    challengeFocusAsked: false,
+    challengeFocusSteps: 0,
+    focusSteps: 0,
     lastCalibratedCoords: null
   };
   const clock = { now: 1000 };
@@ -465,6 +466,7 @@ console.log('\n== trusted click pacing ==\n');
 
     await t.advanceTo(1000); // the tick that detects the check
     check(`${L}: no click while the widget is still rendering`, t.calls.clicks.length, 0);
+    check(`${L}: the lookup tab is surfaced as soon as the check is detected`, t.calls.focus, 1);
 
     await t.advanceTo(1700); // +700ms, just past the settle delay
     check(`${L}: first trusted click after the settle delay`, t.calls.clicks.length, 1);
@@ -472,7 +474,7 @@ console.log('\n== trusted click pacing ==\n');
 
     await t.advanceTo(1700 + GAP - 200);
     check(`${L}: no duplicate click inside the gap`, t.calls.clicks.length, 1);
-    check(`${L}: too early to surface the tab`, t.calls.focus, 0);
+    check(`${L}: the tab is not surfaced repeatedly on every tick`, t.calls.focus, 1);
 
     // The check is still up, so the click is played again - and again.
     for (let attempt = 2; attempt <= 3; attempt++) {
@@ -485,14 +487,14 @@ console.log('\n== trusted click pacing ==\n');
       );
     }
 
-    // A tick inside the gap: no click, but the tab is brought forward once.
+    // A tick inside the gap: no click, but the tab is brought forward a second time.
     await t.advanceTo(t.clockNow() + 200);
     check(`${L}: no extra click inside the gap`, t.calls.clicks.length, 3);
-    check(`${L}: the tab is surfaced after three attempts`, t.calls.focus, 1);
+    check(`${L}: the lookup tab is surfaced again after three attempts`, t.calls.focus, 2);
 
     await t.advanceTo(t.clockNow() + GAP + 100);
     check(`${L}: clicking continues after the tab was surfaced`, t.calls.clicks.length, 4);
-    check(`${L}: the tab is not surfaced twice`, t.calls.focus, 1);
+    check(`${L}: the tab is not surfaced again`, t.calls.focus, 2);
     check(`${L}: the attempts are counted`, t.state.challengeClicks, 4);
     check(`${L}: the run does not move on while the check is up`, t.calls.advance + t.calls.next, 0);
 
@@ -500,13 +502,17 @@ console.log('\n== trusted click pacing ==\n');
     t.setChallenge(false);
     await t.advanceTo(t.clockNow() + GAP * 4);
     check(`${L}: no clicks once the check page is gone`, t.calls.clicks.length, 4);
-    check(`${L}: the tab is not surfaced again`, t.calls.focus, 1);
+    check(`${L}: the tab is not surfaced again`, t.calls.focus, 2);
 
     if (spec.resetsInBranch) {
       check(
         `${L}: the challenge state is reset when the check clears`,
-        [t.state.challengeClicks, t.state.challengeDetectedAt, t.state.challengeFocusAsked],
-        [0, 0, false]
+        [
+          t.state.challengeClicks,
+          t.state.challengeDetectedAt,
+          spec.label === 'Unmask' ? t.state.challengeFocusSteps : t.state.focusSteps
+        ],
+        [0, 0, 0]
       );
     } else {
       check(`${L}: the branch leaves the counters alone`, t.state.challengeClicks, 4);

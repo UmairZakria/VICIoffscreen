@@ -65,7 +65,7 @@ instead of waiting for cards. When every fallback is exhausted the user is told 
 *"No DOB found on Unmask (searched …)"*.
 
 Regression harnesses: `node scratch/dob_engine_test.js`, `node scratch/unmask_modal_test.js`,
-`node scratch/trusted_click_test.js`
+`node scratch/trusted_click_test.js`, `node scratch/dob_return_tab_test.js`
 
 ## Full Address Completion (vibegenx.com records)
 
@@ -151,16 +151,38 @@ removed from both content scripts — a security check is now handled by the **t
    `Input.dispatchMouseEvent` (`mouseMoved` → `mousePressed` → `mouseReleased`): a real,
    OS-level click. A blue ripple marks the point that was clicked - it is cosmetic and
    dispatches no events.
-4. **The click is repeated until the check is gone** — one click every **3 s**
+4. **The lookup tab is brought to the front the moment the check is detected** — the solve is
+   meant to be watched — and once more if it survives a few attempts.
+5. **The click is repeated until the check is gone** — one click every **3 s**
    (`TRUSTED_CLICK_GAP_MS`), each one measured again, because the widget re-renders (and can
-   move) after every attempt and the first click often lands while it is still loading. After
-   **3** attempts the tab is also brought to the front once, so a stubborn check can be
-   finished by hand, and the clicking continues — up to **30** attempts (~90 s), which is the
-   same budget the run's own timeout uses (Unmask then tries the next address, ThatSthem moves
-   to the next step). The moment the challenge page disappears nothing is clicked any more.
+   move) after every attempt and the first click often lands while it is still loading. The
+   clicking continues — up to **30** attempts (~90 s), which is the same budget the run's own
+   timeout uses (Unmask then tries the next address, ThatSthem moves to the next step). The
+   moment the challenge page disappears nothing is clicked any more.
 
 Recording a macro is therefore about **where the click goes**, not about replaying movement:
 the waypoints/speed on a card are just the capture's footprint.
+
+## Unmask / ThatSthem: the tab hand-off
+
+A DOB run opens its own **background** tab, so the user must never be left staring at a tab
+that is closing itself. The tab is handed back and forth:
+
+| Moment | What happens |
+|---|---|
+| A Cloudflare / browser check appears | the lookup tab is activated and its window focused (`FOCUS_LOOKUP_TAB`), so the check can be watched while the extension clicks it |
+| The check clears | Unmask keeps running the DOB search in that same tab — the user keeps watching |
+| The run ends (DOB found, nothing found, error, cancel) | the tab the run was started from is activated again; the final line stays readable for **1.5 s**, then the lookup tab closes |
+
+The return target is fixed when the run starts: the widget hands over its own page
+(`sender.tab`), while the popup and the standalone window are not tabs at all, so
+`chrome.tabs.onActivated` remembers the **last web tab** the user was on (`chrome://`,
+`chrome-extension://` and `about:` pages are ignored). The hand-off is polite: the caller tab is
+only activated while the lookup tab is still the one on screen — if the user already moved on,
+their choice wins and nothing is stolen from them. The target is part of the stored session
+(`unmask_pending_lookup`), so a restarted service worker can still finish the hand-off.
+
+Regression harness: `node scratch/dob_return_tab_test.js`
 
 ## Speed: how fast each step reacts
 
@@ -254,6 +276,65 @@ its source answers:
   (*"Completed (infolookup.site) - vibegenx.com failed"*).
 * Identical records from both sites are still collapsed into one card with the
   *"✓ Verified Match Across Both Sites"* badge.
+
+## The record's addresses on the card
+
+A record normally carries more than one address: the primary one plus the history the sources
+returned. The address card shows **one at a time**, and the chevrons on its right side (next to
+the copy button) step through the rest:
+
+```
+Primary address          [Copy] [ ▲ 1/3 ▼ ]        Address 2            [Copy] [ ▲ 1/3 ▼ ]
+112 Comal Peak                                     9800 Folcik St
+Bulverde, Texas 78163                              San Antonio, Texas 78250
+```
+
+* The label follows the selection: **Primary address** for the first entry, **Address 2**,
+  **Address 3**, … with an `n/total` counter between the chevrons.
+* Both chevrons **wrap around**, so stepping past the last address returns to the primary one.
+* **Copy always copies the address on screen**, not the primary one, so a different street can
+  be grabbed in one click.
+* The list is built from `person.address` (primary) followed by `person.allAddresses`,
+  deduplicated (casing/punctuation variants count as the same address). Entries without a
+  street still show their city/state/zip, a unit is appended to the street
+  (*"21 Rainbow Dr Apt 4"*), and **PO boxes are listed too** - they are only skipped when a
+  quote form is filled in.
+* A record with a **single address shows no chevrons at all**, and the chosen index is kept on
+  the person object, so it survives the widget's re-renders (progress updates, vehicle/DOB
+  results, record switching).
+
+Regression harness: `node scratch/address_card_test.js`
+
+## Filtering the record cards by ZIP
+
+Both record cards — **Record 1 · infolookup.site** and **Record 1 · vibegenx.com** — carry a small
+**5 digit ZIP box** on their navigation row: the record chevrons stay on the left, the box sits at
+the right end of the same row.
+
+```
+[ ‹  1 / 3  › ]  · · · · · · · · · · · · · · · · · · · · · · ·   [ ZIP code ]  ✕
+      ^ person chevrons                       (one row per record card)     ^ the new box
+```
+
+* Typing a ZIP shows **only the people of that record whose addresses include it**: the primary
+  address *and* every history address are checked, so somebody is kept when **any** of their
+  addresses carries the ZIP. A `78163-4402` ZIP+4 matches `78163`, and a ZIP written inside a
+  one-line address is found as well.
+* A **partial ZIP (1–4 digits) does not filter** — the list is only narrowed once five digits are
+  in, so the card never jumps around while typing (the box accepts digits only, `maxlength=5`).
+* The value is **shared**: a ZIP typed into either box filters **both** record cards, and the two
+  boxes mirror each other. The `✕` button appears as soon as there is a ZIP and clears it from any
+  card, giving the person list straight back.
+* When a record has nobody in that ZIP it stays on screen with
+  *"No address of this record is in ZIP 90210 — 3 people hidden"*, so the record's compliance
+  badges are never lost and the box is still there to undo the filter.
+* A record with a **single person still shows the box**; only the `1/1` chevrons are hidden.
+* The caret stays in the box while the card is re-rendered on each keystroke, and clicking the box
+  never triggers the card behind it.
+* A **new search starts unfiltered**, so a ZIP from the previous lookup cannot hide the new
+  records.
+
+Regression harness: `node scratch/zip_filter_test.js`
 
 ## Settings & Calibration: managing cursor macros
 

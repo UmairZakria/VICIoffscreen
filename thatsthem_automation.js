@@ -926,7 +926,7 @@
       cardsSignature: "",
       reportedWeak: false,
       checkedAt: 0,
-      focusAsked: false,
+      focusSteps: 0,
       challengeReplayInProgress: false,
       challengeClicks: 0,
       challengeLastClickAt: 0,
@@ -1038,12 +1038,21 @@
           return;
         }
 
-        // A stubborn check gets a human nudge as well: surface the tab once, while the
-        // trusted clicks keep coming.
-        if (state.challengeClicks >= TRUSTED_CLICK_FOCUS_AFTER && !state.focusAsked) {
-          state.focusAsked = true;
+        // The user should be able to watch the check being solved: the lookup tab is brought to
+        // the front the moment the check appears, and once more if it survives a few clicks.
+        // The trusted clicks keep landing on the widget either way - surfacing the tab only
+        // makes them visible.
+        var focusStep = state.challengeClicks >= TRUSTED_CLICK_FOCUS_AFTER ? 2 : 1;
+        if ((state.focusSteps || 0) < focusStep) {
+          state.focusSteps = focusStep;
           focusThisTab();
-          sendProgress(5, 6, "ThatSthem is still asking for the check - retrying the click; please confirm it in its tab too...");
+          sendProgress(
+            5,
+            6,
+            focusStep === 1
+              ? "ThatSthem asks for a check - bringing the tab forward to solve it here..."
+              : "ThatSthem is still checking - retrying the click here, please hold..."
+          );
           return;
         }
 
@@ -1058,7 +1067,7 @@
         state.checkedAt = 0;
         state.challengeClicks = 0;
         state.challengeLastClickAt = 0;
-        state.focusAsked = false;
+        state.focusSteps = 0;
         state.cardsSeenAt = 0;
         state.startedAt = Date.now();
         sendProgress(5, 6, "Browser verification passed - reading ThatSthem results...");
