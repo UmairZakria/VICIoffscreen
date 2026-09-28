@@ -1,4 +1,4 @@
-// Content Script injected into https://vibegenx.com/infolookup AND https://infolookup.site/
+// Content Script injected into https://infolookupp.com/ AND https://infolookup.site/
 // Runs concurrently inside persistent headless background iframes
 
 (function () {
@@ -9,7 +9,21 @@
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
   const host = window.location.hostname.toLowerCase();
-  const sourceName = host.includes('infolookup') ? 'infolookup.site' : 'vibegenx.com';
+
+  // The host decides which search flow runs, and both flows report under the name of the site
+  // they scraped - that name is the record key the widget hangs its card, ZIP filter and DOB run
+  // on, so it has to match the key the background dispatches with (`worker-<source>`).
+  //
+  // The match is by exact host on purpose: `infolookupp.com` contains the string "infolookup",
+  // so the old `host.includes('infolookup') ? 'infolookup.site' : 'vibegenx.com'` classified the
+  // second source as infolookup.site and ran the wrong flow, with the wrong selectors, against it.
+  const SOURCE_BY_HOST = {
+    'infolookup.site': 'infolookup.site',
+    'www.infolookup.site': 'infolookup.site',
+    'infolookupp.com': 'infolookupp.com',
+    'www.infolookupp.com': 'infolookupp.com'
+  };
+  const sourceName = SOURCE_BY_HOST[host] || 'infolookup.site';
 
   let port = null;
   let activeSearchId = null;
@@ -24,7 +38,7 @@
           if (sourceName === 'infolookup.site') {
             await executeInfolookupSearch(msg.phone, msg.searchId);
           } else {
-            await executeVibegenxSearch(msg.phone, msg.searchId);
+            await executeInfolookuppSearch(msg.phone, msg.searchId);
           }
         }
       });
@@ -41,6 +55,121 @@
   }
 
   connectPort();
+
+  /* ═══════════════════════════════════════════════════════
+     INFOLOOKUP.SITE HELPERS
+  ═══════════════════════════════════════════════════════ */
+
+  // infolookup.site refuses to look the same number up twice and shows
+  // "This number was just searched. Please try a different number."
+  //
+  // The check is `phoneRaw === lastSearchedNumber`, where the site declares
+  // `let lastSearchedNumber = ''` at the top level of a classic <script>. That binding lives in the
+  // page's global *lexical* environment, so `window.lastSearchedNumber = ''` only creates a stray
+  // property on the window object and never touches the real variable. Injected <script> elements
+  // run in the page's main world, where a bare assignment resolves the real binding.
+  // Returns true when the site's guard variable was actually reset.
+  function resetInfolookupDuplicateGuard() {
+    const marker = 'data-dnc-guard-reset';
+    try {
+      document.documentElement.removeAttribute(marker);
+    } catch (e) {}
+
+    try {
+      const resetScript = document.createElement('script');
+      resetScript.textContent =
+        '(function(){' +
+        'var ok=false;' +
+        'try{ lastSearchedNumber = ""; ok = (lastSearchedNumber === ""); }catch(e){}' +
+        'if(!ok){ try{ eval("lastSearchedNumber = \\"\\""); ok = (lastSearchedNumber === ""); }catch(e){} }' +
+        'try{ document.documentElement.setAttribute("' + marker + '", ok ? "1" : "0"); }catch(e){}' +
+        '})();';
+      document.documentElement.appendChild(resetScript);
+      resetScript.remove();
+    } catch (e) {}
+
+    return document.documentElement.getAttribute(marker) === '1';
+  }
+
+  // Wipes the rendered result so a fresh lookup can't be confused with stale data.
+  function clearInfolookupResultsDom() {
+    try {
+      const dnc = document.getElementById('dncStatus');
+      if (dnc) dnc.textContent = '—';
+      const lit = document.getElementById('litigator');
+      if (lit) lit.textContent = '—';
+      const black = document.getElementById('blacklist');
+      if (black) black.textContent = '—';
+      const list = document.getElementById('personInfoListContainer');
+      if (list) list.innerHTML = '';
+      const errorDiv = document.getElementById('error');
+      if (errorDiv) {
+        errorDiv.style.display = 'none';
+        const errorMsg = document.getElementById('errorMessage');
+        if (errorMsg) errorMsg.textContent = '';
+      }
+    } catch (e) {}
+  }
+
+  // Reads whatever result infolookup.site currently has rendered.
+  // `ready` is false while the compliance cells are still loading.
+  function readInfolookupDomState() {
+    const dncEl = document.getElementById('dncStatus');
+    const litEl = document.getElementById('litigator');
+    const blackEl = document.getElementById('blacklist');
+
+    const dncText = dncEl ? dncEl.textContent.trim() : '';
+    const litText = litEl ? litEl.textContent.trim() : '';
+    const blackText = blackEl ? blackEl.textContent.trim() : '';
+
+    const isLoading = (el, txt) =>
+      !txt || txt === '—' || txt.toLowerCase().includes('load') || !!el?.querySelector('.loading-indicator');
+
+    const complianceReady = !isLoading(dncEl, dncText) && !isLoading(litEl, litText) && !isLoading(blackEl, blackText);
+
+    let personReady = false;
+    let persons = [];
+    const listContainer = document.getElementById('personInfoListContainer');
+    const firstSection = listContainer?.querySelector('.section') || listContainer?.querySelector('.person-info');
+    const personNameEl = firstSection?.querySelector('.person-name');
+    const personNameText = personNameEl ? personNameEl.textContent.trim() : '';
+    if (personNameText && !personNameText.toLowerCase().includes('load')) {
+      personReady = true;
+      const lowerName = personNameText.toLowerCase();
+      persons = lowerName.includes('no result') || lowerName.includes('no owner')
+        ? []
+        : extractInfolookupSitePersons();
+    }
+
+    return {
+      ready: complianceReady,
+      personReady,
+      persons,
+      compliance: complianceReady
+        ? {
+            dnc: formatInfolookupComplianceValue(cleanText(dncText)),
+            litigator: formatInfolookupComplianceValue(cleanText(litText)),
+            blacklist: formatInfolookupComplianceValue(cleanText(blackText))
+          }
+        : null
+    };
+  }
+
+  function postInfolookupResult(searchId, compliance, persons) {
+    if (!port) return;
+    const list = persons || [];
+    port.postMessage({
+      action: 'SEARCH_RESULT',
+      searchId: searchId,
+      source: 'infolookup.site',
+      data: {
+        ...compliance,
+        persons: list,
+        person: list[0] || null
+      }
+    });
+  }
+
 
   /* ═══════════════════════════════════════════════════════
      SOURCE 1: INFOLOOKUP.SITE FAST SEARCH (NO RELOAD)
@@ -68,42 +197,22 @@
       return;
     }
 
-    // Reset infolookup.site's consecutive search restriction (allows searching the same number repeatedly)
-    try {
-      const resetScript = document.createElement('script');
-      resetScript.textContent = 'window.lastSearchedNumber = "";';
-      document.documentElement.appendChild(resetScript);
-      resetScript.remove();
-    } catch (e) {}
+    // infolookup.site blocks searching the same number twice ("This number was just searched"),
+    // so clear that guard first — otherwise repeat lookups abort before any data is rendered.
+    const guardCleared = resetInfolookupDuplicateGuard();
 
-    // Clear previous results in DOM before executing new search to avoid reading stale data
-    try {
-      const oldDnc = document.getElementById('dncStatus');
-      if (oldDnc) oldDnc.textContent = '—';
-      const oldLit = document.getElementById('litigator');
-      if (oldLit) oldLit.textContent = '—';
-      const oldBlack = document.getElementById('blacklist');
-      if (oldBlack) oldBlack.textContent = '—';
-      const oldList = document.getElementById('personInfoListContainer');
-      if (oldList) oldList.innerHTML = '';
-    } catch (e) {}
+    // Clear previous results in DOM before executing new search to avoid reading stale data.
+    // This is only safe when the guard was cleared, because that guarantees a fresh lookup will run
+    // and repopulate the DOM. If the guard could not be cleared we deliberately leave the DOM intact
+    // so the duplicate-search fallback further down still has the site's own data to read.
+    if (guardCleared) {
+      clearInfolookupResultsDom();
+    }
 
     // 1. Enter phone number
     const cleanDigits = phone.replace(/\D/g, '');
-    phoneInput.focus();
-    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
-    if (nativeSetter) {
-      nativeSetter.call(phoneInput, cleanDigits);
-    } else {
-      phoneInput.value = cleanDigits;
-    }
-    phoneInput.dispatchEvent(new Event('input', { bubbles: true }));
-    phoneInput.dispatchEvent(new Event('change', { bubbles: true }));
-    phoneInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
 
-    await sleep(60);
-
-    // 2. Find and click #searchButton
+    // 2. Find the search button
     const searchBtn = document.getElementById('searchButton') || document.querySelector('button#searchButton');
     if (!searchBtn) {
       if (port) {
@@ -117,20 +226,36 @@
       return;
     }
 
-    try {
-      phoneInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
-    } catch (e) {}
-    searchBtn.click();
+    // Fills the input and triggers the site's own search handler.
+    // Reusable so a retry after a duplicate-guard hit can re-submit the same number.
+    function submitSearch() {
+      phoneInput.focus();
+      const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+      if (nativeSetter) {
+        nativeSetter.call(phoneInput, cleanDigits);
+      } else {
+        phoneInput.value = cleanDigits;
+      }
+      phoneInput.dispatchEvent(new Event('input', { bubbles: true }));
+      phoneInput.dispatchEvent(new Event('change', { bubbles: true }));
+      phoneInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+
+      try {
+        phoneInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+      } catch (e) {}
+      searchBtn.click();
+    }
+
+    await sleep(60);
+    submitSearch();
 
     // 3. Fast-poll for new results (100ms interval for sub-second capture)
     const searchStart = Date.now();
     const maxWaitResults = 12000;
     let compliance = null;
-    let person = null;
     let complianceReady = false;
     let complianceReadyTime = null;
-
-    await sleep(80);
+    let duplicateRetries = 0;
 
     while (Date.now() - searchStart < maxWaitResults) {
       if (activeSearchId !== searchId) return; // Discard if user triggered a newer search
@@ -140,7 +265,30 @@
       const errorMsg = document.getElementById('errorMessage');
       if (errorDiv && errorDiv.style.display !== 'none') {
         const errText = errorMsg?.textContent.trim() || errorDiv.textContent.trim();
-        if (errText && !errText.toLowerCase().includes('looking up')) {
+        const errLower = errText ? errText.toLowerCase() : '';
+        if (errText && !errLower.includes('looking up')) {
+          if (errLower.includes('just searched')) {
+            // Duplicate-search guard tripped. The site aborts the new lookup but deliberately keeps
+            // #resultsContainer visible, so the data for this exact number is still on screen.
+            if (guardCleared) {
+              // A fresh lookup was expected, so the DOM is empty — force the guard off and retry once.
+              if (duplicateRetries === 0) {
+                duplicateRetries++;
+                resetInfolookupDuplicateGuard();
+                clearInfolookupResultsDom();
+                submitSearch();
+                continue;
+              }
+            } else {
+              // The guard could not be cleared, but the result left on screen is this number's result.
+              const dupState = readInfolookupDomState();
+              if (dupState.ready) {
+                postInfolookupResult(searchId, dupState.compliance, dupState.persons);
+                return;
+              }
+            }
+          }
+
           if (port) {
             port.postMessage({
               action: 'SEARCH_RESULT',
@@ -153,65 +301,24 @@
         }
       }
 
-      // Check compliance stats
-      const dncEl = document.getElementById('dncStatus');
-      const litEl = document.getElementById('litigator');
-      const blackEl = document.getElementById('blacklist');
+      // Check compliance stats + person information
+      const state = readInfolookupDomState();
 
-      const dncText = dncEl ? dncEl.textContent.trim() : '';
-      const litText = litEl ? litEl.textContent.trim() : '';
-      const blackText = blackEl ? blackEl.textContent.trim() : '';
-
-      const dncLoading = !dncText || dncText === '—' || dncText.toLowerCase().includes('load') || !!dncEl?.querySelector('.loading-indicator');
-      const litLoading = !litText || litText === '—' || litText.toLowerCase().includes('load') || !!litEl?.querySelector('.loading-indicator');
-      const blackLoading = !blackText || blackText === '—' || blackText.toLowerCase().includes('load') || !!blackEl?.querySelector('.loading-indicator');
-
-      if (!dncLoading && !litLoading && !blackLoading) {
+      if (state.ready) {
         if (!complianceReady) {
           complianceReady = true;
           complianceReadyTime = Date.now();
         }
-        compliance = {
-          dnc: formatInfolookupComplianceValue(cleanText(dncText)),
-          litigator: formatInfolookupComplianceValue(cleanText(litText)),
-          blacklist: formatInfolookupComplianceValue(cleanText(blackText))
-        };
+        compliance = state.compliance;
       }
 
-      // Check person information
-      const listContainer = document.getElementById('personInfoListContainer');
-      const firstSection = listContainer?.querySelector('.section') || listContainer?.querySelector('.person-info');
-      const personNameEl = firstSection?.querySelector('.person-name');
-      const personNameText = personNameEl ? personNameEl.textContent.trim() : '';
-
-      let personReady = false;
-      let personsList = [];
-      if (personNameText) {
-        if (!personNameText.toLowerCase().includes('load')) {
-          personReady = true;
-          if (personNameText.toLowerCase().includes('no result') || personNameText.toLowerCase().includes('no owner')) {
-            personsList = [];
-          } else {
-            personsList = extractInfolookupSitePersons();
-          }
-        }
-      }
+      const personReady = state.personReady;
+      const personsList = state.persons;
 
       // Fast return condition:
       if (complianceReady && compliance) {
         if (personReady || (complianceReadyTime && (Date.now() - complianceReadyTime > 3000))) {
-          if (port) {
-            port.postMessage({
-              action: 'SEARCH_RESULT',
-              searchId: searchId,
-              source: 'infolookup.site',
-              data: {
-                ...compliance,
-                persons: personsList,
-                person: personsList[0] || null
-              }
-            });
-          }
+          postInfolookupResult(searchId, compliance, personsList);
           return;
         }
       }
@@ -221,19 +328,7 @@
 
     // Fallback if loop ends
     if (complianceReady && compliance) {
-      const fallbackPersons = extractInfolookupSitePersons();
-      if (port) {
-        port.postMessage({
-          action: 'SEARCH_RESULT',
-          searchId: searchId,
-          source: 'infolookup.site',
-          data: {
-            ...compliance,
-            persons: fallbackPersons,
-            person: fallbackPersons[0] || null
-          }
-        });
-      }
+      postInfolookupResult(searchId, compliance, extractInfolookupSitePersons());
       return;
     }
 
@@ -266,6 +361,27 @@
       return '';
     }
     return cleaned;
+  }
+
+  // The "STATE / ZIP" column of a `.cx-addr-row` as two fields. Every shape the column has
+  // been seen in is accepted: "TX 77047", "TX, 77047", "TX-77047", "Texas 77047", a bare
+  // "77047" and a bare "TX". A dash placeholder cleans to nothing, so a row without a
+  // location stays street-only.
+  function splitStateZip(value) {
+    const text = cleanAddressField(value);
+    if (!text) return { state: '', zip: '' };
+
+    const zipMatch = text.match(/(\d{5})(?:-\d{4})?\s*$/);
+    const zip = zipMatch ? zipMatch[1] : '';
+    const state = cleanAddressField(
+      text
+        .replace(/(\d{5})(?:-\d{4})?\s*$/, '')
+        .replace(/[,\-|/]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+    );
+
+    return { state, zip };
   }
 
   function extractInfolookupSitePersons() {
@@ -429,14 +545,18 @@
   }
 
   /* ═══════════════════════════════════════════════════════
-     SOURCE 2: VIBEGENX.COM FAST SEARCH (NO RELOAD)
+     SOURCE 2: INFOLOOKUPP.COM FAST SEARCH (NO RELOAD)
   ═══════════════════════════════════════════════════════ */
-  async function executeVibegenxSearch(phone, searchId) {
+  async function executeInfolookuppSearch(phone, searchId) {
     const start = Date.now();
     let phoneInput = null;
 
+    // The search box is `input[type="tel"]` inside `.search-input-wrap` on the current build
+    // (with a "Paste" button beside it); the older build had the same input without the wrapper,
+    // so both shapes are accepted.
     while (Date.now() - start < 8000) {
       phoneInput =
+        document.querySelector('.search-input-wrap input[type="tel"]') ||
         document.querySelector('input[type="tel"]') ||
         document.querySelector('input[inputmode="numeric"]') ||
         document.querySelector('input[placeholder*="555"]') ||
@@ -451,8 +571,8 @@
         port.postMessage({
           action: 'SEARCH_RESULT',
           searchId: searchId,
-          source: 'vibegenx.com',
-          error: 'Phone input field was not found on Vibegenx.'
+          source: sourceName,
+          error: 'Phone input field was not found on infolookupp.com.'
         });
       }
       return;
@@ -472,29 +592,59 @@
 
     await sleep(60);
 
-    let searchBtn =
-      document.getElementById('search-btn') ||
-      document.querySelector('button#search-btn') ||
-      Array.from(document.querySelectorAll('button')).find((b) =>
-        b.textContent.trim().toLowerCase().includes('search')
-      );
+    // The control that submits the search, in every shape this build has had: an id, a submit
+    // button, a class that says "search", or a button whose label says "search". The current
+    // build renders the search row as `.search-input-wrap` (input + a "Paste" button), so the
+    // tag/class shapes are what actually find it there.
+    const findSearchButton = () => {
+      const byId = document.getElementById('search-btn') || document.getElementById('searchButton');
+      if (byId) return byId;
 
-    if (!searchBtn) {
-      if (port) {
-        port.postMessage({
-          action: 'SEARCH_RESULT',
-          searchId: searchId,
-          source: 'vibegenx.com',
-          error: 'Search button was not found on Vibegenx.'
-        });
-      }
-      return;
+      const byType = document.querySelector('button[type="submit"], input[type="submit"]');
+      if (byType) return byType;
+
+      // A class that says "search" - but never a search-clear/reset control, which sits in the
+      // same row as the input.
+      const byClass = Array.from(document.querySelectorAll('button.search-btn, button.search-submit, button[class*="search-"]')).find(
+        (b) => !b.classList.contains('paste-clear-btn') && !/\b(clear|paste|reset)\b/i.test((b.textContent || '').trim())
+      );
+      if (byClass) return byClass;
+
+      return (
+        Array.from(document.querySelectorAll('button')).find((b) => {
+          const label = (b.textContent || '').trim().toLowerCase();
+          if (!label.includes('search')) return false;
+          // The "Paste" / "Clear" control sits in the same row and must never be the submit.
+          if (b.classList.contains('paste-clear-btn') || label.includes('paste')) return false;
+          return true;
+        }) || null
+      );
+    };
+
+    let searchBtn = findSearchButton();
+    for (let attempt = 0; attempt < 10 && !searchBtn; attempt++) {
+      await sleep(150);
+      searchBtn = findSearchButton();
     }
 
+    // Enter is pressed as well: the older build needed it next to the click, and a build that
+    // renders no submit button searches on Enter alone. A missing button is therefore not an
+    // immediate error any more - the results wait below reports a timeout if nothing was ever
+    // submitted, which is the honest answer for both builds.
     try {
       phoneInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
     } catch (e) {}
-    searchBtn.click();
+
+    if (searchBtn) {
+      searchBtn.click();
+    } else {
+      try {
+        const form = phoneInput.form || (phoneInput.closest && phoneInput.closest('form'));
+        if (form && typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+        }
+      } catch (e) {}
+    }
 
     const maxWaitResults = 12000;
     const searchStartTime = Date.now();
@@ -512,8 +662,12 @@
         sawScrubbing = true;
       }
 
-      const compliance = extractVibegenxCompliance();
-      const personsList = extractVibegenxPersons();
+      // Compliance and owners as the current build renders them: the pills sit in
+      // `.compliance-status-item` (a `.compliance-label` next to a `.status-pill`) and the owners
+      // in `.cx-cards .cx-card`, each with `.cx-addr-street` / `.cx-addr-city` /
+      // `.cx-addr-statezip` rows.
+      const compliance = extractInfolookuppCompliance();
+      const personsList = extractInfolookuppPersons();
       const person = personsList[0] || null;
       const stillScrubbing = bodyText.includes('Running TCPA scrub') || bodyText.toLowerCase().includes('scrubbing');
 
@@ -533,7 +687,7 @@
               port.postMessage({
                 action: 'SEARCH_RESULT',
                 searchId: searchId,
-                source: 'vibegenx.com',
+                source: sourceName,
                 data: {
                   ...compliance,
                   persons: personsList,
@@ -549,7 +703,7 @@
               port.postMessage({
                 action: 'SEARCH_RESULT',
                 searchId: searchId,
-                source: 'vibegenx.com',
+                source: sourceName,
                 data: {
                   ...compliance,
                   persons: personsList,
@@ -567,7 +721,7 @@
           port.postMessage({
             action: 'SEARCH_RESULT',
             searchId: searchId,
-            source: 'vibegenx.com',
+            source: sourceName,
             error: 'No records found or invalid phone number.'
           });
         }
@@ -577,15 +731,15 @@
       await sleep(100);
     }
 
-    const finalCompliance = extractVibegenxCompliance();
-    const finalPersons = extractVibegenxPersons();
+    const finalCompliance = extractInfolookuppCompliance();
+    const finalPersons = extractInfolookuppPersons();
 
     if (finalCompliance && (finalCompliance.dnc || finalCompliance.litigator || finalCompliance.blacklist)) {
       if (port) {
         port.postMessage({
           action: 'SEARCH_RESULT',
           searchId: searchId,
-          source: 'vibegenx.com',
+          source: sourceName,
           data: {
             ...finalCompliance,
             persons: finalPersons,
@@ -600,13 +754,16 @@
       port.postMessage({
         action: 'SEARCH_RESULT',
         searchId: searchId,
-        source: 'vibegenx.com',
-        error: 'Timed out waiting for Vibegenx results.'
+        source: sourceName,
+        error: 'Timed out waiting for infolookupp.com results.'
       });
     }
   }
 
-  function extractVibegenxPersons() {
+  // Owners as infolookupp.com renders them: `.cx-cards > .cx-card`, each holding
+  // `.cx-name h3.value` (with a copy button inside that has to be stripped), `.cx-avatar`,
+  // `.cx-age-badge` ("65 age (1961)") and a `.cx-addr-table` of `.cx-addr-row`s.
+  function extractInfolookuppPersons() {
     const cards = Array.from(document.querySelectorAll('.cx-cards .cx-card, .cx-card'));
     if (!cards || cards.length === 0) return [];
 
@@ -635,8 +792,15 @@
       for (const row of addrRows) {
         const street = cleanAddressField(row.querySelector('.cx-addr-street')?.textContent || '');
         const city = cleanAddressField(row.querySelector('.cx-addr-city')?.textContent || '');
-        const state = cleanAddressField(row.querySelector('.cx-addr-state')?.textContent || '');
-        const zip = cleanAddressField(row.querySelector('.cx-addr-zip')?.textContent || '');
+
+        // The state and the ZIP are one "STATE / ZIP" column on the current build
+        // (`.cx-addr-statezip`, e.g. "TX 77047") and two columns on the older one, so both are
+        // read and the combined cell is split. A dash placeholder ("—") cleans to an empty
+        // string, which is what keeps a street-only row street-only instead of
+        // "8301 Tumbleweed Trl, Apt 3601, —, —".
+        const stateZip = splitStateZip(row.querySelector('.cx-addr-statezip')?.textContent || '');
+        const state = cleanAddressField(row.querySelector('.cx-addr-state')?.textContent || '') || stateZip.state;
+        const zip = cleanAddressField(row.querySelector('.cx-addr-zip')?.textContent || '') || stateZip.zip;
 
         const cityStateZip = [city, state].filter(Boolean).join(', ') + (zip ? ` ${zip}` : '');
         const full = [street, cityStateZip].filter(Boolean).join(', ');
@@ -672,12 +836,12 @@
     return persons;
   }
 
-  function extractVibegenxPerson() {
-    const all = extractVibegenxPersons();
+  function extractInfolookuppPerson() {
+    const all = extractInfolookuppPersons();
     return all && all.length > 0 ? all[0] : null;
   }
 
-  function extractVibegenxCompliance() {
+  function extractInfolookuppCompliance() {
     let dnc = null, litigator = null, blacklist = null;
     const allElements = Array.from(document.querySelectorAll('div, tr, li, p, span, dt, dd'));
 
@@ -704,15 +868,15 @@
 
     if (dnc || litigator || blacklist) {
       return {
-        dnc: formatVibegenxComplianceValue(dnc || 'Clean'),
-        litigator: formatVibegenxComplianceValue(litigator || 'Clean'),
-        blacklist: formatVibegenxComplianceValue(blacklist || 'Clean')
+        dnc: formatInfolookuppComplianceValue(dnc || 'Clean'),
+        litigator: formatInfolookuppComplianceValue(litigator || 'Clean'),
+        blacklist: formatInfolookuppComplianceValue(blacklist || 'Clean')
       };
     }
     return null;
   }
 
-  function formatVibegenxComplianceValue(val) {
+  function formatInfolookuppComplianceValue(val) {
     if (!val) return 'Clean';
     const lower = val.toLowerCase().trim();
     if (lower === 'clean' || lower === 'not listed' || lower.includes('no record') || lower === 'pass' || lower === 'no') {

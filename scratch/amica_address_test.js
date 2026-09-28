@@ -25,6 +25,7 @@ const block =
 
 let log = [];
 let geocodeResult = null;
+let nextAddressReply = { ok: true };
 
 const chromeMock = {
   runtime: {
@@ -33,6 +34,20 @@ const chromeMock = {
         log.push('geocode:' + ((msg.address && msg.address.street) || ''));
         if (cb) cb(geocodeResult ? { success: true, address: geocodeResult } : { success: false });
       }
+      if (msg.action === 'AMICA_NEXT_ADDRESS') {
+        log.push('next:' + msg.usedUpTo + ':' + ((msg.candidates || []).length));
+        if (cb) cb(nextAddressReply);
+      }
+    },
+  },
+  // The real clearPendingQuote() lives inside the slice, so it is observed through the API it calls
+  // rather than by standing in for it.
+  storage: {
+    local: {
+      remove: () => {
+        log.push('clearQuote');
+        return Promise.resolve();
+      },
     },
   },
 };
@@ -41,7 +56,8 @@ const mod = new Function(
   'sendProgress',
   'sendEmpty',
   'chrome',
-  block + '\nreturn { buildAddressCandidates, applyAddressTo, handleAddressStep, describeAddress };'
+  block +
+    '\nreturn { buildAddressCandidates, applyAddressTo, handleAddressStep, describeAddress, retryWithNextAddress };'
 )(
   (step, total, message) => log.push('progress:' + message),
   (message) => log.push('empty:' + message),
@@ -257,6 +273,71 @@ tick(1000, state3, form3);
 check('address 2 typed', form3.streetInput.value, '22 Alsobad Ave');
 tick(1000, state3, form3);
 check('address 2 submitted', clicks, 2);
+
+// ---------------------------------------------------------------------------
+console.log('\n== no vehicles found: trying the other addresses ==\n');
+// ---------------------------------------------------------------------------
+
+{
+  // The quote finished and Amica listed no vehicles for the address it used: the next address is
+  // asked for instead of the lookup being reported empty.
+  log = [];
+  nextAddressReply = { ok: true };
+  const state = makeState();
+  state.addressAttempt = 0;
+  mod.retryWithNextAddress(state, PROFILE, 'No vehicles found');
+
+  check('the next address is asked for', log.filter((l) => l.startsWith('next:')), ['next:0:3']);
+  check(
+    'the line says which address had nothing',
+    log.filter((l) => /^progress:No vehicles found for 11 Bad Rd, Akron, OH/.test(l)).length,
+    1
+  );
+  check('the run stops so the page is not driven while it reloads', state.stopped, true);
+  check('nothing is reported empty while a retry is still possible', log.filter((l) => l.startsWith('empty:')), []);
+}
+
+{
+  // Every address has been tried: only then is the lookup reported empty.
+  log = [];
+  nextAddressReply = { ok: false, exhausted: true };
+  const state = makeState();
+  mod.retryWithNextAddress(state, PROFILE, 'No vehicles found');
+
+  check('an exhausted run reports empty', log.filter((l) => l.startsWith('empty:')), [
+    'empty:No vehicle found on Amica for any known address'
+  ]);
+  check('and the pending quote is cleared', log.filter((l) => l === 'clearQuote').length, 1);
+}
+
+{
+  // No background to answer - a page whose extension is being reloaded, say: report empty rather
+  // than leaving the widget spinning for ever.
+  log = [];
+  clearedQuotes = 0;
+  const state = makeState();
+  const save = chromeMock.runtime.sendMessage;
+  chromeMock.runtime.sendMessage = () => {
+    throw new Error('Could not establish connection.');
+  };
+  mod.retryWithNextAddress(state, PROFILE, 'No vehicles found');
+  chromeMock.runtime.sendMessage = save;
+
+  check('a failed ask falls back to an empty result', log.filter((l) => l.startsWith('empty:')), [
+    'empty:No vehicle found on Amica'
+  ]);
+}
+
+{
+  // A page that never reached the address step still has a usable list: the primary address is the
+  // one Amica used, so it is the first marked as tried.
+  log = [];
+  nextAddressReply = { ok: true };
+  mod.retryWithNextAddress({ stopped: false }, PROFILE, 'No vehicles found');
+  check('with no address step seen, the primary is the one tried', log.filter((l) => l.startsWith('next:')), [
+    'next:0:3'
+  ]);
+}
 
 console.log(`\n=== TOTAL: ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);

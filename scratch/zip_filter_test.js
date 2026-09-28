@@ -1,9 +1,9 @@
 // Regression harness for the ZIP filter on the record cards.
 // Run with:  node scratch/zip_filter_test.js
 //
-// Every record card (Record 1 - infolookup.site, Record 1 - vibegenx.com) carries a small 5 digit
-// ZIP box on its navigation row, next to the record chevrons. Typing a ZIP shows only the people
-// of those records whose addresses include it, and both cards filter together.
+// Every record card (Record 1, Record 2) carries a small 5 digit ZIP box on its navigation row, next
+// to the record chevrons. Typing a ZIP shows only the people of those records whose addresses include
+// it, and both cards filter together.
 
 const fs = require('fs');
 const path = require('path');
@@ -33,18 +33,23 @@ function check(label, actual, expected) {
 
 // ---- the shipped helpers -----------------------------------------------------
 const ZIP_HEADER = '  // ---------------------------------------------------------------------------\n  // ZIP filter on the record cards';
+// The note above each card names the record through the settings labels (Record 1 / Record 2), which
+// live in the settings block at the end of the file. Only the label helpers are needed here.
+const LABEL_HEADER = "  // The two sites are the user's Record 1 and Record 2; their names never reach the UI.";
+const LABEL_END = '  // Every group and every switch is filled in from the defaults';
 
 const helpers =
   slice('function addressListForPerson(person) {', ZIP_HEADER, 'address helpers') +
-  slice(ZIP_HEADER, '  // Render individual card block in order', 'zip filter helpers');
+  slice(ZIP_HEADER, '  // ---------------------------------------------------------------------------\n  // Which record card owns a lookup', 'zip filter helpers') +
+  slice(LABEL_HEADER, LABEL_END, 'record label helpers');
 
 const mod = new Function(
   'escapeHtml',
   'shadow',
   helpers +
-    '\nreturn { addressListForPerson, normalizeZipFilter, activeZipFilter, addressMatchesZip,' +
+    '\nreturn { addressListForPerson, normalizeZipFilter, activeZipFilter, zipFilterFor, addressMatchesZip,' +
     ' personMatchesZipFilter, filterPersonsByZip, setZipFilter, recordNavRowHtml, syncZipFilterBox,' +
-    ' zipFilterNoteHtml, zipFilterRepaints };'
+    ' zipFilterNoteHtml, zipFilterRepaints, zipFiltersByRecord };'
 )((value) => String(value == null ? '' : value), null);
 
 console.log('\n== what the box accepts ==\n');
@@ -114,32 +119,49 @@ check('a missing list filters to nothing', mod.filterPersonsByZip(null, '78163')
   check('but it holds the same people', copy.length, original.length);
 }
 
-console.log('\n== the shared filter repaints every card ==\n');
+console.log('\n== per-record filter isolation ==\n');
 
 {
   const painted = [];
-  const entry = (id, connected) => ({
+  const entry = (source, id, connected) => ({
+    source,
     element: { isConnected: connected },
     repaint: () => painted.push(id)
   });
-  mod.zipFilterRepaints.push(entry('first', true), entry('stale', false), entry('second', true));
+  mod.zipFilterRepaints.push(
+    entry('infolookup.site', 'first', true),
+    entry('infolookup.site', 'stale', false),
+    entry('infolookupp.com', 'second', true)
+  );
 
-  mod.setZipFilter('78163');
-  check('both live cards are repainted', painted.slice().sort(), ['first', 'second']);
+  mod.setZipFilter('infolookup.site', '78163');
+  check('only the targeted record card is repainted', painted.slice(), ['first']);
   check('a card that is gone is dropped', mod.zipFilterRepaints.length, 2);
-  check('the filter value is normalised on the way in', mod.activeZipFilter(), '78163');
+  check('the filter value is stored per record', mod.zipFilterFor('infolookup.site'), '78163');
+  check('the other record stays unfiltered', mod.zipFilterFor('infolookupp.com'), '');
 
   painted.length = 0;
-  mod.setZipFilter('');
-  check('clearing repaints everything again', painted.slice().sort(), ['first', 'second']);
-  check('and clears the filter', mod.activeZipFilter(), '');
+  mod.setZipFilter('infolookupp.com', '90210');
+  check('filtering the second record repaints only that card', painted.slice(), ['second']);
+  check('both records hold their own independent ZIP', [
+    mod.zipFilterFor('infolookup.site'),
+    mod.zipFilterFor('infolookupp.com')
+  ], ['78163', '90210']);
+
+  painted.length = 0;
+  mod.setZipFilter('infolookup.site', '');
+  check('clearing one record only repaints that record', painted.slice(), ['first']);
+  check('cleared record has no filter', mod.zipFilterFor('infolookup.site'), '');
+  check('other record keeps its filter', mod.zipFilterFor('infolookupp.com'), '90210');
+
+  mod.setZipFilter('infolookupp.com', '');
   mod.zipFilterRepaints.length = 0;
 }
 
 console.log('\n== the navigation row ==\n');
 
 {
-  const row = mod.recordNavRowHtml(0, 3);
+  const row = mod.recordNavRowHtml(0, 3, 'infolookup.site');
   check(
     'the record chevrons are on the left',
     [row.includes('prev-card-slide'), row.includes('next-card-slide')],
@@ -159,53 +181,59 @@ console.log('\n== the navigation row ==\n');
     true
   );
 
-  const single = mod.recordNavRowHtml(0, 1);
+  const single = mod.recordNavRowHtml(0, 1, 'infolookup.site');
   check('the chevrons are hidden for a single person', single.includes('display:none'), true);
   check('but the ZIP box stays', single.includes('zip-filter-input'), true);
 
-  mod.setZipFilter('78163');
-  const filtered = mod.recordNavRowHtml(0, 2);
+  mod.setZipFilter('infolookup.site', '78163');
+  const filtered = mod.recordNavRowHtml(0, 2, 'infolookup.site');
   check('the typed ZIP is kept in the box', filtered.includes('value="78163"'), true);
   check('the clear button shows up', filtered.includes('zip-filter-clear"'), true);
-  mod.setZipFilter('');
+  mod.setZipFilter('infolookup.site', '');
 }
 
 console.log('\n== the "nobody here" note ==\n');
 
 {
-  mod.setZipFilter('90210');
-  const note = mod.zipFilterNoteHtml(2, 'vibegenx.com', 3);
-  check('the record is named', note.includes('Record 2') && note.includes('vibegenx.com'), true);
+  mod.setZipFilter('infolookupp.com', '90210');
+  const note = mod.zipFilterNoteHtml(2, 'infolookupp.com', 3);
+  check(
+    'the record is named by its label, never by its domain',
+    note.includes('Record 2') && !note.includes('infolookupp.com'),
+    true
+  );
   check('the ZIP box is still there to undo it', note.includes('zip-filter-input'), true);
   check('the ZIP is spelled out', note.includes('ZIP 90210'), true);
   check('the hidden people are counted', note.includes('3 people hidden'), true);
 
+  mod.setZipFilter('infolookup.site', '10001');
   const one = mod.zipFilterNoteHtml(1, 'infolookup.site', 1);
   check('a single hidden person reads right', one.includes('1 person hidden'), true);
-  mod.setZipFilter('');
+  mod.setZipFilter('infolookupp.com', '');
+  mod.setZipFilter('infolookup.site', '');
 }
 
 console.log('\n== wiring inside widget.js ==\n');
 
 check(
-  'the card filters its people through the shared ZIP',
-  /let personsList = filterPersonsByZip\(allPersons, activeZipFilter\(\)\)/.test(src),
+  'the card filters its people through the per-record ZIP',
+  /let personsList = filterPersonsByZip\(allPersons, activeZipFilter\(zipFilterFor\(source\)\)\)/.test(src),
   true
 );
-check('the navigation row comes from the shared helper', /const slideNavHtml = recordNavRowHtml\(pIdx, personsList.length\)/.test(src), true);
+check('the navigation row receives the record source', /const slideNavHtml = recordNavRowHtml\(pIdx, personsList.length, source\)/.test(src), true);
 check(
-  'the box drives the filter',
-  /input\.addEventListener\("input", \(e\) => \{[\s\S]{0,120}setZipFilter\(e\.target\.value\)/.test(src),
+  'the box drives the record-specific filter',
+  /input\.addEventListener\("input", \(e\) => \{[\s\S]{0,120}setZipFilter\(source, e\.target\.value\)/.test(src),
   true
 );
-check('the clear button empties it', /setZipFilter\(""\);\s*\n\s*focusZipInput\(\)/.test(src), true);
+check('the clear button empties it', /setZipFilter\(source, ""\);\s*\n\s*focusZipInput\(\)/.test(src), true);
 check(
   'typing in the box does not reach the card',
   /input\.addEventListener\("click", \(e\) => e\.stopPropagation\(\)\)/.test(src),
   true
 );
 check(
-  'every card repaints when the filter changes',
+  'target card repaints when its filter changes',
   /zipFilterRepaints\.push\(\{[\s\S]{0,160}repaint: \(\) => \{/.test(src),
   true
 );
@@ -220,12 +248,12 @@ check(
   true
 );
 check(
-  'the box is re-bound and re-synced on every render',
-  /bindZipFilterBox\(\);\s*\n\s*syncZipFilterBox\(personCardContainer\);/.test(src),
+  'the box is re-bound and re-synced on every render with source',
+  /bindZipFilterBox\(\);\s*\n\s*syncZipFilterBox\(personCardContainer, source\);/.test(src),
   true
 );
 check(
-  'a fresh search starts without a ZIP filter',
+  'a fresh search clears ZIP filters for all records',
   /activeResults = \[\];\s*\n\s*recordsList\.innerHTML = "";\s*\n\s*\/\/[^\n]*\n\s*setZipFilter\(""\);/.test(src),
   true
 );

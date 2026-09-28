@@ -15,10 +15,10 @@ const cases = [
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36',
     Origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop',
   }],
-  ['browser UA + Origin + Referer vibegenx', {
+  ['browser UA + Origin + Referer infolookupp', {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/126.0 Safari/537.36',
-    Origin: 'https://vibegenx.com',
-    Referer: 'https://vibegenx.com/',
+    Origin: 'https://infolookupp.com',
+    Referer: 'https://infolookupp.com/',
   }],
 ];
 

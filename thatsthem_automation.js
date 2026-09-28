@@ -31,14 +31,58 @@
   var CARDS_SETTLE_MS = 500; // unchanged card list for this long -> move on
   var PAGE_TIMEOUT_MS = 7000; // loaded page that renders nothing at all
   var PAGE_LOADING_TIMEOUT_MS = 12000; // ...while the document is still loading
-  var BROWSER_CHECK_MAX_MS = 90000; // how long to wait out the bot-check page
+  // How long thatSthem's check is left to the user before the run moves on. Nothing is ever
+  // clicked: the tab is brought forward once and simply watched, so this only has to be long
+  // enough for a person to notice, switch over and clear it.
+  var CHALLENGE_WAIT_MS = 180000;
 
-  // The Turnstile widget sits in a closed shadow root, so the extension cannot click it:
-  // ask the background worker to bring this tab to the front so a human can.
+  // The check lives in markup the extension cannot drive, so the only thing to do is ask the
+  // background worker to put it in front of a human. ThatSthem runs in the offscreen document's
+  // hidden runner, which has no tab to bring forward - the background promotes the run into a
+  // real one when the check appears. A tab that is already in front just stays there.
   function focusThisTab() {
     try {
       chrome.runtime.sendMessage({ action: "FOCUS_LOOKUP_TAB" });
     } catch (e) {}
+  }
+
+  // Tells the background the check is done with: the tab it was solved in is put back into the
+  // background and the user is returned to where they started. The run itself carries on here.
+  function notifyChallengeCleared() {
+    try {
+      chrome.runtime.sendMessage({ action: "CHALLENGE_CLEARED" });
+    } catch (e) {}
+  }
+
+  // Whether this frame is one the extension itself put on the page.
+  //
+  // A top-level tab is always fine. A subframe has to be confirmed by the background, because
+  // there is no reliable way to tell from inside the frame who the parent is:
+  //
+  //   - `parent.location` throws across origins from the isolated world, so it cannot be read.
+  //   - `document.referrer` is empty for an extension parent, so the offscreen runner looks
+  //     exactly like a frame with no parent at all.
+  //
+  // The background can answer authoritatively: a content script in a normal tab always has
+  // `sender.tab`, and the offscreen document is not a tab. A page that embeds thatsthem.com in a
+  // frame of its own is in a tab, and is refused - it must not get a DOB run driven with
+  // somebody else's saved search.
+  function confirmRunnerIsOurs(callback) {
+    if (window.parent === window) {
+      callback(true);
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage({ action: "RUNNER_HELLO" }, function (res) {
+        if (chrome.runtime.lastError) {
+          callback(false);
+          return;
+        }
+        callback(!!(res && res.ok));
+      });
+    } catch (e) {
+      callback(false);
+    }
   }
 
   function delay(ms) {
@@ -51,179 +95,49 @@
     return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
-  // ---- Trusted click target resolution -------------------------------------
-  // The Turnstile widget sits in a closed shadow root, so nothing inside it reacts to DOM
-  // events: the old "Engine 1" (replaying the recorded cursor path and firing synthetic
-  // pointer/mouse events) never cleared the check because Cloudflare only trusts real
-  // input. The only engine left is Engine 2 - a genuine OS-level click that background.js
-  // dispatches over the Chrome DevTools Protocol. All this side has to do is resolve the
-  // viewport coordinates of the Turnstile checkbox.
-  function findTurnstileElement() {
-    var iframe = document.querySelector(
-      "#captcha-container iframe, .cf-turnstile iframe, iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile']"
-    );
-    if (iframe) return iframe;
-
-    // Turnstile is now often rendered with declarative shadow DOM
-    // (<template shadowrootmode="closed">): the widget iframe then sits inside a closed shadow
-    // root, where querySelector cannot see it. The hidden response input stays in the light DOM
-    // and shares the widget's host element, so the host can still be measured - which is what
-    // keeps the repeated clicks landing on the widget instead of on a stale recording.
-    var response = document.querySelector(
-      "input[name='cf-turnstile-response'], input[id*='cf-chl-widget'][type='hidden']"
-    );
-    if (response && response.parentElement) return response.parentElement;
-
-    return document.querySelector("#captcha-container, .cf-turnstile");
-  }
-
-  // A normal Turnstile widget is ~300x65px and its checkbox sits ~30px in from the left
-  // edge, vertically centred.
-  var TURNSTILE_WIDGET_MAX_WIDTH = 400;
-
-  function checkboxPointForRect(rect) {
-    return {
-      x: Math.round(rect.left + Math.min(30, rect.width * 0.18)),
-      y: Math.round(rect.top + rect.height / 2)
-    };
-  }
-
-  function pointInsideRect(point, rect) {
-    return (
-      point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom
-    );
-  }
-
-  // Coordinates for the trusted click, best source first:
-  //   1. the recorded click point while the widget still sits exactly where it was recorded
-  //   2. the checkbox of the widget that is on screen right now (survives layout shifts)
-  //   3. the recorded click point on its own (widget unreachable or still loading)
-  //   4. the middle of the viewport as a last resort
-  function resolveTrustedClickPoint(macro) {
-    var recorded = null;
-    if (macro && macro.click && isFinite(macro.click.x) && isFinite(macro.click.y)) {
-      recorded = { x: Math.round(macro.click.x), y: Math.round(macro.click.y) };
+  // Anything ThatSthem itself has put on the page: its result cards, its own "No Results Found" panel,
+  // or the search box of its own layout. A page carrying any of those is a page of results - never a
+  // browser check, however much Cloudflare framework it loads alongside.
+  function pageHasSiteContent() {
+    if (document.querySelector("div.record, #no-results, .no-results")) return true;
+    if (isNoResultsPage()) return true;
+    if (
+      document.querySelector(
+        "input[name='phone'], input[name='q'], input[name='address'], input[type='tel']"
+      )
+    ) {
+      return true;
     }
-
-    var el = findTurnstileElement();
-    if (el) {
-      try {
-        el.scrollIntoView({ behavior: "auto", block: "center" });
-      } catch (e) {
-        try {
-          el.scrollIntoView();
-        } catch (e2) {}
-      }
-
-      var rect = null;
-      try {
-        rect = el.getBoundingClientRect();
-      } catch (e3) {}
-
-      if (rect && rect.width > 0 && rect.height > 0) {
-        if (recorded && pointInsideRect(recorded, rect)) {
-          return { x: recorded.x, y: recorded.y, source: "recorded" };
-        }
-        // Only trust the checkbox estimate on something widget sized - a full width
-        // wrapper would put the estimate at the far left of the page.
-        if (el.tagName === "IFRAME" || rect.width <= TURNSTILE_WIDGET_MAX_WIDTH) {
-          var pt = checkboxPointForRect(rect);
-          return { x: pt.x, y: pt.y, source: "widget" };
-        }
-      }
-    }
-
-    if (recorded) return { x: recorded.x, y: recorded.y, source: "recorded" };
-    return {
-      x: Math.round(window.innerWidth / 2),
-      y: Math.round(window.innerHeight / 2),
-      source: "viewport"
-    };
+    return false;
   }
 
-  // Cosmetic marker for the point the trusted click was sent to (helps spot a bad
-  // calibration); it dispatches no events itself.
-  function showClickRipple(x, y) {
-    try {
-      var ripple = document.createElement("div");
-      ripple.style.cssText =
-        "position: fixed; left: " + (x - 15) + "px; top: " + (y - 15) + "px; width: 30px; height: 30px; border-radius: 50%; border: 2px solid #3b82f6; pointer-events: none; z-index: 2147483647; opacity: 0.9; transition: opacity 0.45s ease-out, transform 0.45s ease-out;";
-      (document.body || document.documentElement).appendChild(ripple);
-
-      var fadeOut = function () {
-        ripple.style.opacity = "0";
-        ripple.style.transform = "scale(2.2)";
-      };
-      if (typeof requestAnimationFrame === "function") requestAnimationFrame(fadeOut);
-      else fadeOut();
-
-      setTimeout(function () {
-        if (ripple.parentNode) ripple.parentNode.removeChild(ripple);
-      }, 500);
-    } catch (e) {}
-  }
-
-  // ---- Trusted click pacing -------------------------------------------------
-  // One click is not enough for Cloudflare's interactive widget: it re-renders (and can move)
-  // after every attempt, the first click often lands while the widget is still loading, and a
-  // stubborn challenge needs a few tries before it clears. The click is therefore repeated
-  // with freshly measured coordinates until the check page is gone - the caps below only stop
-  // a widget that will never clear from being clicked forever.
-  var TRUSTED_CLICK_SETTLE_MS = 600; // let the widget render before the first click
-  var TRUSTED_CLICK_GAP_MS = 3000; // gap between two trusted clicks
-  var TRUSTED_CLICK_MAX = 30; // ~90s of clicking: the run's own budget stops it first
-  var TRUSTED_CLICK_FOCUS_AFTER = 3; // surface the tab once this many clicks did nothing
-
-  // True on the tick after the widget settled, then once per gap, until the cap is reached.
-  // The branch itself decides when to stop: the moment the check page is gone this is never
-  // asked again.
-  function trustedClickDue(clicks, detectedAt, lastClickAt, now) {
-    if (clicks >= TRUSTED_CLICK_MAX) return false;
-    if (clicks === 0) return now - detectedAt > TRUSTED_CLICK_SETTLE_MS;
-    return now - lastClickAt > TRUSTED_CLICK_GAP_MS;
-  }
-
-  // Engine 2: the only engine used - a real OS-level trusted click that background.js
-  // dispatches over the Chrome DevTools Protocol.
-  async function replayMacroEngine2(targetX, targetY) {
-    return new Promise(function (resolve) {
-      try {
-        chrome.runtime.sendMessage(
-          { action: "REPLAY_MACRO_CLICK", x: targetX, y: targetY },
-          function (res) {
-            resolve(res && res.success);
-          }
-        );
-      } catch (err) {
-        resolve(false);
-      }
-    });
-  }
-
-  // Fingerprint of the parsed cards: changes while the list is still filling in, so the
-  // run only moves on once the page has actually stopped changing.
-  function recordsFingerprint(records) {
-    if (!records || !records.length) return "";
-    var parts = [String(records.length)];
-    for (var i = 0; i < records.length; i++) {
-      var r = records[i];
-      parts.push([r.name, r.year || "", r.age || "", r.zip || "", r.street || ""].join("~"));
-    }
-    return parts.join("|");
-  }
-
-  // ThatSthem answers automated visits with a sentinel/Turnstile security page (title
-  // "Security Check", #captcha-container with a Cloudflare Turnstile). Nothing can be
-  // read while it is up, so the run has to wait for it instead of treating the page as
-  // "no records" and moving on.
   function isBrowserCheckPage() {
+    // The site's own content vetoes the whole check: this is the test that was missing when a
+    // "No Results Found" page was handed to the user as something to solve. That page carries
+    // ThatSthem's own Turnstile widget, and that widget was being read as the challenge.
+    if (pageHasSiteContent()) return false;
+
+    var tokenInput = document.querySelector("input[name='cf-turnstile-response']");
+    if (tokenInput && tokenInput.value && tokenInput.value.trim().length > 10) {
+      return false; // Turnstile already answered/cleared
+    }
+
     if (document.querySelector("meta[name='sentinel-challenge'], meta[name='sentinel-ticket']")) return true;
     if (/security check|checking your browser|just a moment|verify you are human/i.test(document.title || "")) {
       return true;
     }
 
-    var captcha = document.querySelector("#captcha-container, .cf-turnstile");
-    if (captcha && isElementVisible(captcha)) return true;
+    // Cloudflare's *interstitial* markup only - never a turnstile widget or a cloudflare script on its
+    // own, because a normal page of this site carries those as well. (The same lesson the Unmask
+    // detector already learned: a page that embeds a widget is not a page that is being challenged.)
+    if (
+      document.querySelector(
+        "#challenge-form, #challenge-running, #challenge-stage, #cf-challenge-running, #cf-please-wait, " +
+          "main.challenge, .challenge__hero, .challenge__title, .cf-browser-verification, script[src*='chl_page']"
+      )
+    ) {
+      return true;
+    }
 
     var title = document.querySelector("#title");
     if (title && /checking your browser|confirm you'?re human|verifying/i.test(cleanText(title.textContent))) {
@@ -241,23 +155,16 @@
     return false;
   }
 
-  function isBrowserCheckFailed() {
-    var failed = document.querySelector("#failed");
-    if (failed && !failed.classList.contains("hidden")) return true;
-    var retry = document.querySelector("#retry");
-    return !!(retry && !retry.classList.contains("hidden"));
-  }
-
-  // "Try again" is offered when the check failed - click it once per appearance.
-  function clickBrowserCheckRetry() {
-    if (!isBrowserCheckFailed()) return false;
-    var retry = document.querySelector("#retry");
-    if (!retry || retry.getAttribute("data-dnc-clicked") === "1") return false;
-    retry.setAttribute("data-dnc-clicked", "1");
-    try {
-      retry.click();
-    } catch (e) {}
-    return true;
+  // Fingerprint of the parsed cards: changes while the list is still filling in, so the
+  // run only moves on once the page has actually stopped changing.
+  function recordsFingerprint(records) {
+    if (!records || !records.length) return "";
+    var parts = [String(records.length)];
+    for (var i = 0; i < records.length; i++) {
+      var r = records[i];
+      parts.push([r.name, r.year || "", r.age || "", r.zip || "", r.street || ""].join("~"));
+    }
+    return parts.join("|");
   }
 
   var STATE_NAME_TO_CODE = {
@@ -309,13 +216,23 @@
   }
 
   // ---- messaging (the same actions the Unmask run uses) --------------------
+  // The session this frame is running, so every message and every "next step" request can name the
+  // record card the run belongs to: a page that outlives its own run (a press on the other record
+  // replaced it) must keep reporting for its own record.
+  var currentSession = null;
+
+  function sessionRecord() {
+    return (currentSession && currentSession.record) || "";
+  }
+
   function sendProgress(step, totalSteps, message) {
     try {
       chrome.runtime.sendMessage({
         action: "DOB_LOOKUP_PROGRESS",
         step: step,
         totalSteps: totalSteps,
-        message: message
+        message: message,
+        record: sessionRecord()
       });
     } catch (e) {}
   }
@@ -329,6 +246,7 @@
         emails: emails || [],
         person: person,
         source: "thatsthem.com",
+        record: sessionRecord(),
         placeholder: !!opts.placeholder,
         continueSearch: !!opts.continueSearch,
         yearOnly: !!opts.yearOnly
@@ -345,15 +263,38 @@
     } catch (e) {}
   }
 
-  // Ask the background worker for the next ThatSthem step (address / phone / give up)
-  function requestNextStep(reason) {
+  // Ask the background worker for the next ThatSthem step (address / phone / give up).
+  //
+  // `attempt` is how many times this page has asked for the same step. The background ignores a "next"
+  // that arrives while the page is still being replaced - which a cached step page can hit, because its
+  // own "No Results Found" panel is on screen inside that window. Since asking is what ends this page's
+  // loop, the ask is repeated after the window and finally sent with `force`, so a page can never sit
+  // there waiting for a step that was never taken.
+  function requestNextStep(reason, attempt) {
     if (reason) sendProgress(5, 6, reason);
+    var tries = attempt || 0;
+
     try {
-      chrome.runtime.sendMessage({ action: "DOB_LOOKUP_NEXT_ADDRESS" }, function (res) {
-        if (res && res.nextUrl && !res.exhausted) {
-          if (window.location.href !== res.nextUrl) window.location.href = res.nextUrl;
+      chrome.runtime.sendMessage(
+        { action: "DOB_LOOKUP_NEXT_ADDRESS", record: sessionRecord(), force: tries >= 3 },
+        function (res) {
+          if (chrome.runtime.lastError) return;
+          if (!res || res.exhausted) return; // the background reports the end of the run itself
+
+          if (res.nextUrl) {
+            if (window.location.href !== res.nextUrl) window.location.href = res.nextUrl;
+            return;
+          }
+
+          // `ignored`: the page was replaced a moment ago. `stale`: this run was replaced by a newer
+          // one, and its steps are not this page's to walk - nothing to do there.
+          if (res.ignored && tries < 4) {
+            setTimeout(function () {
+              requestNextStep("", tries + 1);
+            }, 500);
+          }
         }
-      });
+      );
     } catch (e) {}
   }
 
@@ -805,8 +746,19 @@
         return true;
       }
     }
+
+    // The panel itself: an amber card carrying the search icon, in case the wording sits outside a
+    // heading (the live page renders it as
+    //   <div class="bg-amber-50 rounded-lg shadow-lg border border-amber-200 p-10">
+    //     ... <h2>No Results Found</h2> <p>We couldn't find any records matching your search.</p>).
+    var panels = Array.from(document.querySelectorAll("[class*='amber'], .no-results, #no-results"));
+    for (var p = 0; p < panels.length; p++) {
+      if (/no results found/i.test(cleanText(panels[p].textContent))) return true;
+    }
+
     var body = cleanText(document.body ? document.body.innerText : "");
-    return /couldn'?t find any records matching your search/i.test(body);
+    if (/couldn'?t find any records matching your search/i.test(body)) return true;
+    return /no results found/i.test(body);
   }
 
   // ---- matching: name + age/DOB + zip, exactly like the Unmask run ---------
@@ -908,13 +860,22 @@
   }
 
   // ---- run loop ------------------------------------------------------------
-  chrome.storage.local.get([SESSION_KEY, "active_mouse_recording"], function (res) {
-    if (res && res.active_mouse_recording && res.active_mouse_recording.active) {
-      // Mouse recording is active on this tab - do not run search automation
-      return;
-    }
-    var session = res ? res[SESSION_KEY] : null;
-    if (!session || session.stage !== "thatsthem") return;
+  // The runner check is a message round-trip, so the run only starts once the background has
+  // confirmed this frame is one the extension owns. ThatSthem runs in the offscreen document's
+  // hidden runner, so this script legitimately runs in a subframe; a page that embeds
+  // thatsthem.com in one of its own frames must not get a run driven with somebody else's search.
+  confirmRunnerIsOurs(function (isOurs) {
+    if (!isOurs) return;
+
+    chrome.storage.local.get([SESSION_KEY], function (res) {
+      var session = res ? res[SESSION_KEY] : null;
+      if (!session || session.stage !== "thatsthem") return;
+      runThatsThem(session);
+    });
+  });
+
+  function runThatsThem(session) {
+    currentSession = session;
 
     var target = buildTarget(session);
     if (!target.details.last) return; // nothing usable to match on
@@ -926,11 +887,10 @@
       cardsSignature: "",
       reportedWeak: false,
       checkedAt: 0,
-      focusSteps: 0,
-      challengeReplayInProgress: false,
-      challengeClicks: 0,
-      challengeLastClickAt: 0,
-      lastCalibratedCoords: null
+      // The check belongs to the user: this only remembers that they have already been pointed at it.
+      challengePrompted: false,
+      // Set once the hand-back has been reported, so a promoted run does not report it every tick.
+      challengeClearedSent: false
     };
     var interval = null;
 
@@ -1001,87 +961,77 @@
         return;
       }
 
+      // ThatSthem's own "No Results Found" panel is a result, not a check - so it is read FIRST. The
+      // page it appears on also carries the site's own Turnstile widget, and reading that widget as a
+      // challenge is what handed a no-results page to the user as something to solve.
+      //
+      // A promoted run (a tab put in front of the user for a check) also gets its hand-back here: this
+      // page is ThatSthem's own, so there is no check left to clear.
+      if (isNoResultsPage()) {
+        handBackIfPromoted(state, session);
+        next("ThatSthem: no records found. Checking next...");
+        return;
+      }
+
       // The automated "Checking your browser" interstitial has to be waited out: an empty
       // page here is not the same as "no records", so never advance past it.
       if (isBrowserCheckPage()) {
+        // ThatSthem's check is the user's to solve. The extension does not click it - not with a
+        // recorded click, not with a measured one - it only brings the tab forward once and watches,
+        // so the run continues the moment the check is cleared.
         if (!state.checkedAt) {
           state.checkedAt = Date.now();
-          sendProgress(5, 6, "ThatSthem asks for a human check - preparing calibration...");
-        } else if (clickBrowserCheckRetry()) {
-          sendProgress(5, 6, "ThatSthem asked for the browser check again - retrying...");
         }
 
-        if (state.challengeReplayInProgress) return;
-
-        // The check only clears for a real input event, so the trusted click (Engine 2) is
-        // dispatched straight away. Engine 1 (replaying the recorded cursor path with
-        // synthetic DOM events) is gone - Cloudflare ignores untrusted events.
-        // The first click waits for the widget to render, and clicks are then repeated once
-        // per gap until the check page is gone - each one measured again, because the widget
-        // re-renders (and can move) after every attempt.
-        if (trustedClickDue(state.challengeClicks, state.checkedAt, state.challengeLastClickAt, Date.now())) {
-          state.challengeReplayInProgress = true;
-          var isRetry = state.challengeClicks > 0;
-          state.challengeClicks += 1;
-          state.challengeLastClickAt = Date.now();
-          chrome.storage.local.get(["recorded_macro_thatsthem", "last_macro_recording"], async function (res) {
-            var macro = res ? (res.recorded_macro_thatsthem || res.last_macro_recording) : null;
-            var point = resolveTrustedClickPoint(macro);
-            state.lastCalibratedCoords = { x: point.x, y: point.y };
-
-            sendProgress(5, 6, "ThatSthem: " + (isRetry ? "retrying trusted click (Engine 2) at " : "trusted click (Engine 2) at ") + point.x + ", " + point.y + " [" + point.source + "] (attempt " + state.challengeClicks + "/" + TRUSTED_CLICK_MAX + ")...");
-            var clicked = await replayMacroEngine2(point.x, point.y);
-            if (clicked) showClickRipple(point.x, point.y);
-            state.challengeReplayInProgress = false;
-            sendProgress(5, 6, clicked ? "ThatSthem: Engine 2 click dispatched. Verifying resolution..." : "ThatSthem: Engine 2 click could not be sent - verifying resolution...");
-          });
-          return;
-        }
-
-        // The user should be able to watch the check being solved: the lookup tab is brought to
-        // the front the moment the check appears, and once more if it survives a few clicks.
-        // The trusted clicks keep landing on the widget either way - surfacing the tab only
-        // makes them visible.
-        var focusStep = state.challengeClicks >= TRUSTED_CLICK_FOCUS_AFTER ? 2 : 1;
-        if ((state.focusSteps || 0) < focusStep) {
-          state.focusSteps = focusStep;
+        if (!state.challengePrompted) {
+          state.challengePrompted = true;
           focusThisTab();
           sendProgress(
             5,
             6,
-            focusStep === 1
-              ? "ThatSthem asks for a check - bringing the tab forward to solve it here..."
-              : "ThatSthem is still checking - retrying the click here, please hold..."
+            "ThatSthem asks for a human check - please clear it in the tab that just came forward. The lookup continues on its own once it clears."
           );
-          return;
         }
 
-        if (Date.now() - state.checkedAt > BROWSER_CHECK_MAX_MS) {
-          next("ThatSthem: browser verification did not complete. Checking next...");
+        // The user may take as long as they like; only when they have clearly walked away does the
+        // run give up on this target. Nothing is ever clicked, reloaded or fought with.
+        if (Date.now() - state.checkedAt > CHALLENGE_WAIT_MS) {
+          next("ThatSthem: the browser check was not cleared. Checking next...");
         }
-        return;
+
+        return; // watch the page: the check clearing is what ends this branch
       }
 
-      // Verification cleared (or was never shown): give the results a full window.
+      // Check cleared (or was never shown): give the results a full window.
       if (state.checkedAt) {
         state.checkedAt = 0;
-        state.challengeClicks = 0;
-        state.challengeLastClickAt = 0;
-        state.focusSteps = 0;
+        state.challengePrompted = false;
         state.cardsSeenAt = 0;
         state.startedAt = Date.now();
         sendProgress(5, 6, "Browser verification passed - reading ThatSthem results...");
       }
 
-      // No cards at all: is this the explicit "No Results Found" panel?
-      if (isNoResultsPage()) {
-        next("ThatSthem: no records found. Checking next...");
-        return;
-      }
+      // The run may have been promoted into this tab so the user could clear a check. Once there
+      // is no check on the page any more, they are handed back to their own tab: the promoted tab
+      // is sent to the background and this run carries on inside it. Reaching this line at all
+      // means no check is present, so it covers both "cleared in place" and "the promoted tab
+      // landed straight on the results" - the latter never sees a check to begin with.
+      handBackIfPromoted(state, session);
 
       if (Date.now() - state.startedAt > (document.readyState === "complete" ? PAGE_TIMEOUT_MS : PAGE_LOADING_TIMEOUT_MS)) {
         next("ThatSthem: page timed out. Checking next...");
       }
     }, TICK_MS);
-  });
+  }
+
+  // The hand-back for a run that was promoted into a tab so the user could clear a check: once the page
+  // is ThatSthem's own again there is nothing left to clear, so the user gets their tab back and this
+  // tab drops to the background. Declared here (not inside the loop) because the loop needs it in front
+  // of the check branch: a "No Results Found" page is one of the moments the check is already gone.
+  function handBackIfPromoted(state, session) {
+    if (session.promotedForChallenge && !state.challengeClearedSent) {
+      state.challengeClearedSent = true;
+      notifyChallengeCleared();
+    }
+  }
 })();

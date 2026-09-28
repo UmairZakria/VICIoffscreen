@@ -5,42 +5,143 @@ let activeLookup = null;
 let searchCounter = 0;
 const workerPorts = {
   'infolookup.site': null,
-  'vibegenx.com': null
+  'infolookupp.com': null
 };
+
+// ---------------------------------------------------------------------------
+// Run-time settings (Settings & Calibration panel)
+//
+// One storage key, written by the widget / popup / window: which records a number is looked up on,
+// which platforms the DOB button may ask, and which record's DNC status is drawn. Everything
+// defaults to on, so an install that never opens the panel behaves exactly as it always has.
+// ---------------------------------------------------------------------------
+const AUTOMATION_SETTINGS_KEY = 'automation_settings';
+const AUTOMATION_SETTINGS_DEFAULTS = {
+  records: { record1: true, record2: true },
+  dob: { unmask: true, thatsthem: true, ai: true },
+  dnc: { record1: true, record2: true }
+};
+
+// The two sites are the user's Record 1 and Record 2; Amica and Mercury are Ride 1 and Ride 2.
+const RECORD_SOURCES = ['infolookup.site', 'infolookupp.com'];
+const RECORD_KEYS = { 'infolookup.site': 'record1', 'infolookupp.com': 'record2' };
+const RIDE_LABELS = { amica: 'Ride 1', mercury: 'Ride 2' };
+
+function recordKey(source) {
+  return RECORD_KEYS[String(source == null ? '' : source).toLowerCase()] || '';
+}
+
+function recordLabel(source) {
+  if (String(source == null ? '' : source).toLowerCase() === 'infolookup.site') return 'Record 1';
+  if (String(source == null ? '' : source).toLowerCase() === 'infolookupp.com') return 'Record 2';
+  return 'Record';
+}
+
+function rideLabel(provider) {
+  return RIDE_LABELS[String(provider == null ? '' : provider).toLowerCase()] || 'Ride';
+}
+
+// Every group and every switch is filled in from the defaults, so a stored object that is missing a
+// key (an older install, a half-written value) can never read as "off".
+function normalizeAutomationSettings(raw) {
+  const stored = raw && typeof raw === 'object' ? raw : {};
+  const merge = (group, defaults) => {
+    const fromStored = stored[group] && typeof stored[group] === 'object' ? stored[group] : {};
+    const out = {};
+    Object.keys(defaults).forEach((key) => {
+      out[key] = fromStored[key] === undefined ? defaults[key] : !!fromStored[key];
+    });
+    return out;
+  };
+  return {
+    records: merge('records', AUTOMATION_SETTINGS_DEFAULTS.records),
+    dob: merge('dob', AUTOMATION_SETTINGS_DEFAULTS.dob),
+    dnc: merge('dnc', AUTOMATION_SETTINGS_DEFAULTS.dnc)
+  };
+}
+
+// "dnc.record1" -> its value. An unknown path reads as on, which is the safe default.
+function settingValue(settings, path) {
+  const parts = String(path || '').split('.');
+  let node = normalizeAutomationSettings(settings);
+  for (let i = 0; i < parts.length; i++) {
+    if (!node || typeof node !== 'object' || !(parts[i] in node)) return true;
+    node = node[parts[i]];
+  }
+  return node === undefined ? true : !!node;
+}
+
+async function getAutomationSettings() {
+  try {
+    const stored = await chrome.storage.local.get([AUTOMATION_SETTINGS_KEY]);
+    return normalizeAutomationSettings(stored ? stored[AUTOMATION_SETTINGS_KEY] : null);
+  } catch (e) {
+    return normalizeAutomationSettings(null);
+  }
+}
+
+// Which records are switched on, in the order they stream.
+function enabledRecordSources(settings) {
+  return RECORD_SOURCES.filter((source) => settingValue(settings, 'records.' + recordKey(source)));
+}
+
+// The DOB platforms the user left switched on. Read once when a run starts and carried on that run's
+// session, so a switch flipped mid-run cannot make the run fall back to a source that is off.
+function dobSourcesFromSettings(settings) {
+  return {
+    unmask: settingValue(settings, 'dob.unmask'),
+    thatsthem: settingValue(settings, 'dob.thatsthem'),
+    ai: settingValue(settings, 'dob.ai')
+  };
+}
 
 // Pre-warm the background runners immediately on extension install or startup
 chrome.runtime.onInstalled.addListener(() => {
   ensureOffscreenDocument().catch(() => {});
+  prewarmAmica().catch(() => {});
 });
 
 chrome.runtime.onStartup.addListener(() => {
   ensureOffscreenDocument().catch(() => {});
+  prewarmAmica().catch(() => {});
 });
 
-// Pre-warm when user toggles widget via toolbar icon
+// The service worker also starts when the extension is reloaded, and that is exactly when the
+// offscreen document is gone - `onInstalled` does not fire for an unpacked reload. Creating it here
+// means it is booted and listening before the first lookup asks for a runner, so that lookup cannot
+// land inside the "document exists but is not listening yet" window.
+//
+// Amica is deliberately NOT pre-loaded here: this runs on every service-worker wake, and re-pointing
+// a parked page each time would defeat keeping it warm.
+ensureOffscreenDocument().catch(() => {});
+
+// The widget is deliberately **not** a content script any more: it used to be injected into every
+// page on every site, which put it on pages nobody asked about. It is injected here instead, the
+// first time the toolbar icon is clicked on a tab, and from then on that icon toggles it.
 chrome.action.onClicked.addListener(async (tab) => {
   ensureOffscreenDocument().catch(() => {});
 
   if (!tab || !tab.id) return;
-  if (tab.url && (tab.url.startsWith('chrome://') || tab.url.startsWith('edge://') || tab.url.startsWith('chrome-extension://') || tab.url.startsWith('about:'))) {
+  if (!isWebPageUrl(tab.url)) return;
+
+  // The widget is already on this page - the click only shows or hides it.
+  try {
+    await chrome.tabs.sendMessage(tab.id, { action: 'TOGGLE_WIDGET' });
     return;
+  } catch (err) {
+    // Nothing listening in this tab: the widget has not been injected here yet, which is exactly what
+    // the first click on the icon means.
   }
 
   try {
-    await chrome.tabs.sendMessage(tab.id, { action: 'TOGGLE_WIDGET' });
-  } catch (err) {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: ['widget.js']
-      });
-
-      setTimeout(() => {
-        chrome.tabs.sendMessage(tab.id, { action: 'TOGGLE_WIDGET' }).catch(() => {});
-      }, 150);
-    } catch (injectErr) {
-      console.error('Could not inject widget:', injectErr);
-    }
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      files: ['widget.js']
+    });
+    // Nothing is sent after this on purpose: a freshly injected widget shows itself, so a
+    // TOGGLE_WIDGET here would hide the widget that was just put on the page.
+  } catch (injectErr) {
+    console.error('Could not inject widget:', injectErr);
   }
 });
 
@@ -67,11 +168,52 @@ chrome.runtime.onConnect.addListener((port) => {
 // Primary search dispatch and messaging from widget / popup / window
 let activeVehicleLookup = null; // { tabId, provider, profile, startTime }
 let activeDobLookup = null; // { tabId, session, startTime }
+// Google AI Mode is a *second* DOB source that runs beside Unmask, not instead of it, so it has its
+// own run, its own storage key and its own runner frame.
+let activeGoogleLookup = null; // { tabId, mode, source, session, startTime }
+const GOOGLE_STORAGE_KEY = 'google_pending_lookup';
+const GOOGLE_RUNNER_FRAME = 'google.com';
+const GOOGLE_HOME_URL = 'https://www.google.com/';
+const GOOGLE_MAX_ADDRESSES = 4;
+// Google runs in the hidden offscreen runner, like the other sites, so no tab ever appears for it.
+// Set this to true to watch it work instead: the run then uses a real tab, brought to the front - and
+// the whole search-history step prints its step-by-step trace to that tab's console (F12). With it
+// false (as shipped) the run is invisible; the trace then lands in the offscreen document's console,
+// which is reachable through chrome://extensions -> Inspect views: offscreen.html.
+const GOOGLE_VISIBLE = false;
+// The tab the visible runs reuse, so a run left open for inspection is not joined by a second one.
+let googleDebugTabId = null;
+// Amica is kept loaded in the hidden runner between searches, so a lookup starts at the quoting ZIP
+// instead of waiting for the whole site to boot. Only the frame itself can tell when its form is up,
+// so it reports back (AMICA_RUNNER_READY) and that report is what is trusted here.
+const AMICA_WARM_KEY = 'amica_runner_ready';
+const AMICA_WARM_TTL_MS = 10 * 60 * 1000;
+// How long a warm page gets to pick a quote up before the run falls back to loading Amica normally.
+const AMICA_WARM_FALLBACK_MS = 4000;
+
+// Fire-and-forget beside the Unmask run, so it needs its own stop: a page that never answers (a
+// consent wall, a script that never loads) must not leave the runner loaded for ever.
+const GOOGLE_RUN_BUDGET_MS = 150000;
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'LOOKUP_PHONE') {
-    startParallelLookup(request.phone, request.session, sender, sendResponse);
+    handleAuthorizedLookup(request.phone, request.session, sender, sendResponse);
     return true; // Keep channel open for async response
+  }
+  if (request.action === 'AUTH_LOGIN') {
+    handleAuthLogin(request.username, request.password, request.apiUrl, sendResponse);
+    return true;
+  }
+  if (request.action === 'AUTH_SYNC_QUOTA') {
+    handleAuthSyncQuota(sendResponse);
+    return true;
+  }
+  if (request.action === 'AUTH_LOGOUT') {
+    chrome.storage.local.remove(['dnc_auth_token', 'dnc_auth_user']).then(() => {
+      chrome.runtime.sendMessage({ action: 'AUTH_LOGGED_OUT' }).catch(() => {});
+      if (sendResponse) sendResponse({ success: true });
+    });
+    return true;
   }
   if (request.action === 'PAGE_PHONE_DETECTED') {
     // Relay to any open standalone windows or popups
@@ -80,6 +222,30 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'START_VEHICLE_LOOKUP') {
     startVehicleLookup(request.provider, request.profile, sendResponse);
     return true;
+  }
+  // amica_automation.js / unmask_automation.js / thatsthem_automation.js ask this before they
+  // drive their page. It must be answered, or the automation treats the unanswered message as
+  // "not ours" and silently does nothing - which is what left the UI stuck on "Initializing
+  // Amica vehicle lookup...".
+  //
+  // A content script in a normal tab always has `sender.tab`; the offscreen document is not a
+  // tab, so it is the only context in which a subframe can legitimately be told yes. A page that
+  // embeds one of these sites in a frame of its own is in a tab, and is refused.
+  if (request.action === 'RUNNER_HELLO') {
+    sendResponse({ ok: !sender || !sender.tab });
+    return true;
+  }
+  // A security check has appeared. There is nothing to click - Cloudflare only accepts a real
+  // hand - so all this does is put the check in front of the user once: in offscreen mode the run
+  // is promoted into a real tab (a hidden frame cannot be shown), in tab mode that tab is simply
+  // brought forward. When the run ends the tab is handed back (see restoreCallerTab).
+  if (request.action === 'FOCUS_LOOKUP_TAB') {
+    bringLookupIntoView(sender).catch(() => {});
+  }
+  // The user cleared the check in the promoted tab. The tab stays open - the run still needs it -
+  // but it goes back into the background and the user is returned to where they started.
+  if (request.action === 'CHALLENGE_CLEARED') {
+    hideLookupAfterChallenge(sender).catch(() => {});
   }
   // Amica asks for a validated address when it rejects every address the person has.
   if (request.action === 'GEOCODE_ADDRESS') {
@@ -92,42 +258,43 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     cancelVehicleLookup(sendResponse);
     return true;
   }
+  // Amica found no vehicles for the address it was given. Its other addresses are tried before the
+  // lookup is reported as empty.
+  if (request.action === 'AMICA_NEXT_ADDRESS') {
+    retryAmicaWithAddress(request, sendResponse);
+    return true;
+  }
+  // The hidden Amica page reports whether it is loaded and idle. That report is what lets the next
+  // lookup start at the quoting ZIP instead of booting the site again.
+  if (request.action === 'AMICA_RUNNER_READY') {
+    setAmicaWarm(!!request.ready);
+  }
   if (request.action === 'VEHICLE_LOOKUP_PROGRESS') {
+    // A warm Amica has picked the quote up and is running: the fallback loader must not fire.
+    if (activeVehicleLookup) activeVehicleLookup.sawProgress = true;
     broadcastVehicleMessage(request);
   }
   if (request.action === 'VEHICLE_LOOKUP_SUCCESS') {
     broadcastVehicleMessage(request);
-    if (activeVehicleLookup && activeVehicleLookup.tabId) {
-      setTimeout(() => {
-        if (activeVehicleLookup && activeVehicleLookup.tabId) {
-          chrome.tabs.remove(activeVehicleLookup.tabId).catch(() => {});
-          activeVehicleLookup = null;
-        }
-      }, 1500);
-    }
+    // Give the widget a moment to read the broadcast before the run is torn down.
+    setTimeout(() => finishVehicleLookup(), 1500);
   }
   if (request.action === 'VEHICLE_LOOKUP_EMPTY') {
     broadcastVehicleMessage(request);
-    if (activeVehicleLookup && activeVehicleLookup.tabId) {
-      setTimeout(() => {
-        if (activeVehicleLookup && activeVehicleLookup.tabId) {
-          chrome.tabs.remove(activeVehicleLookup.tabId).catch(() => {});
-          activeVehicleLookup = null;
-        }
-      }, 1500);
-    }
+    setTimeout(() => finishVehicleLookup(), 1500);
   }
   if (request.action === 'VEHICLE_LOOKUP_ERROR') {
     broadcastVehicleMessage(request);
-    if (activeVehicleLookup && activeVehicleLookup.tabId) {
-      chrome.tabs.remove(activeVehicleLookup.tabId).catch(() => {});
-      activeVehicleLookup = null;
-    }
+    finishVehicleLookup();
   }
 
-  // DOB Lookup Actions (Unmask.com)
+  // DOB Lookup Actions (Unmask.com, with Google AI Mode running beside it)
   if (request.action === 'START_DOB_LOOKUP') {
-    startDobLookup(request.person, request.phone, sendResponse, sender);
+    // Only the platforms the user left switched on in Settings are asked. Google AI Mode answers the
+    // same question from the same record, so it is started here - and deliberately *not* awaited: it
+    // reports on its own line, so a Google page that is slow (or that never answers at all) can never
+    // hold the Unmask / ThatSthem dates back.
+    startDobLookupWithSettings(request, sendResponse, sender);
     return true;
   }
   if (request.action === 'CANCEL_DOB_LOOKUP') {
@@ -135,11 +302,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   if (request.action === 'DOB_LOOKUP_NEXT_ADDRESS') {
-    advanceDobNextAddress(sender?.tab?.id, sendResponse);
+    // `force` is the page's last word: it asked for the next step, was told the page was still being
+    // replaced, and asked again. Honouring it is what keeps a run from sitting on a page for ever.
+    advanceDobNextAddress(sender?.tab?.id, sendResponse, request.record, request.force);
     return true;
   }
-  // ThatSthem's Turnstile lives in a closed shadow root, so the extension cannot click
-  // it - surface the tab so the user can complete the check.
+  // A security check has appeared on the lookup page. The extension does not try to clear it -
+  // it only brings the tab to the front once, so the user can solve it, and the run carries on
+  // by itself afterwards. When the run ends the tab is handed back (see restoreCallerTab).
   if (request.action === 'FOCUS_LOOKUP_TAB') {
     const tabId = sender?.tab?.id;
     if (tabId) {
@@ -157,41 +327,35 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   if (request.action === 'DOB_LOOKUP_EMPTY' || request.action === 'DOB_LOOKUP_ERROR') {
     broadcastDobMessage(request);
-    // Let the user read the last line, then hand their tab back to them.
-    endDobLookup(activeDobLookup && activeDobLookup.session, 1500);
-  }
-
-  // Mouse movement & click recording automation
-  if (request.action === 'START_MOUSE_RECORDING') {
-    handleStartMouseRecording(request.target, sender, sendResponse);
-    return true;
-  }
-  if (request.action === 'RECORDER_IFRAME_CLICK') {
-    const tabId = sender?.tab?.id || activeMouseRecordingTabId;
-    if (tabId) {
-      chrome.tabs.sendMessage(tabId, request).catch(() => {});
+    // Let the user read the last line, then hand their tab back to them. A message from a run
+    // that has already been replaced by a press on the other record must not end the run that is
+    // actually in flight, though.
+    const runRecord = activeDobLookup && activeDobLookup.session ? activeDobLookup.session.record : '';
+    if (!request.record || !runRecord || String(request.record) === runRecord) {
+      endDobLookup(activeDobLookup && activeDobLookup.session, 1500);
     }
-    return false;
   }
-  if (request.action === 'MOUSE_RECORDING_COMPLETED') {
-    handleMouseRecordingCompleted(request, sender, sendResponse);
-    return true;
-  }
-  if (request.action === 'REPLAY_MACRO_CLICK') {
-    handleReplayMacroClick(request, sender, sendResponse);
-    return true;
-  }
-  if (request.action === 'CANCEL_MOUSE_RECORDING') {
-    handleCancelMouseRecording(sendResponse);
-    return true;
-  }
-  if (request.action === 'DELETE_MOUSE_RECORDING') {
-    handleDeleteMouseRecording(request.target, sendResponse);
-    return true;
-  }
-});
 
-let activeMouseRecordingTabId = null;
+  // Google AI Mode, the parallel DOB source. Its messages name the record they belong to just as the
+  // Unmask ones do, so a result is drawn on the card that asked for it and never on the other one.
+  if (request.action === 'GOOGLE_LOOKUP_PROGRESS') {
+    broadcastDobMessage(request);
+  }
+  if (request.action === 'GOOGLE_DOB_RESULT') {
+    broadcastDobMessage(request);
+    // The answer has been found and is on the card: park the runner (or close the visible debug tab)
+    // and drop the pending session.
+    finishGoogleLookup(true, false);
+  }
+  if (request.action === 'GOOGLE_DOB_NEXT_ADDRESS') {
+    nextGoogleAddress(sendResponse);
+    return true;
+  }
+  if (request.action === 'GOOGLE_LOOKUP_EMPTY') {
+    broadcastDobMessage(request);
+  }
+
+});
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   if (activeVehicleLookup && activeVehicleLookup.tabId === tabId) {
@@ -199,14 +363,6 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
   if (activeDobLookup && activeDobLookup.tabId === tabId) {
     activeDobLookup = null;
-  }
-  if (activeMouseRecordingTabId && activeMouseRecordingTabId === tabId) {
-    activeMouseRecordingTabId = null;
-    chrome.storage.local.get(['active_mouse_recording'], (res) => {
-      if (res && res.active_mouse_recording && res.active_mouse_recording.active) {
-        chrome.storage.local.remove('active_mouse_recording');
-      }
-    });
   }
 });
 
@@ -223,6 +379,12 @@ let lastUserTabId = null;
 function isWebPageUrl(url) {
   return !!url && !/^(chrome|edge|about|devtools|chrome-extension|edge-extension|moz-extension):/i.test(url);
 }
+
+chrome.tabs.query({ active: true, lastFocusedWindow: true }).then((tabs) => {
+  if (tabs && tabs[0] && tabs[0].id) {
+    if (isWebPageUrl(tabs[0].url)) lastUserTabId = tabs[0].id;
+  }
+}).catch(() => {});
 
 chrome.tabs.onActivated.addListener((info) => {
   if (!info || !info.tabId) return;
@@ -246,7 +408,7 @@ function isPoBox(addrStr) {
 // ---------------------------------------------------------------------------
 // Address completion via Nominatim (OpenStreetMap)
 //
-// vibegenx.com frequently returns only the street ("3724 Kildare Dr") while
+// infolookupp.com frequently returns only the street ("3724 Kildare Dr") while
 // infolookup.site returns the whole thing ("3724 Kildare Dr, Houston, Texas
 // 77047"). Amica, Mercury and Unmask all need city + state + zip, so the missing
 // parts are resolved here - once per unique address, cached and rate limited to
@@ -465,6 +627,40 @@ function isTrustworthyHit(addr, hints, hit) {
   return { ok: true, reason: '' };
 }
 
+// "1361 Vz County Road 2403" -> "Vz County Road 2403". Rural roads are mapped in OSM without house
+// numbers, so the address-carrying query can come back empty while the road itself is there with the
+// city and zip this record is missing.
+function streetWithoutNumber(value) {
+  return String(value || '')
+    .replace(/^\s*\d+[a-z]?\s+/i, '')
+    .trim();
+}
+
+// Whether that second question is worth asking at all. It is only asked for a road whose name carries
+// an identifier of its own - "Vz County Road 2403", "Farm to Market Road 859", "County Road 12" - which
+// is specific enough to stand on its own in one state. A bare "Oak St" is not: the same name exists in
+// dozens of cities and the first hit could be in any of them, and a wrong city or zip is worse than a
+// missing one.
+function looksLikeNumberedRoad(value) {
+  const s = String(value || '').toLowerCase();
+  if (!/\d/.test(s)) return false;
+  return /\b(county|county road|farm to market|farm|ranch|fm|rr|state|us|hwy|highway|loop|spur|old)\b/.test(s);
+}
+
+// The fields a hit can fill in. Never the street unless the record has none.
+function completionOf(addr, hit) {
+  const osm = (hit && hit.address) || {};
+  const completed = {
+    street: [osm.house_number, osm.road].filter(Boolean).join(' ') || String(addr.street || '').trim(),
+    city: osm.city || osm.town || osm.village || osm.hamlet || osm.municipality || '',
+    state: stateToCode(osm.state),
+    zip: normalizeZip(osm.postcode),
+    displayName: hit.display_name || ''
+  };
+  if (!completed.city && !completed.state && !completed.zip) return null;
+  return completed;
+}
+
 // Fills in the missing city/state/zip of a partial address (never overwriting
 // what the record already knows). Returns the completed fields or null.
 async function completeAddress(addr, hints) {
@@ -475,40 +671,59 @@ async function completeAddress(addr, hints) {
   const cached = cache.get(key);
   if (cached && cached.expiresAt > Date.now()) return cached.address;
 
-  const query = buildNominatimQuery(addr, hints);
-  if (!query) return null;
+  // The address as the record has it, and - for a rural street that OSM knows without house numbers -
+  // the road on its own. The record's own street is never overwritten, so this can only fill blanks in.
+  const queries = [];
+  const full = buildNominatimQuery(addr, hints);
+  if (full) queries.push(full);
 
-  let results;
-  try {
-    results = await fetchNominatim(query);
-  } catch (e) {
-    console.warn(`[Background] Address completion failed for "${query}":`, e.message);
-    return null;
+  const street = String(addr.street || addr.full || '').trim();
+  const withoutNumber = streetWithoutNumber(street);
+  if (withoutNumber && withoutNumber !== street && looksLikeNumberedRoad(street)) {
+    const roadOnly = buildNominatimQuery(Object.assign({}, addr, { street: withoutNumber }), hints);
+    if (roadOnly && queries.indexOf(roadOnly) < 0) queries.push(roadOnly);
   }
 
-  if (!Array.isArray(results) || results.length === 0) return null;
+  for (let i = 0; i < queries.length; i++) {
+    const query = queries[i];
+    const roadOnly = i > 0;
 
-  const hit = results[0];
-  const verdict = isTrustworthyHit(addr, hints, hit);
-  if (!verdict.ok) {
-    console.warn(`[Background] Ignored address result for "${query}": ${verdict.reason}`);
-    return null;
+    let results;
+    try {
+      results = await fetchNominatim(query);
+    } catch (e) {
+      // A failing API (403, timeout, offline) is not asked again with the fallback query: only "no
+      // results" for the address-carrying query means the road itself is worth a look.
+      console.warn(`[Background] Address completion failed for "${query}":`, e.message);
+      break;
+    }
+
+    if (!Array.isArray(results) || results.length === 0) continue;
+
+    const hit = results[0];
+    const osm = hit.address || {};
+    if (roadOnly && !osm.road) continue; // not a road: not about this address at all
+
+    // The same strict verdict for both questions: the road name still has to be ours (the house number
+    // only makes it stricter), because a wrong city or zip is worse than a missing one. Asking about
+    // the road without its house number only removes the reason a hit could not be found - it does not
+    // loosen what is accepted.
+    const verdict = isTrustworthyHit(addr, hints, hit);
+    if (!verdict.ok) {
+      console.warn(`[Background] Ignored address result for "${query}": ${verdict.reason}`);
+      continue;
+    }
+
+    const completed = completionOf(addr, hit);
+    if (!completed) continue;
+
+    cache.set(key, { address: completed, expiresAt: Date.now() + ADDRESS_CACHE_TTL_MS });
+    persistAddressCache();
+    console.log(`[Background] Completed address "${query}" -> ${completed.street}, ${completed.city}, ${completed.state} ${completed.zip}`);
+    return completed;
   }
 
-  const osm = hit.address || {};
-  const completed = {
-    street: [osm.house_number, osm.road].filter(Boolean).join(' ') || String(addr.street || '').trim(),
-    city: osm.city || osm.town || osm.village || osm.hamlet || osm.municipality || '',
-    state: stateToCode(osm.state),
-    zip: normalizeZip(osm.postcode),
-    displayName: hit.display_name || ''
-  };
-  if (!completed.city && !completed.state && !completed.zip) return null;
-
-  cache.set(key, { address: completed, expiresAt: Date.now() + ADDRESS_CACHE_TTL_MS });
-  persistAddressCache();
-  console.log(`[Background] Completed address "${query}" -> ${completed.street}, ${completed.city}, ${completed.state} ${completed.zip}`);
-  return completed;
+  return null;
 }
 
 // Keeps everything the record already had and only fills the blanks.
@@ -644,12 +859,11 @@ async function geocodeAddressForQuote(addr) {
 
 async function startVehicleLookup(provider, profile, sendResponse) {
   try {
-    if (activeVehicleLookup && activeVehicleLookup.tabId) {
-      chrome.tabs.remove(activeVehicleLookup.tabId).catch(() => {});
-      activeVehicleLookup = null;
-    }
+    // Clear whatever the previous run left behind, in either mode. Nothing is pre-loaded here: this
+    // run is about to take the Amica frame itself.
+    finishVehicleLookup({ prepareNext: false });
 
-    // Street-only records (vibegenx.com) would leave Amica/Mercury without city or
+    // Street-only records (infolookupp.com) would leave Amica/Mercury without city or
     // zip and make them fall back to a default city - complete them first.
     if (profile && profile.address) {
       const holder = { address: profile.address, allAddresses: profile.allAddresses };
@@ -686,20 +900,39 @@ async function startVehicleLookup(provider, profile, sendResponse) {
       timestamp: Date.now()
     };
 
+    // Amica is already loaded and idle in the hidden runner: writing the quote IS the start. The page
+    // notices it where it stands and begins at the quoting ZIP, with no reload in between - which is
+    // the whole point of keeping it warm.
+    if (provider === 'amica' && (await amicaRunnerIsWarm())) {
+      await chrome.storage.local.set({ [storageKey]: quoteData });
+      setAmicaWarm(false);
+
+      activeVehicleLookup = {
+        tabId: null,
+        provider: 'amica',
+        profile,
+        offscreen: true,
+        warm: true,
+        startTime: Date.now()
+      };
+
+      armAmicaWarmFallback(profile);
+      if (sendResponse) sendResponse({ success: true, offscreen: true, warm: true });
+      return;
+    }
+
     await chrome.storage.local.set({ [storageKey]: quoteData });
 
-    // Ensure stale quote sessions/cookies on amica.com are wiped before opening tab
-    if (provider === 'amica' && chrome.cookies) {
-      try {
-        const amicaCookies = await chrome.cookies.getAll({ domain: 'amica.com' });
-        for (const c of amicaCookies) {
-          const cookieDomain = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
-          const cookieUrl = `https://${cookieDomain}${c.path}`;
-          await chrome.cookies.remove({ url: cookieUrl, name: c.name, storeId: c.storeId }).catch(() => {});
-        }
-      } catch (e) {
-        console.warn('[Background] Could not clear Amica cookies:', e);
+    // Amica runs in the offscreen document's own frame, so the quote flow never takes a tab
+    // out of the user's tab strip. Mercury is left alone: it was never moved over, and its
+    // quote flow still expects a normal tab.
+    if (provider === 'amica') {
+      const started = await startAmicaInOffscreen(profile);
+      if (started) {
+        if (sendResponse) sendResponse({ success: true, offscreen: true });
+        return;
       }
+      console.warn('[Background] Offscreen Amica unavailable, falling back to a background tab');
     }
 
     const targetUrl = provider === 'amica' ? 'https://www.amica.com/' : 'https://www.mercuryinsurance.com/';
@@ -718,11 +951,225 @@ async function startVehicleLookup(provider, profile, sendResponse) {
   }
 }
 
-function cancelVehicleLookup(sendResponse) {
-  if (activeVehicleLookup && activeVehicleLookup.tabId) {
-    chrome.tabs.remove(activeVehicleLookup.tabId).catch(() => {});
-    activeVehicleLookup = null;
+// Amica finished the quote but listed no vehicles for the address it was given. Its other addresses
+// are worth trying: Amica only returns vehicles for an address it can tie to the person, and a
+// record's primary address is not always that one.
+//
+// The run is not ended - it is pointed at Amica again with the next address as the primary one, and
+// the new page walks the funnel from the quoting ZIP. Which addresses have already been tried lives
+// on the run, so this cannot bounce between two of them.
+async function retryAmicaWithAddress(msg, sendResponse) {
+  const run = activeVehicleLookup;
+  if (!run || run.provider !== 'amica') {
+    if (sendResponse) sendResponse({ ok: false });
+    return;
   }
+
+  const candidates = Array.isArray(msg.candidates) ? msg.candidates : [];
+  const usedUpTo = Number.isInteger(msg.usedUpTo) ? msg.usedUpTo : 0;
+  const key = (a) => String((a && (a.street || a.full)) || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  // Everything up to and including the address Amica actually used has now been tried.
+  if (!run.triedAddresses) run.triedAddresses = [];
+  for (let i = 0; i <= usedUpTo && i < candidates.length; i++) {
+    const k = key(candidates[i]);
+    if (k && run.triedAddresses.indexOf(k) < 0) run.triedAddresses.push(k);
+  }
+
+  const next = candidates.find((c) => c && c.street && run.triedAddresses.indexOf(key(c)) < 0);
+  if (!next) {
+    if (sendResponse) sendResponse({ ok: false, exhausted: true });
+    return;
+  }
+
+  const profile = {
+    ...(run.profile || {}),
+    address: next,
+    skippedPoBox: false,
+    timestamp: Date.now(),
+    retriedAddress: true
+  };
+  run.profile = profile;
+
+  // A fresh session: the address is entered during the quote, so the flow has to start over.
+  try {
+    await clearAmicaCookies();
+  } catch (e) {}
+
+  // Written before Amica is pointed at it, because the automation reads it once, on load.
+  await chrome.storage.local.set({ amica_pending_quote: profile });
+
+  if (run.tabId) {
+    chrome.tabs.update(run.tabId, { url: 'https://www.amica.com/' }).catch(() => {
+      chrome.tabs
+        .create({ url: 'https://www.amica.com/', active: false })
+        .then((tab) => {
+          if (activeVehicleLookup) activeVehicleLookup.tabId = tab.id;
+        })
+        .catch(() => {});
+    });
+  } else {
+    const prepared = await prepareRunner('amica.com');
+    if (!prepared.ok) {
+      console.warn('[Background] Could not retry Amica with another address (' + prepared.reason + ').');
+      if (sendResponse) sendResponse({ ok: false, reason: prepared.reason });
+      return;
+    }
+  }
+
+  broadcastVehicleMessage({
+    action: 'VEHICLE_LOOKUP_PROGRESS',
+    provider: 'amica',
+    step: 1,
+    totalSteps: 6,
+    message:
+      'No vehicles for that address - retrying with ' +
+      [next.street, next.city, next.state].filter(Boolean).join(', ') +
+      '...'
+  });
+
+  if (sendResponse) sendResponse({ ok: true });
+}
+
+// ------------------------------------------------------------------ keeping Amica loaded and idle
+
+// Records whether a loaded, idle Amica is sitting in the hidden runner. Only the frame can know
+// this, so nothing here is guessed: it is written when the page says it is usable and cleared the
+// moment a run takes it over.
+function setAmicaWarm(ready) {
+  if (ready) {
+    chrome.storage.local.set({ [AMICA_WARM_KEY]: { at: Date.now() } }).catch(() => {});
+  } else {
+    chrome.storage.local.remove(AMICA_WARM_KEY).catch(() => {});
+  }
+}
+
+async function amicaRunnerIsWarm() {
+  try {
+    const stored = await chrome.storage.local.get([AMICA_WARM_KEY]);
+    const warm = stored[AMICA_WARM_KEY];
+    if (!warm || !warm.at) return false;
+    return Date.now() - warm.at < AMICA_WARM_TTL_MS;
+  } catch (e) {
+    return false;
+  }
+}
+
+// Loads Amica in the hidden runner before it is asked for, so the next lookup begins at the quoting
+// ZIP rather than waiting for the site to boot. Cookies are cleared first, so the page that is
+// parked there is a fresh Amica session rather than the last run's.
+async function prewarmAmica() {
+  // A run in flight owns the frame: never reload it underneath one.
+  if (activeVehicleLookup) return false;
+
+  try {
+    setAmicaWarm(false);
+    await clearAmicaCookies();
+    await ensureOffscreenDocument();
+
+    const res = await chrome.runtime.sendMessage({ action: 'PREPARE_RUNNER', source: 'amica.com' });
+    if (!res || !res.ok) {
+      console.log('[Background] Amica could not be pre-loaded (' + ((res && res.error) || 'no-response') + ').');
+      return false;
+    }
+
+    console.log('[Background] Amica is loading in the hidden runner, ready for the next lookup.');
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// A warm page that does not pick the quote up - it was replaced by a fresh offscreen document, for
+// instance - must not leave the run sitting there: Amica is loaded normally instead.
+function armAmicaWarmFallback(profile) {
+  const run = activeVehicleLookup;
+  setTimeout(() => {
+    if (activeVehicleLookup !== run || run.sawProgress) return;
+    console.warn('[Background] The pre-loaded Amica did not start - loading it normally.');
+    finishVehicleLookup({ prepareNext: false });
+    startVehicleLookup('amica', profile, null).catch(() => {});
+  }, AMICA_WARM_FALLBACK_MS);
+}
+
+// The offscreen path for Amica.
+//
+// The pending quote is written to storage BEFORE the frame is asked to load, because
+// amica_automation.js reads it once on load: if the frame loaded first it would find nothing
+// and the run would never start. Clearing the stale cookies is what makes the new frame load
+// a fresh Amica session rather than the previous run's.
+async function startAmicaInOffscreen(profile) {
+  try {
+    await clearAmicaCookies();
+
+    const quoteData = { ...profile, timestamp: Date.now() };
+    await chrome.storage.local.set({ amica_pending_quote: quoteData });
+
+    await ensureOffscreenDocument();
+
+    const res = await chrome.runtime.sendMessage({
+      action: 'PREPARE_RUNNER',
+      source: 'amica.com'
+    });
+    if (!res || !res.ok) {
+      await chrome.storage.local.remove(['amica_pending_quote']);
+      return false;
+    }
+
+    activeVehicleLookup = {
+      tabId: null,
+      provider: 'amica',
+      profile,
+      offscreen: true,
+      startTime: Date.now()
+    };
+    return true;
+  } catch (e) {
+    console.warn('[Background] Could not start Amica offscreen:', e.message);
+    await chrome.storage.local.remove(['amica_pending_quote']).catch(() => {});
+    return false;
+  }
+}
+
+async function clearAmicaCookies() {
+  if (!chrome.cookies) return;
+  try {
+    const amicaCookies = await chrome.cookies.getAll({ domain: 'amica.com' });
+    for (const c of amicaCookies) {
+      const cookieDomain = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
+      const cookieUrl = `https://${cookieDomain}${c.path}`;
+      await chrome.cookies.remove({ url: cookieUrl, name: c.name, storeId: c.storeId }).catch(() => {});
+    }
+  } catch (e) {
+    console.warn('[Background] Could not clear Amica cookies:', e);
+  }
+}
+
+// Ends a run in whichever mode it was started. In offscreen mode there is no tab to close, but
+// the frame is parked back on about:blank so the finished quote (name, address, vehicles) is
+// not left sitting in the offscreen document, and the pending quote is cleared either way.
+function finishVehicleLookup({ clearQuote = true, prepareNext = true } = {}) {
+  if (!activeVehicleLookup) return;
+  const run = activeVehicleLookup;
+  activeVehicleLookup = null;
+
+  if (run.tabId) {
+    chrome.tabs.remove(run.tabId).catch(() => {});
+  } else if (run.offscreen && run.provider === 'amica') {
+    chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: 'amica.com' }).catch(() => {});
+    // Load the next Amica before it is asked for: the frame goes back to a fresh Amica session and
+    // reports when its form is up, so the following search starts at the quoting ZIP.
+    if (prepareNext) prewarmAmica().catch(() => {});
+  }
+
+  if (clearQuote) {
+    const keys = run.provider === 'amica' ? ['amica_pending_quote'] : ['mercury_pending_quote'];
+    chrome.storage.local.remove(keys).catch(() => {});
+  }
+}
+
+function cancelVehicleLookup(sendResponse) {
+  finishVehicleLookup();
   chrome.storage.local.remove(['amica_pending_quote', 'mercury_pending_quote']).catch(() => {});
   if (sendResponse) sendResponse({ success: true });
 }
@@ -1054,11 +1501,218 @@ async function restoreCallerTab(session, lookupTabId) {
   }
 }
 
+// Unmask and ThatSthem each read their own storage key and one run spans both, so the session is
+// kept under both names - exactly as goToThatsThemStep has always written it.
+function persistDobSession(session) {
+  return chrome.storage.local
+    .set({ unmask_pending_lookup: session, [THATSTHEM_STORAGE_KEY]: session })
+    .catch(() => {});
+}
+
+// Starts a DOB step inside the hidden offscreen runner. False means the runner is not available,
+// so the caller falls back to a real background tab.
+//
+// A `no-frame` answer is retried once against a freshly created offscreen document: it means the
+// open document does not have the frame this version of the code expects, which is what happens
+// when a document from an earlier install outlives an update. Without the retry that stale state
+// quietly degraded every DOB run into the visible tab this was built to remove.
+// "This document is no use": either it has no such runner, or it exists but is not answering at all.
+// Both are worth one freshly created document before anything falls back to a tab.
+const REPLACE_DOCUMENT_REASONS = ['no-frame', 'unknown-source', 'offscreen-not-listening'];
+
+// Starts a DOB step inside the hidden offscreen runner. The answer carries the reason when the
+// runner is not available, so the caller can fall back to a real background tab *and* say why.
+async function startDobInOffscreen(frame, url) {
+  let prepared = await prepareRunner(frame, url);
+
+  if (!prepared.ok && REPLACE_DOCUMENT_REASONS.includes(prepared.reason)) {
+    console.warn(
+      '[Background] Offscreen document unusable for "' + frame + '" (' + prepared.reason + ') - recreating it.'
+    );
+    await ensureOffscreenDocument(true).catch(() => {});
+    prepared = await prepareRunner(frame, url);
+  }
+
+  if (!prepared.ok) {
+    console.warn(
+      '[Background] Hidden runner unavailable for ' + frame + ' (' + prepared.reason +
+        ') - using a background tab instead.'
+    );
+  }
+  return { ok: prepared.ok, reason: prepared.reason || '' };
+}
+
+// Opens a DOB run. The hidden offscreen runner is used first so that no tab ever appears in the
+// user's tab strip; a real background tab is the fallback when the offscreen document cannot be
+// created. `session` must already be in storage before the runner loads, because the content
+// script reads it exactly once on load.
+async function openDobRunner(url, session) {
+  session.currentUrl = url;
+  await persistDobSession(session);
+
+  const run = {
+    mode: 'offscreen',
+    tabId: null,
+    // The frame that drives the whole run. It stays the Unmask frame even after the search moves
+    // on to ThatSthem, because it is the frame element - not the site loaded inside it - that
+    // PREPARE_RUNNER and RESET_RUNNER address.
+    source: 'unmask.com',
+    session,
+    startTime: Date.now()
+  };
+
+  const prepared = await startDobInOffscreen(run.source, url);
+  if (prepared.ok) {
+    activeDobLookup = run;
+    return run;
+  }
+
+  // Remembered so the progress line can say why this run is not hidden, instead of the reason
+  // living only in the service-worker console.
+  run.fallbackReason = prepared.reason;
+
+  // Say so out loud. Every other path keeps the run invisible, so a tab appearing in the tab
+  // strip with no explanation is exactly what the hidden runner exists to avoid.
+  console.warn('[Background] Falling back to a background tab for the DOB run.');
+  broadcastDobMessage({
+    action: 'DOB_LOOKUP_PROGRESS',
+    step: 1,
+    totalSteps: 5,
+    message: 'Hidden runner unavailable - this lookup is using a background tab.',
+    record: session.record || ''
+  });
+
+  const tab = await chrome.tabs.create({ url, active: false });
+  run.mode = 'tab';
+  run.tabId = tab.id;
+  // The tab id is kept in the persisted session as well: if the service worker is restarted mid-run
+  // the in-memory run is gone, and nothing would ever close that tab again.
+  session.dobTabId = tab.id;
+  persistDobSession(session);
+  activeDobLookup = run;
+  return run;
+}
+
+// A security check cannot be solved in the offscreen runner: a hidden frame cannot be put in
+// front of anyone. The run is handed over to a real tab sitting on the same step, which is left
+// in front of the user to solve, and the frame is parked so only one runner stays live.
+//
+// The URL comes from `session.currentUrl`, which the background records as it walks the run,
+// rather than from the page that reported the check. Cloudflare normally serves its interstitial
+// on the same URL, but it can also redirect to /cdn-cgi/challenge-platform/... - promoting to
+// that would put the user in front of a page with nothing to solve.
+async function promoteDobRunToTab(reportedUrl) {
+  const run = activeDobLookup;
+  if (!run) return false;
+
+  // Already promoted: nothing to create, so just keep it in front.
+  if (run.mode === 'tab' && run.tabId) {
+    chrome.tabs.update(run.tabId, { active: true }).catch(() => {});
+    return true;
+  }
+
+  const session = run.session || (await storedDobSession());
+  const url = (session && session.currentUrl) || reportedUrl || null;
+  if (!url) return false;
+
+  let tab;
+  try {
+    tab = await chrome.tabs.create({ url, active: true });
+  } catch (e) {
+    return false;
+  }
+
+  // Only one runner may be live. Left alone, the frame would keep re-reading the challenge page
+  // and asking to be promoted over and over.
+  chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: run.source }).catch(() => {});
+  chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: 'thatsthem.com' }).catch(() => {});
+
+  run.mode = 'tab';
+  run.tabId = tab.id;
+  // Why this run is in a tab, so the progress line can say so.
+  run.promotedForCheck = true;
+
+  if (session) {
+    session.promotedForChallenge = true;
+    session.challengeCleared = false;
+    // Kept in the session as well, so a service-worker restart cannot orphan this tab.
+    session.dobTabId = tab.id;
+    persistDobSession(session);
+  }
+
+  if (tab.windowId !== undefined) {
+    chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+  }
+  return true;
+}
+
+// "Put this lookup in front of the user." In offscreen mode that means promoting the run into a
+// tab; in tab mode the tab is activated, which is what this has always done.
+async function bringLookupIntoView(sender) {
+  const run = activeDobLookup;
+
+  if (run && run.mode === 'offscreen') {
+    await promoteDobRunToTab(sender && sender.url);
+    return;
+  }
+
+  const tabId = (sender && sender.tab && sender.tab.id) || (run && run.tabId);
+  if (!tabId) return;
+
+  chrome.tabs.update(tabId, { active: true }).catch(() => {});
+  if (sender && sender.tab && sender.tab.windowId !== undefined) {
+    chrome.windows.update(sender.tab.windowId, { focused: true }).catch(() => {});
+  }
+
+  // The same hand-back applies when the run was already in a tab (the offscreen document was
+  // unavailable): once the check is gone that tab hides itself and the user is returned to where
+  // they started, exactly as the promoted case does.
+  //
+  // `challengeCleared` is reset rather than only set: a check has just (re)appeared, so the
+  // hand-back for *this* one has not happened yet. Leaving the flag from the previous check would
+  // mean a later one is solved and the user is never handed back.
+  if (run && run.tabId === tabId) {
+    const session = run.session || (await storedDobSession());
+    if (session) {
+      session.promotedForChallenge = true;
+      session.challengeCleared = false;
+      persistDobSession(session);
+    }
+  }
+}
+
+// The check is solved: hide it again and hand the user back to where they started.
+//
+// The tab is deliberately NOT closed here. Closing it was tried and reverted, because whether a
+// hidden frame gets challenged is a different question from whether a top-level tab does: the frame
+// came back challenged straight after the user had cleared the check in the tab, so it was promoted
+// again, the tab loaded cleanly, reported "cleared", and was closed - a tab that opened and closed
+// over and over. The run therefore stays in the tab, the tab drops to the background, and the user
+// gets their own tab back; endDobLookup() closes it when the run finishes.
+async function hideLookupAfterChallenge(sender) {
+  const run = activeDobLookup;
+  if (!run || run.mode !== 'tab' || !run.tabId) return;
+
+  // Only the promoted tab may hide itself. The offscreen frame reports challenges too, and it
+  // must never be the reason the user's view is taken away.
+  if (!sender || !sender.tab || sender.tab.id !== run.tabId) return;
+
+  const session = run.session || (await storedDobSession());
+  if (session && session.challengeCleared) return;
+  if (session) {
+    session.challengeCleared = true;
+    persistDobSession(session);
+  }
+
+  await restoreCallerTab(session, run.tabId);
+}
+
 // Ends a DOB run: the user is taken back to where they started, the lookup tab closes (after a
 // beat, so the final line stays readable) and the pending session is dropped.
 async function endDobLookup(session, delayMs) {
   const pending = session || (await storedDobSession());
-  const lookupTabId = (activeDobLookup && activeDobLookup.tabId) || null;
+  const run = activeDobLookup;
+  const lookupTabId = (run && run.tabId) || null;
 
   if (lookupTabId) {
     await restoreCallerTab(pending, lookupTabId);
@@ -1068,12 +1722,252 @@ async function endDobLookup(session, delayMs) {
         activeDobLookup = null;
       }
     }, Math.max(0, delayMs || 0));
+  } else if (run && run.mode === 'offscreen') {
+    // No tab was ever opened, so there is nothing to close and nowhere to send the user: the
+    // runner is simply parked back on about:blank so the results are not left sitting in memory.
+    chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: run.source }).catch(() => {});
+    activeDobLookup = null;
   }
 
   chrome.storage.local.remove(['unmask_pending_lookup', THATSTHEM_STORAGE_KEY]).catch(() => {});
 }
 
-async function startDobLookup(person, phone, sendResponse, sender) {
+// The record's age and, when it names one, its explicit birth year ("72 yrs (1954)").
+function parseTargetAgeAndYear(person) {
+  let targetAge = null;
+  let targetYear = null;
+
+  if (person && person.age) {
+    const s = String(person.age);
+    const currentYear = new Date().getFullYear();
+
+    // 1. Explicit birth year, e.g. "72 yrs (1954)"
+    const yearM = s.match(/\b(19\d{2}|20[0-1]\d)\b/);
+    if (yearM) {
+      const y = parseInt(yearM[1], 10);
+      const calc = currentYear - y;
+      if (calc >= 10 && calc <= 110) targetYear = y;
+    }
+
+    // 2. Age in years, e.g. "72 yrs", "72 years old", "(72)"
+    const ageM = s.match(/\b(\d{2})\s*(?:yrs?|years?|yo)?\b/i) || s.match(/\b(\d{2,3})\b/);
+    if (ageM) {
+      targetAge = parseInt(ageM[1], 10);
+    } else if (targetYear) {
+      targetAge = currentYear - targetYear;
+    }
+  }
+
+  return { targetAge, targetYear };
+}
+
+// -------------------------------------------------------------------- Google AI Mode (parallel DOB)
+
+// Google AI Mode runs *beside* the Unmask / ThatSthem run, not instead of it, so the dates it finds
+// can be compared with theirs. The query is the one that works by hand:
+//
+//   "{name} lives at {address} born in {year} in which month ? no rough guess accurate"
+//
+// It is asked for the record's primary address first, and then - one at a time, each on its own
+// page load - for the person's other addresses, because an address the AI cannot place usually
+// produces no answer at all.
+function buildGoogleQueries(person) {
+  if (!person) return [];
+
+  const name = String(person.name || '').trim();
+  const { targetYear } = parseTargetAgeAndYear(person);
+  if (!name || !targetYear) return [];
+
+  // normalizeAddressList puts the primary address first and drops entries with no city or ZIP -
+  // exactly the ones the AI cannot place.
+  const addresses = [];
+  for (const addr of normalizeAddressList(person)) {
+    const cityState = [addr.city, addr.state].filter(Boolean).join(', ');
+    const tail = [cityState, addr.zip].filter(Boolean).join(' ');
+    const line = [addr.street, tail]
+      .filter(Boolean)
+      .join(', ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (line && addresses.indexOf(line) < 0) addresses.push(line);
+    if (addresses.length >= GOOGLE_MAX_ADDRESSES) break;
+  }
+
+  return addresses.map(
+    (address) => `${name} lives at ${address} born in ${targetYear} in which month ? no rough guess accurate`
+  );
+}
+
+// Stops the Google run: the runner is parked back on about:blank (or its tab closed) and the
+// pending session is dropped. `silent` is used when a new run is replacing this one, or when the
+// page simply never answered - the widget is not told anything it did not ask for. `keepTab` leaves
+// the visible debug tab in place instead of closing it.
+function finishGoogleLookup(silent, keepTab) {
+  const run = activeGoogleLookup;
+  activeGoogleLookup = null;
+
+  chrome.storage.local.remove(GOOGLE_STORAGE_KEY).catch(() => {});
+  // With the visible debug tab there is no hidden frame to park.
+  if (!GOOGLE_VISIBLE) {
+    chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: GOOGLE_RUNNER_FRAME }).catch(() => {});
+  }
+
+  if (run && run.mode === 'tab' && run.tabId && !keepTab) {
+    chrome.tabs.remove(run.tabId).catch(() => {});
+    if (googleDebugTabId === run.tabId) googleDebugTabId = null;
+  }
+
+  if (silent || !run || !run.session) return;
+  broadcastDobMessage({
+    action: 'GOOGLE_LOOKUP_EMPTY',
+    message: 'Google AI Mode did not name a birth month for any known address.',
+    record: run.session.record || ''
+  });
+}
+
+// A real, visible tab for the Google run (see GOOGLE_VISIBLE). One tab is reused for every run, so a
+// run that was left open for inspection is navigated again rather than joined by a second tab.
+async function openGoogleDebugTab(url) {
+  if (googleDebugTabId) {
+    try {
+      const existing = await chrome.tabs.get(googleDebugTabId);
+      if (existing && existing.id) {
+        await chrome.tabs.update(existing.id, { url, active: true });
+        if (existing.windowId !== undefined) {
+          chrome.windows.update(existing.windowId, { focused: true }).catch(() => {});
+        }
+        return existing;
+      }
+    } catch (e) {
+      // The tab was closed by hand: fall through and open a new one.
+    }
+    googleDebugTabId = null;
+  }
+
+  const tab = await chrome.tabs.create({ url, active: true });
+  googleDebugTabId = tab.id;
+  if (tab.windowId !== undefined) {
+    chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
+  }
+  return tab;
+}
+
+// The AI Mode page asks what to ask next once an address has produced nothing. The address list
+// lives here, so this is where it is advanced - and where the run is ended when there is nothing
+// left to ask.
+function nextGoogleAddress(sendResponse) {
+  const run = activeGoogleLookup;
+  const session = run && run.session;
+
+  if (!session) {
+    if (sendResponse) sendResponse({ exhausted: true });
+    return;
+  }
+
+  session.queryIndex += 1;
+  if (session.queryIndex >= session.queries.length) {
+    // Every address was asked and the answers held nothing that agrees with the record, so the run
+    // is over and its tab is closed - the user asked for exactly this: nothing in the paragraph,
+    // nothing left to try, close.
+    finishGoogleLookup(false, false);
+    if (sendResponse) sendResponse({ exhausted: true });
+    return;
+  }
+
+  chrome.storage.local.set({ [GOOGLE_STORAGE_KEY]: session }).catch(() => {});
+  if (sendResponse) {
+    sendResponse({ nextQuery: session.queries[session.queryIndex], index: session.queryIndex });
+  }
+}
+
+async function startGoogleDobLookup(person, record) {
+  try {
+    // A press on either record card supersedes the previous Google run. The tab is kept (not
+    // closed) because the next run navigates the same one.
+    finishGoogleLookup(true, true);
+
+    const queries = buildGoogleQueries(person);
+    if (queries.length === 0) return;
+
+    const session = {
+      record: record ? String(record) : '',
+      targetName: person.name || '',
+      targetYear: parseTargetAgeAndYear(person).targetYear,
+      queries,
+      queryIndex: 0,
+      status: 'searching',
+      startedAt: Date.now()
+    };
+
+    // Written before the runner loads: the content script reads it exactly once on load.
+    await chrome.storage.local.set({ [GOOGLE_STORAGE_KEY]: session });
+
+    const run = { mode: 'offscreen', tabId: null, source: GOOGLE_RUNNER_FRAME, session };
+
+    if (GOOGLE_VISIBLE) {
+      // Watch it work: a real tab, in front, so the query, the AI Mode switch and the answer can all
+      // be seen. This is the debug path - with GOOGLE_VISIBLE false the hidden offscreen runner is
+      // used and no tab ever appears.
+      const tab = await openGoogleDebugTab(GOOGLE_HOME_URL);
+      run.mode = 'tab';
+      run.tabId = tab.id;
+    } else if (!(await startDobInOffscreen(GOOGLE_RUNNER_FRAME, GOOGLE_HOME_URL)).ok) {
+      const tab = await chrome.tabs.create({ url: GOOGLE_HOME_URL, active: false });
+      run.mode = 'tab';
+      run.tabId = tab.id;
+    }
+
+    activeGoogleLookup = run;
+
+    // A run that returns no answer is over: the tab is closed like any other finished lookup, since
+    // the page has nothing left to show.
+    setTimeout(() => {
+      if (activeGoogleLookup && activeGoogleLookup.session === session) {
+        finishGoogleLookup(false, false);
+      }
+    }, GOOGLE_RUN_BUDGET_MS);
+  } catch (e) {
+    console.warn('[Background] Could not start the Google AI search:', e.message);
+  }
+}
+
+// A press on the DOB button runs only the platforms the Settings panel left switched on. The choice
+// is read here, once, and carried on the run's session: a switch flipped while a run is in flight
+// still cannot make that run fall back to a source the user has turned off.
+async function startDobLookupWithSettings(request, sendResponse, sender) {
+  const settings = await getAutomationSettings();
+  const sources = dobSourcesFromSettings(settings);
+  const record = request.record;
+
+  // Google AI Mode answers on its own line, so it needs no session of its own here.
+  if (sources.ai) {
+    startGoogleDobLookup(request.person, record);
+  }
+
+  if (!sources.unmask && !sources.thatsthem) {
+    // Nothing left to ask. The card is told instead of being left spinning.
+    const message = sources.ai
+      ? 'Unmask and ThatSthem are turned off in Settings - asking AI only.'
+      : 'All DOB sources are turned off in Settings.';
+    if (!sources.ai) {
+      broadcastDobMessage({
+        action: 'DOB_LOOKUP_EMPTY',
+        record: record ? String(record) : '',
+        message,
+        person: request.person || null
+      });
+    }
+    if (sendResponse) {
+      sendResponse(sources.ai ? { success: true, message } : { success: false, error: message });
+    }
+    return;
+  }
+
+  startDobLookup(request.person, request.phone, sendResponse, sender, record, sources);
+}
+
+async function startDobLookup(person, phone, sendResponse, sender, record, sources) {
   if (typeof phone === 'function') {
     sendResponse = phone;
     phone = null;
@@ -1084,10 +1978,26 @@ async function startDobLookup(person, phone, sendResponse, sender) {
       activeDobLookup = null;
     }
 
+    // A tab from an earlier run can outlive it: if the service worker was restarted, or the run was
+    // rebuilt from a message, the in-memory run is gone and nothing closed it. That is stored in the
+    // session for exactly this case - otherwise the *next* search shows a tab that looks like it
+    // belongs to it, which reads as "this run is in a tab" when it is not.
+    try {
+      const previous = await storedDobSession();
+      if (previous && previous.dobTabId) {
+        console.warn('[Background] Closing a lookup tab left behind by an earlier run.');
+        chrome.tabs.remove(previous.dobTabId).catch(() => {});
+      }
+    } catch (e) {}
+
+    // Which record card asked for this run. Every message the run produces carries it back, so a
+    // press on the other card can never show this record's DOB (and the other way round).
+    const recordSource = record ? String(record) : '';
+
     const rawPhone = phone || person?.phone || person?.phoneNumber || (person?.phones && person.phones[0]) || '';
 
     // normalizeAddressList drops addresses without a city/zip, so complete the
-    // street-only vibegenx.com records before the Unmask URLs are built.
+    // street-only infolookupp.com records before the Unmask URLs are built.
     if (person) {
       try {
         await completePersonAddresses(person);
@@ -1098,31 +2008,10 @@ async function startDobLookup(person, phone, sendResponse, sender) {
 
     const addresses = normalizeAddressList(person);
 
-    let targetAge = null;
-    // Records usually carry the explicit birth year next to the age,
-    // e.g. "72 yrs (1954)". Keeping it lets the Unmask run validate every
-    // DOB it finds against the real birth year instead of guessing.
-    let targetYear = null;
-    if (person && person.age) {
-      const s = String(person.age);
-      const currentYear = new Date().getFullYear();
-
-      // 1. Explicit birth year, e.g. "72 yrs (1954)"
-      const yearM = s.match(/\b(19\d{2}|20[0-1]\d)\b/);
-      if (yearM) {
-        const y = parseInt(yearM[1], 10);
-        const calc = currentYear - y;
-        if (calc >= 10 && calc <= 110) targetYear = y;
-      }
-
-      // 2. Age in years, e.g. "72 yrs", "72 years old", "(72)"
-      const ageM = s.match(/\b(\d{2})\s*(?:yrs?|years?|yo)?\b/i) || s.match(/\b(\d{2,3})\b/);
-      if (ageM) {
-        targetAge = parseInt(ageM[1], 10);
-      } else if (targetYear) {
-        targetAge = currentYear - targetYear;
-      }
-    }
+    // Records usually carry the explicit birth year next to the age, e.g. "72 yrs (1954)".
+    // Keeping it lets every source validate the DOB it finds against the real birth year instead of
+    // guessing. The same values drive the parallel Google AI Mode search.
+    const { targetAge, targetYear } = parseTargetAgeAndYear(person);
 
     let defaultState = '';
     let defaultCity = '';
@@ -1142,6 +2031,8 @@ async function startDobLookup(person, phone, sendResponse, sender) {
     defaultState = (defaultState || '').toUpperCase();
 
     const session = {
+      // The record card this run belongs to - echoed on every message it produces.
+      record: recordSource,
       targetName: person.name || '',
       targetAge: targetAge,
       targetYear: targetYear,
@@ -1154,12 +2045,45 @@ async function startDobLookup(person, phone, sendResponse, sender) {
       searchedNameState: false,
       addresses: addresses,
       addressIndex: 0,
-      status: 'searching'
+      status: 'searching',
+      // The platforms this run may ask, decided when the button was pressed. A source that is
+      // switched off in Settings is skipped outright - the run never falls back to it.
+      allowUnmask: !sources || sources.unmask !== false,
+      allowThatsThem: !sources || sources.thatsthem !== false
     };
 
     // Where the user was when they started this run: they are taken to Unmask when a
     // Cloudflare check appears, and put back on this tab once the run is over.
     session.callerTabId = await resolveCallerTabId(sender);
+
+    // Unmask is switched off in Settings: this run starts on ThatSthem instead, and it never falls
+    // forward into Unmask either. The session is kept in the same place and walked by the same code,
+    // so the card sees the same progress lines and the same result handling as any other run.
+    if (session.allowUnmask === false) {
+      activeDobLookup = {
+        mode: 'offscreen',
+        tabId: null,
+        source: 'unmask.com',
+        session,
+        startTime: Date.now()
+      };
+
+      const steps = buildThatsThemPlan(session);
+      broadcastDobMessage({
+        action: 'DOB_LOOKUP_PROGRESS',
+        step: 1,
+        totalSteps: 5,
+        message: steps.length
+          ? `Searching ${steps[0].label} on ThatSthem...`
+          : 'Searching on ThatSthem...',
+        record: recordSource
+      });
+
+      // startThatsThemPhase answers the caller itself, and walks to the first step (or exhausts when
+      // there is nothing to search).
+      await startThatsThemPhase(session, null, sendResponse);
+      return;
+    }
 
     if (addresses.length === 0) {
       const phoneUrl = buildUnmaskUrlForPhone(rawPhone);
@@ -1168,21 +2092,17 @@ async function startDobLookup(person, phone, sendResponse, sender) {
         session.searchedPhone = true;
         await chrome.storage.local.set({ unmask_pending_lookup: session });
 
-        const tab = await chrome.tabs.create({ url: phoneUrl, active: false });
-        activeDobLookup = {
-          tabId: tab.id,
-          session,
-          startTime: Date.now()
-        };
+        const run = await openDobRunner(phoneUrl, session);
 
         broadcastDobMessage({
           action: 'DOB_LOOKUP_PROGRESS',
           step: 1,
           totalSteps: 5,
-          message: `Searching phone number on Unmask (${rawPhone})...`
+          message: `Searching phone number on Unmask (${rawPhone})...`,
+          record: recordSource
         });
 
-        if (sendResponse) sendResponse({ success: true, tabId: tab.id });
+        if (sendResponse) sendResponse({ success: true, tabId: run.tabId });
         return;
       }
 
@@ -1192,17 +2112,17 @@ async function startDobLookup(person, phone, sendResponse, sender) {
         session.searchedNameCity = true;
         await chrome.storage.local.set({ unmask_pending_lookup: session });
 
-        const tab = await chrome.tabs.create({ url: nameCityUrl, active: false });
-        activeDobLookup = { tabId: tab.id, session, startTime: Date.now() };
+        const run = await openDobRunner(nameCityUrl, session);
 
         broadcastDobMessage({
           action: 'DOB_LOOKUP_PROGRESS',
           step: 1,
           totalSteps: 5,
-          message: `Searching name on Unmask (${session.targetName}, ${session.city}, ${session.state})...`
+          message: `Searching name on Unmask (${session.targetName}, ${session.city}, ${session.state})...`,
+          record: recordSource
         });
 
-        if (sendResponse) sendResponse({ success: true, tabId: tab.id });
+        if (sendResponse) sendResponse({ success: true, tabId: run.tabId });
         return;
       }
 
@@ -1212,17 +2132,17 @@ async function startDobLookup(person, phone, sendResponse, sender) {
         session.searchedNameState = true;
         await chrome.storage.local.set({ unmask_pending_lookup: session });
 
-        const tab = await chrome.tabs.create({ url: nameStateUrl, active: false });
-        activeDobLookup = { tabId: tab.id, session, startTime: Date.now() };
+        const run = await openDobRunner(nameStateUrl, session);
 
         broadcastDobMessage({
           action: 'DOB_LOOKUP_PROGRESS',
           step: 1,
           totalSteps: 5,
-          message: `Searching name on Unmask (${session.targetName}, ${session.state})...`
+          message: `Searching name on Unmask (${session.targetName}, ${session.state})...`,
+          record: recordSource
         });
 
-        if (sendResponse) sendResponse({ success: true, tabId: tab.id });
+        if (sendResponse) sendResponse({ success: true, tabId: run.tabId });
         return;
       }
 
@@ -1231,24 +2151,17 @@ async function startDobLookup(person, phone, sendResponse, sender) {
     }
 
     const firstUrl = buildUnmaskUrlForAddress(addresses[0]);
-    await chrome.storage.local.set({ unmask_pending_lookup: session });
-
-    const tab = await chrome.tabs.create({ url: firstUrl, active: false });
-
-    activeDobLookup = {
-      tabId: tab.id,
-      session,
-      startTime: Date.now()
-    };
+    const run = await openDobRunner(firstUrl, session);
 
     broadcastDobMessage({
       action: 'DOB_LOOKUP_PROGRESS',
       step: 1,
       totalSteps: 5,
-      message: `Searching address 1 of ${addresses.length}: ${addresses[0].street}...`
+      message: `Searching address 1 of ${addresses.length}: ${addresses[0].street}...`,
+      record: recordSource
     });
 
-    if (sendResponse) sendResponse({ success: true, tabId: tab.id });
+    if (sendResponse) sendResponse({ success: true, tabId: run.tabId });
   } catch (err) {
     if (sendResponse) sendResponse({ success: false, error: err.message });
   }
@@ -1338,6 +2251,13 @@ function exhaustDobLookup(session, sendResponse) {
 }
 
 async function startThatsThemPhase(session, tabId, sendResponse) {
+  // ThatSthem is switched off in Settings: it is not asked at all - not on its own, and not as the
+  // fallback the Unmask steps would otherwise move on to.
+  if (session && session.allowThatsThem === false) {
+    exhaustDobLookup(session, sendResponse);
+    return;
+  }
+
   const steps = buildThatsThemPlan(session);
   if (steps.length === 0) {
     exhaustDobLookup(session, sendResponse);
@@ -1363,6 +2283,8 @@ async function goToThatsThemStep(session, tabId, index, sendResponse) {
 
   session.themIndex = index;
   session.themLastAdvanceAt = Date.now();
+  // The run is now on thatsthem.com; this URL is what a security check would be promoted to.
+  session.currentUrl = step.url;
   await chrome.storage.local.set({
     [THATSTHEM_STORAGE_KEY]: session,
     unmask_pending_lookup: session
@@ -1391,16 +2313,22 @@ async function goToThatsThemStep(session, tabId, index, sendResponse) {
         })
         .catch(() => {});
     });
+  } else if (activeDobLookup && activeDobLookup.mode === 'offscreen') {
+    prepareRunner('thatsthem.com', step.url).catch(() => {});
+    prepareRunner('unmask.com', step.url).catch(() => {});
   }
 
   if (sendResponse) sendResponse({ success: true, nextUrl: step.url, exhausted: false });
 }
 
-async function advanceThatsThemNext(senderTabId, session, sendResponse) {
+async function advanceThatsThemNext(senderTabId, session, sendResponse, force) {
   const tabId = (activeDobLookup && activeDobLookup.tabId) || senderTabId;
 
-  // Ignore a duplicate "next" fired while the page is already being replaced.
-  if (session.themLastAdvanceAt && Date.now() - session.themLastAdvanceAt < 1200) {
+  // Ignore a duplicate "next" fired while the page is already being replaced - unless the page has
+  // asked again (force). A page whose own "No Results Found" panel rendered inside that window used to
+  // be told "ignored" with no URL, and since the page stops its own loop when it asks, the run sat
+  // there for ever. The retry the page sends is honoured, so the step is taken after all.
+  if (!force && session.themLastAdvanceAt && Date.now() - session.themLastAdvanceAt < 1200) {
     if (sendResponse) sendResponse({ success: true, ignored: true });
     return;
   }
@@ -1415,7 +2343,7 @@ async function advanceThatsThemNext(senderTabId, session, sendResponse) {
   exhaustDobLookup(session, sendResponse);
 }
 
-async function advanceDobNextAddress(senderTabId, sendResponse) {
+async function advanceDobNextAddress(senderTabId, sendResponse, record, force) {
   const data = await chrome.storage.local.get('unmask_pending_lookup');
   const session = data ? data.unmask_pending_lookup : (activeDobLookup ? activeDobLookup.session : null);
 
@@ -1424,11 +2352,20 @@ async function advanceDobNextAddress(senderTabId, sendResponse) {
     return;
   }
 
+  // A page that belongs to a run which has since been replaced must not walk the steps of the run
+  // that replaced it: the record it reports for is no longer the record this session is walking,
+  // and its own run is over.
+  const pageRecord = record ? String(record) : '';
+  if (pageRecord && session.record && pageRecord !== session.record) {
+    if (sendResponse) sendResponse({ success: false, stale: true, exhausted: false });
+    return;
+  }
+
   const tabId = (activeDobLookup && activeDobLookup.tabId) || senderTabId;
 
   // Once Unmask is exhausted the very same tab keeps the run alive on ThatSthem.
   if (session.stage === 'thatsthem') {
-    await advanceThatsThemNext(senderTabId, session, sendResponse);
+    await advanceThatsThemNext(senderTabId, session, sendResponse, force);
     return;
   }
 
@@ -1438,6 +2375,9 @@ async function advanceDobNextAddress(senderTabId, sendResponse) {
 
   function advanceToUrl(newUrl, progressMsg, statusName, isPhone, isName) {
     session.status = statusName;
+    // Recorded so a Cloudflare check on this step can be promoted into a tab on the real step
+    // URL rather than on whatever interstitial Cloudflare happened to serve.
+    session.currentUrl = newUrl;
     chrome.storage.local.set({ unmask_pending_lookup: session });
 
     if (activeDobLookup) {
@@ -1460,6 +2400,8 @@ async function advanceDobNextAddress(senderTabId, sendResponse) {
           if (activeDobLookup) activeDobLookup.tabId = newTab.id;
         });
       });
+    } else if (activeDobLookup && activeDobLookup.mode === 'offscreen') {
+      prepareRunner(activeDobLookup.source || 'unmask.com', newUrl).catch(() => {});
     }
 
     if (sendResponse) {
@@ -1553,6 +2495,17 @@ async function handleDobSuccess(msg, sender) {
     } catch (e) {}
   }
 
+  // A run that has already been replaced by a press on the other record can still report its
+  // result. That result belongs to the record the run was started for: it is broadcast (and shown
+  // on that record's card), but it must not drive this run's session or walk it through steps that
+  // are not its own. A weak report is reported as final here, because no run is left to look for
+  // a fuller date for it.
+  const reportedRecord = msg.record ? String(msg.record) : '';
+  if (reportedRecord && session && session.record && reportedRecord !== session.record) {
+    broadcastDobMessage({ ...msg, record: reportedRecord, continueSearch: false, searchContinues: false });
+    return;
+  }
+
   const tabId = (activeDobLookup && activeDobLookup.tabId) || (sender && sender.tab && sender.tab.id) || null;
   const isWeakReport = !!msg.continueSearch;
 
@@ -1623,203 +2576,337 @@ function cancelDobLookup(sendResponse) {
   if (sendResponse) sendResponse({ success: true });
 }
 
+// A DOB run is started by one record card, and everything it reports has to come back to that
+// card. The pages that drive a run stamp their own messages with the record they loaded (they
+// know it even after the run was replaced); anything that reaches here untagged - a line the
+// background produces itself, or an older worker - is stamped with the run in flight. Messages
+// that are not part of a DOB run (the mouse recorder shares this broadcaster) are left alone.
+function withDobRecord(msg) {
+  if (!msg || msg.record || typeof msg.action !== 'string' || msg.action.indexOf('DOB_LOOKUP') !== 0) {
+    return msg;
+  }
+  const run = activeDobLookup;
+  const record = run && run.session ? run.session.record : '';
+  return record ? { ...msg, record } : msg;
+}
+
+// Which runner a DOB run is actually using, in one short phrase, so "why is there a tab?" can be
+// answered from the widget instead of only from the service-worker console. A tab can only come from
+// two places, and it says which.
+//
+// A run object that was rebuilt from a message (no `mode`) is not claimed to be hidden: silence is
+// better than a wrong answer.
+function dobRunnerNote() {
+  const run = activeDobLookup;
+  if (!run) return '';
+
+  if (run.tabId) {
+    if (run.promotedForCheck) return ' \u00b7 tab (security check)';
+    if (run.fallbackReason) return ' \u00b7 tab (no hidden runner: ' + run.fallbackReason + ')';
+    return ' \u00b7 tab';
+  }
+
+  if (run.mode === 'offscreen') return ' \u00b7 hidden';
+  return '';
+}
+
 function broadcastDobMessage(msg) {
+  const stamped = withDobRecord(msg);
+  // Every progress line carries the runner, so the state is visible while the run happens. The note
+  // is added *to* the stamped message, and `tagged` - the stamped message - is what goes out.
+  const tagged =
+    stamped && stamped.action === 'DOB_LOOKUP_PROGRESS' && stamped.message
+      ? { ...stamped, message: stamped.message + dobRunnerNote() }
+      : stamped;
+
   chrome.tabs.query({}, (tabs) => {
     tabs.forEach((t) => {
-      if (t.id) chrome.tabs.sendMessage(t.id, msg).catch(() => {});
+      if (t.id) chrome.tabs.sendMessage(t.id, tagged).catch(() => {});
     });
   });
-  chrome.runtime.sendMessage(msg).catch(() => {});
+  chrome.runtime.sendMessage(tagged).catch(() => {});
 }
 
-async function handleStartMouseRecording(target, sender, sendResponse) {
+// The portal is hosted on Vercel. This is the only server a shipped build may call.
+const DEFAULT_AUTH_API = 'https://auto-lookup-portal.vercel.app';
+const LIMIT_REACHED_QUOTE = 'limit reached contact admin for more limit';
+
+// `localhost:3000` is where the portal ran while it was being built. A packaged extension has no
+// Next.js server on the user's machine, so a loopback URL is never a setting - it is a leftover that
+// makes every login, quota sync and lookup fail with "could not connect". Those values are ignored
+// in favour of the live portal.
+function isLoopbackApiUrl(url) {
   try {
-    let originTab = null;
-    if (sender && sender.tab && sender.tab.id) {
-      originTab = sender.tab;
-    } else {
-      try {
-        const windows = await chrome.windows.getAll({ populate: true, windowTypes: ['normal'] });
-        const focusedWin = windows.find((w) => w.focused) || windows[0];
-        if (focusedWin && focusedWin.tabs) {
-          originTab = focusedWin.tabs.find((t) => t.active) || focusedWin.tabs[0];
-        }
-      } catch (e) {}
-
-      if (!originTab) {
-        try {
-          const tabs = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-          originTab = tabs[0] || null;
-        } catch (e) {}
-      }
-    }
-
-    const targetUrl = target === 'unmask' ? 'https://unmask.com/' : 'https://thatsthem.com/';
-    const session = {
-      active: true,
-      target: target,
-      originTabId: originTab ? originTab.id : null,
-      originWindowId: originTab ? originTab.windowId : null,
-      url: targetUrl,
-      startedAt: Date.now()
-    };
-
-    // If an existing recording tab was open, cleanly close it before starting a new one
-    if (activeMouseRecordingTabId) {
-      try {
-        await chrome.tabs.remove(activeMouseRecordingTabId).catch(() => {});
-      } catch (e) {}
-      activeMouseRecordingTabId = null;
-    }
-    await chrome.storage.local.remove('active_mouse_recording');
-
-    await chrome.storage.local.set({ active_mouse_recording: session });
-
-    const recorderTab = await chrome.tabs.create({ url: targetUrl, active: true });
-    activeMouseRecordingTabId = recorderTab.id;
-    session.recorderTabId = recorderTab.id;
-    await chrome.storage.local.set({ active_mouse_recording: session });
-
-    if (sendResponse) sendResponse({ success: true, tabId: recorderTab.id });
-  } catch (err) {
-    console.error('[Background] Failed to start mouse recording:', err);
-    if (sendResponse) sendResponse({ success: false, error: err.message });
+    const parsed = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `https://${url}`);
+    const host = parsed.hostname.toLowerCase();
+    return (
+      host === 'localhost' ||
+      host === '0.0.0.0' ||
+      host === '::1' ||
+      host.endsWith('.localhost') ||
+      /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+    );
+  } catch (e) {
+    return false;
   }
 }
 
-async function handleMouseRecordingCompleted(request, sender, sendResponse) {
+// Whatever the stored value (or the popup's Server box) holds, this is the base URL to call: a bare
+// host such as "auto-lookup-portal.vercel.app" gets a scheme, a trailing slash is dropped, and
+// anything unusable falls back to the live portal rather than to a dead address.
+function normalizeApiUrl(raw) {
+  const text = String(raw == null ? '' : raw).trim();
+  if (!text) return DEFAULT_AUTH_API;
+  if (isLoopbackApiUrl(text)) return DEFAULT_AUTH_API;
+
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(text) ? text : `https://${text}`;
   try {
-    const tabId = sender && sender.tab && sender.tab.id ? sender.tab.id : activeMouseRecordingTabId;
-    const originTabId = request.originTabId;
-    const originWindowId = request.originWindowId;
-
-    activeMouseRecordingTabId = null;
-
-    const msg = {
-      action: 'MOUSE_RECORDING_SAVED',
-      target: request.target,
-      result: request.result
-    };
-    broadcastDobMessage(msg);
-
-    if (tabId) {
-      setTimeout(() => {
-        chrome.tabs.remove(tabId).catch(() => {});
-      }, 250);
-    }
-
-    if (originTabId) {
-      setTimeout(() => {
-        chrome.tabs.update(originTabId, { active: true }).catch(() => {});
-        if (originWindowId) {
-          chrome.windows.update(originWindowId, { focused: true }).catch(() => {});
-        }
-      }, 350);
-    }
-
-    if (sendResponse) sendResponse({ success: true });
-  } catch (err) {
-    console.error('[Background] Error handling mouse recording completion:', err);
-    if (sendResponse) sendResponse({ success: false, error: err.message });
+    const parsed = new URL(withScheme);
+    return `${parsed.origin}${parsed.pathname.replace(/\/+$/, '')}`;
+  } catch (e) {
+    return DEFAULT_AUTH_API;
   }
 }
 
-async function handleCancelMouseRecording(sendResponse) {
-  try {
-    if (activeMouseRecordingTabId) {
-      chrome.tabs.remove(activeMouseRecordingTabId).catch(() => {});
-      activeMouseRecordingTabId = null;
-    }
-    await chrome.storage.local.remove('active_mouse_recording');
-    broadcastDobMessage({ action: 'MOUSE_RECORDING_CANCELLED' });
-    if (sendResponse) sendResponse({ success: true });
-  } catch (err) {
-    if (sendResponse) sendResponse({ success: false, error: err.message });
+// The API base URL in force, with a stale stored value corrected in place so an install that was
+// pointed at localhost heals itself instead of staying broken until it is re-configured by hand.
+async function authApiUrl(override) {
+  const storage = await chrome.storage.local.get(['dnc_api_url']);
+  const stored = storage ? storage.dnc_api_url : null;
+  const apiUrl = normalizeApiUrl(override || stored);
+
+  if (stored && stored !== apiUrl) {
+    await chrome.storage.local.set({ dnc_api_url: apiUrl });
   }
+
+  return apiUrl;
 }
 
-async function handleDeleteMouseRecording(target, sendResponse) {
+async function handleAuthLogin(username, password, apiUrlOverride, sendResponse) {
+  const apiUrl = await authApiUrl(apiUrlOverride);
+
   try {
-    const keysToRemove = [];
-    if (target === 'unmask') {
-      keysToRemove.push('recorded_macro_unmask');
-    } else if (target === 'thatsthem') {
-      keysToRemove.push('recorded_macro_thatsthem');
-    } else {
-      keysToRemove.push('recorded_macro_unmask', 'recorded_macro_thatsthem');
-    }
-    keysToRemove.push('last_macro_recording');
-    keysToRemove.push('active_mouse_recording');
-
-    await chrome.storage.local.remove(keysToRemove);
-
-    broadcastDobMessage({
-      action: 'MOUSE_RECORDING_DELETED',
-      target: target
+    const res = await fetch(`${apiUrl}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
     });
 
-    if (sendResponse) sendResponse({ success: true, target });
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      if (res.status === 403 && (data.code === 'LIMIT_REACHED' || data.error?.includes('limit reached'))) {
+        if (sendResponse) {
+          sendResponse({
+            success: false,
+            code: 'LIMIT_REACHED',
+            error: LIMIT_REACHED_QUOTE
+          });
+        }
+        return;
+      }
+      if (sendResponse) {
+        sendResponse({
+          success: false,
+          error: data.error || `Login failed (${res.status})`
+        });
+      }
+      return;
+    }
+
+    await chrome.storage.local.set({
+      dnc_auth_token: data.token,
+      dnc_auth_user: data.user,
+      dnc_api_url: apiUrl
+    });
+
+    sendToWidget({
+      action: 'AUTH_QUOTA_UPDATED',
+      lookupsRemaining: data.user.lookupsRemaining,
+      lookupsTotal: data.user.lookupsTotal,
+      user: data.user
+    });
+
+    if (sendResponse) {
+      sendResponse({
+        success: true,
+        token: data.token,
+        user: data.user
+      });
+    }
   } catch (err) {
-    if (sendResponse) sendResponse({ success: false, error: err.message });
+    console.error('[Background] Login network error:', err);
+    if (sendResponse) {
+      sendResponse({
+        success: false,
+        error: `Could not reach the lookup portal at ${apiUrl}. Check your internet connection and try again. (${err.message})`
+      });
+    }
   }
 }
 
-async function handleReplayMacroClick(request, sender, sendResponse) {
-  const tabId = sender?.tab?.id || request.tabId;
-  const x = Math.round(Number(request.x));
-  const y = Math.round(Number(request.y));
+async function handleAuthSyncQuota(sendResponse) {
+  const authData = await chrome.storage.local.get(['dnc_auth_token']);
+  const token = authData.dnc_auth_token;
+  const apiUrl = await authApiUrl();
 
-  if (!tabId || isNaN(x) || isNaN(y)) {
-    if (sendResponse) sendResponse({ success: false, error: 'Invalid coordinates or tabId' });
+  if (!token) {
+    if (sendResponse) sendResponse({ success: false, error: 'Not signed in' });
     return;
   }
 
-  const target = { tabId };
   try {
-    await chrome.debugger.attach(target, '1.3');
-
-    // 1. Move mouse cursor to target coordinate
-    await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
-      type: 'mouseMoved',
-      x: x,
-      y: y
+    const res = await fetch(`${apiUrl}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${token}` }
     });
+    const data = await res.json().catch(() => ({}));
 
-    await new Promise((r) => setTimeout(r, 60));
+    if (res.status === 403 && (data.code === 'LIMIT_REACHED' || data.error?.includes('limit reached'))) {
+      await chrome.storage.local.remove(['dnc_auth_token', 'dnc_auth_user']);
+      chrome.runtime.sendMessage({
+        action: 'AUTH_LIMIT_REACHED',
+        error: LIMIT_REACHED_QUOTE
+      }).catch(() => {});
+      if (sendResponse) sendResponse({ success: false, code: 'LIMIT_REACHED', error: LIMIT_REACHED_QUOTE });
+      return;
+    }
 
-    // 2. Press left mouse button
-    await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
-      type: 'mousePressed',
-      button: 'left',
-      clickCount: 1,
-      x: x,
-      y: y
-    });
+    if (res.status === 401) {
+      await chrome.storage.local.remove(['dnc_auth_token', 'dnc_auth_user']);
+      chrome.runtime.sendMessage({
+        action: 'AUTH_REQUIRED',
+        error: 'Session expired. Please sign in again.'
+      }).catch(() => {});
+      if (sendResponse) sendResponse({ success: false, code: 'SESSION_EXPIRED', error: 'Session expired' });
+      return;
+    }
 
-    await new Promise((r) => setTimeout(r, 100));
+    if (res.ok && data.user) {
+      await chrome.storage.local.set({ dnc_auth_user: data.user });
+      sendToWidget({
+        action: 'AUTH_QUOTA_UPDATED',
+        lookupsRemaining: data.user.lookupsRemaining,
+        lookupsTotal: data.user.lookupsTotal,
+        user: data.user
+      });
+      if (sendResponse) sendResponse({ success: true, user: data.user });
+      return;
+    }
 
-    // 3. Release left mouse button
-    await chrome.debugger.sendCommand(target, 'Input.dispatchMouseEvent', {
-      type: 'mouseReleased',
-      button: 'left',
-      x: x,
-      y: y
-    });
-
-    await new Promise((r) => setTimeout(r, 50));
-    await chrome.debugger.detach(target).catch(() => {});
-
-    if (sendResponse) sendResponse({ success: true, x, y });
+    if (sendResponse) sendResponse({ success: false, error: data.error || 'Failed to sync quota' });
   } catch (err) {
-    console.warn('[Background] Debugger trusted click failed:', err);
-    try {
-      await chrome.debugger.detach(target).catch(() => {});
-    } catch (e) {}
     if (sendResponse) sendResponse({ success: false, error: err.message });
   }
 }
 
-async function startParallelLookup(phoneNumber, session, sender, sendResponse) {
+async function handleAuthorizedLookup(phoneNumber, session, sender, sendResponse) {
+  let authData = await chrome.storage.local.get(['dnc_auth_token', 'dnc_auth_user']);
+  const token = authData.dnc_auth_token;
+  const apiUrl = await authApiUrl();
+
+  if (!token) {
+    chrome.runtime.sendMessage({
+      action: 'AUTH_REQUIRED',
+      error: 'Please sign in to your account first.'
+    }).catch(() => {});
+    if (sendResponse) {
+      sendResponse({
+        success: false,
+        code: 'NOT_LOGGED_IN',
+        error: 'Please sign in to your account first.'
+      });
+    }
+    return;
+  }
+
+  // Deduct 1 credit atomically on server
+  try {
+    const res = await fetch(`${apiUrl}/api/lookup/consume`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    // If quota reached or user disabled: automatically log out and quote exact requirement
+    if (res.status === 403 && (data.code === 'LIMIT_REACHED' || data.error?.includes('limit reached'))) {
+      await chrome.storage.local.remove(['dnc_auth_token', 'dnc_auth_user']);
+      sendToWidget({
+        action: 'AUTH_LIMIT_REACHED',
+        error: LIMIT_REACHED_QUOTE
+      });
+
+      if (sendResponse) {
+        sendResponse({
+          success: false,
+          code: 'LIMIT_REACHED',
+          error: LIMIT_REACHED_QUOTE
+        });
+      }
+      return;
+    }
+
+    if (res.status === 401) {
+      await chrome.storage.local.remove(['dnc_auth_token', 'dnc_auth_user']);
+      sendToWidget({
+        action: 'AUTH_REQUIRED',
+        error: 'Session expired. Please sign in again.'
+      });
+
+      if (sendResponse) {
+        sendResponse({
+          success: false,
+          code: 'SESSION_EXPIRED',
+          error: 'Session expired. Please sign in again.'
+        });
+      }
+      return;
+    }
+
+    if (!res.ok) {
+      throw new Error(data.error || `Server returned error (${res.status})`);
+    }
+
+    // Update remaining quota locally and notify UI across all tabs & windows
+    let consumedQuota = null;
+    if (typeof data.lookupsRemaining === 'number') {
+      const user = authData.dnc_auth_user || {};
+      user.lookupsRemaining = data.lookupsRemaining;
+      user.lookupsTotal = data.lookupsTotal;
+      await chrome.storage.local.set({ dnc_auth_user: user });
+
+      consumedQuota = {
+        lookupsRemaining: data.lookupsRemaining,
+        lookupsTotal: data.lookupsTotal,
+        totalLookupsUsed: data.totalLookupsUsed
+      };
+
+      sendToWidget({
+        action: 'AUTH_QUOTA_UPDATED',
+        lookupsRemaining: data.lookupsRemaining,
+        lookupsTotal: data.lookupsTotal,
+        totalLookupsUsed: data.totalLookupsUsed,
+        user: user
+      });
+    }
+
+    // Proceed to parallel lookup with latest quota metadata
+    startParallelLookup(phoneNumber, session, sender, sendResponse, consumedQuota);
+  } catch (err) {
+    console.error('[Background Auth] Consume quota failed:', err);
+    if (sendResponse) {
+      sendResponse({
+        success: false,
+        error: `Could not reach the lookup portal at ${apiUrl}. Check your internet connection and try again. (${err.message})`
+      });
+    }
+  }
+}
+
+async function startParallelLookup(phoneNumber, session, sender, sendResponse, consumedQuota) {
   if (activeLookup && activeLookup.timeoutId) {
     clearTimeout(activeLookup.timeoutId);
   }
@@ -1834,6 +2921,22 @@ async function startParallelLookup(phoneNumber, session, sender, sendResponse) {
 
   const searchId = ++searchCounter;
 
+  // Only the records the user left switched on are searched at all. Record 1 is the first source and
+  // Record 2 the second, and switching one off simply means its card never appears - the lookup
+  // itself carries on with the other one.
+  const recordSources = enabledRecordSources(await getAutomationSettings());
+
+  if (recordSources.length === 0) {
+    if (sendResponse) {
+      sendResponse({
+        success: false,
+        error: 'All records are turned off in Settings.',
+        session: session || null
+      });
+    }
+    return;
+  }
+
   activeLookup = {
     searchId: searchId,
     session: session || null,
@@ -1845,6 +2948,9 @@ async function startParallelLookup(phoneNumber, session, sender, sendResponse) {
     results: [],
     errors: [],
     completedSources: new Set(),
+    // How many answers "this lookup is done" waits for: one per record that is switched on.
+    expectedSources: recordSources.length,
+    quota: consumedQuota || null,
     timeoutId: null
   };
 
@@ -1867,9 +2973,10 @@ async function startParallelLookup(phoneNumber, session, sender, sendResponse) {
   try {
     await ensureOffscreenDocument();
 
-    // Dispatch search in-place to already warm iframes
-    dispatchToWorker('infolookup.site', phoneNumber, searchId);
-    dispatchToWorker('vibegenx.com', phoneNumber, searchId);
+    // Dispatch search in-place to already warm iframes - one per record that is switched on.
+    for (const source of recordSources) {
+      dispatchToWorker(source, phoneNumber, searchId);
+    }
   } catch (err) {
     if (activeLookup && activeLookup.searchId === searchId) {
       clearTimeout(activeLookup.timeoutId);
@@ -1925,7 +3032,7 @@ async function handleAutomationResult(msg) {
   if (activeLookup.completedSources.has(source)) return;
   activeLookup.completedSources.add(source);
 
-  // vibegenx.com often returns street-only records ("3724 Kildare Dr"). Fill in the
+  // infolookupp.com often returns street-only records ("3724 Kildare Dr"). Fill in the
   // missing city/state/zip before the record is streamed, so the widget shows the full
   // address. Only the primary address is resolved here and with a tight budget: a slow
   // source must never lose its record to the parallel-lookup timeout, and the run's
@@ -1951,7 +3058,10 @@ async function handleAutomationResult(msg) {
 
   const isFirstSuccess = activeLookup.results.length === 1 && !!data;
   const totalCompleted = activeLookup.results.length + activeLookup.errors.length;
-  const isAllDone = totalCompleted >= 2;
+  // The lookup is done once every record that was actually searched has answered - one or two of
+  // them, depending on the Settings panel.
+  const expectedSources = activeLookup.expectedSources || RECORD_SOURCES.length;
+  const isAllDone = totalCompleted >= expectedSources;
 
   // Stream message to widget
   const streamMsg = {
@@ -1961,7 +3071,9 @@ async function handleAutomationResult(msg) {
     error: error || null,
     isFirst: isFirstSuccess,
     isAllDone: isAllDone,
-    session: activeLookup.session
+    session: activeLookup.session,
+    lookupsRemaining: activeLookup.quota?.lookupsRemaining,
+    lookupsTotal: activeLookup.quota?.lookupsTotal
   };
 
   sendToWidget(streamMsg);
@@ -1977,7 +3089,9 @@ async function handleAutomationResult(msg) {
         source: source,
         isFirst: true,
         isAllDone: isAllDone,
-        session: activeLookup.session
+        session: activeLookup.session,
+        lookupsRemaining: activeLookup.quota?.lookupsRemaining,
+        lookupsTotal: activeLookup.quota?.lookupsTotal
       });
     } catch (e) {}
   }
@@ -1989,7 +3103,7 @@ async function handleAutomationResult(msg) {
       try {
         activeLookup.sendResponse({
           success: false,
-          error: activeLookup.errors.map((e) => `${e.source}: ${e.error}`).join(' | ') || 'No results from either source.'
+          error: activeLookup.errors.map((e) => `${recordLabel(e.source)}: ${e.error}`).join(' | ') || 'No results from either record.'
         });
       } catch (e) {}
     }
@@ -2019,10 +3133,18 @@ function sendToWidget(msg) {
   chrome.runtime.sendMessage(msg).catch(() => {});
 }
 
-async function ensureOffscreenDocument() {
+// `force` drops any open offscreen document first. That exists for one specific failure: a
+// document created by an older version of offscreen.html outlives an update, so a runner frame the
+// new code expects is simply not there. Recreating it turns that stale state into a working runner
+// instead of a silent fall-back to a visible tab.
+async function ensureOffscreenDocument(force) {
   const OFFSCREEN_PATH = 'offscreen.html';
 
-  if (typeof chrome.offscreen.hasDocument === 'function') {
+  if (force) {
+    if (typeof chrome.offscreen.closeDocument === 'function') {
+      await chrome.offscreen.closeDocument().catch(() => {});
+    }
+  } else if (typeof chrome.offscreen.hasDocument === 'function') {
     if (await chrome.offscreen.hasDocument()) {
       return;
     }
@@ -2046,4 +3168,75 @@ async function ensureOffscreenDocument() {
       throw err;
     }
   }
+}
+
+// Answers that mean "this document does not have that runner at all". They are definite, so
+// re-asking the same document is pointless: the document itself has to be replaced.
+const STALE_RUNNER_REASONS = ['no-frame', 'unknown-source'];
+
+// Waits until the offscreen document is actually listening, and returns what it says it has.
+//
+// `chrome.offscreen.createDocument()` resolves when the document *exists*, not when offscreen.js has
+// run and registered its listener, so a message sent in that window fails with "Could not establish
+// connection" and looks exactly like "there is no runner". That window is worst right after an
+// extension reload, when the document is gone and is recreated lazily by the first lookup.
+//
+// Not waiting it out is what sent a DOB run into a background tab while the Google run in the same
+// offscreen document was fine: the two prepares start together (START_DOB_LOOKUP kicks off both),
+// and whichever one re-sent three times inside that window gave up and opened a tab.
+async function pingOffscreen(timeoutMs) {
+  const began = Date.now();
+
+  for (;;) {
+    try {
+      const res = await chrome.runtime.sendMessage({ action: 'PING_OFFSCREEN' });
+      if (res && res.status === 'pong') return res;
+    } catch (e) {
+      // Not listening yet - keep waiting.
+    }
+
+    if (Date.now() - began >= timeoutMs) return null;
+    await new Promise((r) => setTimeout(r, 120));
+  }
+}
+
+// Asks the offscreen document to load a runner frame, and reports { ok, reason } rather than a bare
+// boolean - the reason is what makes a fall-back diagnosable.
+//
+// The document is waited for rather than assumed, and a document that answers without the runner
+// we need is reported as stale from its *own* answer (`PING_OFFSCREEN` lists its runners), so the
+// caller can replace it instead of a failed send doing the guessing.
+async function prepareRunner(frame, url) {
+  const attempts = 3;
+  let reason = 'no-response';
+
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await ensureOffscreenDocument();
+
+      const ready = await pingOffscreen(3000);
+      if (!ready) {
+        reason = 'offscreen-not-listening';
+        if (i < attempts - 1) await new Promise((r) => setTimeout(r, 250));
+        continue;
+      }
+
+      if (Array.isArray(ready.runners) && ready.runners.indexOf(frame) === -1) {
+        return { ok: false, reason: 'unknown-source' };
+      }
+
+      const res = await chrome.runtime.sendMessage({ action: 'PREPARE_RUNNER', source: frame, url });
+      if (res && res.ok) return { ok: true, reason: '' };
+
+      reason = (res && res.error) || 'no-response';
+      // A definite "no such runner" will not change by asking again.
+      if (STALE_RUNNER_REASONS.includes(reason)) return { ok: false, reason };
+    } catch (e) {
+      reason = e.message || 'threw';
+    }
+
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 250));
+  }
+
+  return { ok: false, reason };
 }

@@ -1,6 +1,6 @@
 // Injected Sticky Draggable Widget on Web Pages
 // Minimalist Black & White Theme (White Main BG, Black Buttons & Text)
-// Parallel Dual-Source (infolookup.site & vibegenx.com) with deduplication & progressive streaming
+// Parallel Dual-Source (infolookup.site & infolookupp.com) with deduplication & progressive streaming
 
 (function () {
   // Only run in the top-level browsing context, never in iframes
@@ -89,8 +89,8 @@
     /* Header / Drag Handle */
     .widget-header {
       background: #ffffff;
-      padding: 13px 16px;
-      border-bottom: 1px solid #f1f3f5;
+      padding: 10px 14px;
+      border-bottom: 1px solid #e4e4e7;
       display: flex;
       justify-content: space-between;
       align-items: center;
@@ -105,14 +105,15 @@
     .header-left {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 7px;
     }
 
     .drag-grip {
       color: #a1a1aa;
-      font-size: 14px;
+      font-size: 13px;
       line-height: 1;
       letter-spacing: -1px;
+      cursor: grab;
     }
 
     .brand-title {
@@ -120,6 +121,7 @@
       font-weight: 600;
       letter-spacing: -0.01em;
       color: #09090b;
+      line-height: 1;
     }
 
     .brand-badge {
@@ -134,28 +136,94 @@
     .header-controls {
       display: flex;
       align-items: center;
-      gap: 4px;
+      gap: 3px;
+    }
+
+    .auth-header-pill {
+      font-size: 11px;
+      padding: 3px 8px;
+      background: #f4f4f5;
+      border: 1px solid #e4e4e7;
+      border-radius: 9999px;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      margin-right: 3px;
+      transition: all 0.15s ease;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .auth-header-pill:hover {
+      background: #ececee;
+      border-color: #d4d4d8;
+    }
+
+    .quota-bolt-icon {
+      color: #0284c7;
+      flex-shrink: 0;
+    }
+
+    .auth-quota-display {
+      font-weight: 600;
+      color: #09090b;
+      font-size: 11px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
+    .auth-quota-display.low {
+      color: #dc2626;
+    }
+
+    .auth-logout-btn {
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      color: #71717a;
+      padding: 2px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 4px;
+      transition: all 0.15s ease;
+      margin-left: 1px;
+    }
+
+    .auth-logout-btn:hover {
+      color: #ef4444;
+      background: #fee2e2;
     }
 
     .control-btn {
       background: transparent;
-      border: none;
+      border: 1px solid transparent;
       color: #71717a;
       border-radius: 6px;
-      width: 26px;
-      height: 26px;
-      display: flex;
+      width: 24px;
+      height: 24px;
+      display: inline-flex;
       align-items: center;
       justify-content: center;
       cursor: pointer;
-      font-size: 12px;
-      font-family: 'Poppins', sans-serif;
-      transition: all 0.15s;
+      padding: 0;
+      transition: all 0.15s ease;
     }
 
     .control-btn:hover {
       background: #f4f4f6;
+      border-color: #e4e4e7;
       color: #09090b;
+    }
+
+    .control-btn.settings-btn:hover {
+      transform: rotate(25deg);
+    }
+
+    .control-btn.close-btn:hover {
+      background: #fee2e2;
+      border-color: #fecaca;
+      color: #dc2626;
     }
 
     /* Body */
@@ -1182,266 +1250,82 @@
       line-height: 1.45;
     }
 
-    .record-buttons-group {
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-
-    .macro-record-btn {
+    /* One switch per setting: the checkbox holds the state; the track and knob are what it looks
+       like. The label wraps both, so clicking anywhere on the row toggles it. */
+    .setting-row {
       display: flex;
       align-items: center;
-      justify-content: center;
-      gap: 10px;
-      padding: 11px 16px;
-      background: #09090b;
-      color: #ffffff;
-      border: 1px solid #09090b;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 11px 14px;
+      background: #fafafa;
+      border: 1px solid #e4e4e7;
       border-radius: 8px;
-      font-family: inherit;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+
+    .setting-row:hover {
+      background: #f4f4f5;
+    }
+
+    .setting-label {
       font-size: 13px;
       font-weight: 500;
-      cursor: pointer;
-      transition: all 0.2s ease;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+      color: #18181b;
     }
 
-    .macro-record-btn:hover {
-      background: #27272a;
-      border-color: #27272a;
-      transform: translateY(-1px);
-      box-shadow: 0 3px 8px rgba(0, 0, 0, 0.15);
-    }
-
-    .macro-record-btn:active {
-      transform: translateY(0);
-    }
-
-    .macro-record-btn.recording {
-      background: #dc2626;
-      border-color: #dc2626;
-    }
-
-    .rec-dot-icon {
-      width: 9px;
-      height: 9px;
-      border-radius: 50%;
-      background: #ef4444;
-      display: inline-block;
-      box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
-    }
-
-    .macro-record-btn.recording .rec-dot-icon {
-      background: #ffffff;
-      animation: pulse 1s infinite alternate;
-    }
-
-    .rec-status-banner {
-      display: flex;
-      align-items: flex-start;
-      gap: 10px;
-      padding: 12px;
-      background: #f8fafc;
-      border: 1px solid #e2e8f0;
-      border-radius: 8px;
-    }
-
-    .rec-status-indicator {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #10b981;
-      margin-top: 4px;
-      flex-shrink: 0;
-    }
-
-    .rec-status-indicator.busy {
-      background: #f59e0b;
-      animation: pulse 1s infinite alternate;
-    }
-
-    .rec-status-indicator.recording {
-      background: #ef4444;
-      animation: pulse 0.8s infinite alternate;
-    }
-
-    .rec-status-text-wrap {
+    .settings-list {
       display: flex;
       flex-direction: column;
-      gap: 2px;
-    }
-
-    .rec-status-main {
-      font-size: 12px;
-      font-weight: 600;
-      color: #0f172a;
-    }
-
-    .rec-status-sub {
-      font-size: 11px;
-      color: #64748b;
-      line-height: 1.4;
-    }
-
-    .rec-summary-card {
-      display: flex;
-      flex-direction: column;
-      gap: 12px;
-      padding: 14px;
-      background: #fafafa;
-      border: 1px solid #e4e4e7;
-      border-radius: 8px;
-    }
-
-    .rec-summary-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }
-
-    .rec-summary-title {
-      font-size: 12px;
-      font-weight: 600;
-      color: #09090b;
-    }
-
-    .rec-summary-time {
-      font-size: 10px;
-      color: #71717a;
-      background: #f4f4f6;
-      padding: 2px 6px;
-      border-radius: 4px;
-    }
-
-    .rec-stats-grid {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
       gap: 8px;
     }
 
-    .rec-stat-box {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      padding: 8px;
-      background: #ffffff;
-      border: 1px solid #f1f3f5;
-      border-radius: 6px;
+    .setting-toggle {
+      position: absolute;
+      opacity: 0;
+      width: 0;
+      height: 0;
+      pointer-events: none;
     }
 
-    .rec-stat-label {
-      font-size: 10px;
-      color: #71717a;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-    }
-
-    .rec-stat-val {
-      font-size: 12px;
-      font-weight: 600;
-      color: #09090b;
-    }
-
-    .rec-target-row {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 11px;
-      padding-top: 4px;
-      border-top: 1px solid #f1f3f5;
-    }
-
-    .rec-target-elem {
-      font-family: monospace;
-      font-size: 11px;
-      color: #09090b;
-      background: #f1f3f5;
-      padding: 1px 5px;
-      border-radius: 4px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .rec-site-title-wrap {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .rec-badge {
-      font-size: 10px;
-      font-weight: 600;
-      padding: 2px 7px;
-      border-radius: 9999px;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-    }
-
-    .rec-badge.saved {
-      background: #dcfce7;
-      color: #15803d;
-      border: 1px solid #bbf7d0;
-    }
-
-    .rec-badge.empty {
-      background: #f4f4f5;
-      color: #71717a;
-      border: 1px solid #e4e4e7;
-    }
-
-    .rec-empty-state {
-      font-size: 11px;
-      color: #71717a;
-      padding: 8px 0;
-      font-style: italic;
-    }
-
-    .rec-card-actions {
-      display: flex;
-      gap: 8px;
-      margin-top: 4px;
-      justify-content: flex-end;
-    }
-
-    .rec-action-btn {
-      flex: 1;
-      padding: 8px 12px;
-      font-size: 12px;
-      font-weight: 500;
-      border-radius: 6px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-      transition: all 0.15s ease;
-      border: 1px solid #e4e4e7;
-      background: #ffffff;
-      color: #09090b;
-    }
-
-    .rec-action-btn:hover {
-      border-color: #d4d4d8;
-      background: #fafafa;
-    }
-
-    .rec-action-btn:disabled {
-      opacity: 0.6;
-      cursor: not-allowed;
-    }
-
-    .rec-action-btn.delete-btn {
+    .setting-track {
+      position: relative;
       flex: 0 0 auto;
-      background: #ffffff;
-      color: #dc2626;
-      border-color: #fecaca;
+      width: 38px;
+      height: 22px;
+      border-radius: 999px;
+      background: #d4d4d8;
+      transition: background 0.18s ease;
     }
 
-    .rec-action-btn.delete-btn:hover {
-      background: #fee2e2;
-      border-color: #fca5a5;
-      color: #b91c1c;
+    .setting-knob {
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #ffffff;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+      transition: transform 0.18s ease;
+    }
+
+    .setting-toggle:checked + .setting-track {
+      background: #09090b;
+    }
+
+    .setting-toggle:checked + .setting-track .setting-knob {
+      transform: translateX(16px);
+    }
+
+    .setting-toggle:focus-visible + .setting-track {
+      outline: 2px solid #09090b;
+      outline-offset: 2px;
+    }
+
+    .setting-row.off .setting-label {
+      color: #a1a1aa;
     }
 
     .hidden {
@@ -1455,63 +1339,114 @@
   container.innerHTML = `
     <div class="widget-header" id="widget-header">
       <div class="header-left">
-        <span class="drag-grip">⋮⋮</span>
-        <span class="brand-title">You Lookup</span>
-        <button id="settings-toggle-btn" class="settings-btn" title="Calibration & Settings" type="button">
+        <span class="drag-grip" title="Drag widget">⋮⋮</span>
+        <span class="brand-title">Auto Lookup</span>
+      </div>
+      <div class="header-controls">
+        <div id="auth-header-pill" class="auth-header-pill hidden" title="Remaining Lookups · Click to refresh">
+          <svg class="quota-bolt-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+          <span id="auth-quota-display" class="auth-quota-display">0 left</span>
+          <button id="auth-logout-btn" class="auth-logout-btn" title="Sign Out" type="button">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+              <polyline points="16 17 21 12 16 7"></polyline>
+              <line x1="21" y1="12" x2="9" y2="12"></line>
+            </svg>
+          </button>
+        </div>
+        <button id="settings-toggle-btn" class="control-btn settings-btn" title="Calibration & Settings" type="button">
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
           </svg>
         </button>
-      </div>
-      <div class="header-controls" style="display: flex; gap: 6px; align-items: center; justify-content: center;" >
-        <button id="min-btn" class="control-btn" title="Minimize" type="button">-</button>
-        <button id="close-btn" class="control-btn" title="Close" type="button">✕</button>
+        <button id="min-btn" class="control-btn" title="Minimize" type="button">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        </button>
+        <button id="close-btn" class="control-btn close-btn" title="Close" type="button">
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
       </div>
     </div>
 
     <div class="widget-body" id="widget-body">
-      <!-- Mode Toggle (Manual / Auto) -->
-      <div class="mode-toggle-bar">
-        <div class="mode-segmented">
-          <button id="mode-manual-btn" class="mode-btn active" type="button">Manual</button>
-          <button id="mode-auto-btn" class="mode-btn" type="button">
-            <span>Auto</span>
-          </button>
+      <!-- In-Widget Sign In Form (shown when not logged in) -->
+      <div id="widget-auth-view" class="widget-auth-view" style="padding: 14px 16px 18px;">
+        <div style="width: 36px; height: 36px; margin: 0 auto 8px; background: #09090b; color: #fff; border-radius: 10px; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 10px rgba(0,0,0,0.15);">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
         </div>
+        <div style="font-size: 13.5px; font-weight: 700; color: #09090b; text-align: center; margin-bottom: 2px;">Sign In to Auto Lookup</div>
+        <div style="font-size: 11px; color: #71717a; text-align: center; margin-bottom: 12px;">Enter your credentials to use compliance lookups</div>
+
+        <div id="widget-auth-alert" class="hidden" style="background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; padding: 8px 10px; border-radius: 8px; font-size: 11.5px; font-weight: 600; text-align: center; margin-bottom: 10px; line-height: 1.4;">
+          <span id="widget-auth-alert-text">limit reached contact admin for more limit</span>
+        </div>
+
+        <form id="widget-auth-form" style="display: flex; flex-direction: column; gap: 8px;">
+          <div>
+            <label style="display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; color: #52525b; margin-bottom: 3px; letter-spacing: 0.03em;">Username</label>
+            <input type="text" id="widget-auth-username" placeholder="Username" required style="width: 100%; box-sizing: border-box; padding: 7px 9px; font-size: 12px; border: 1px solid #d4d4d8; border-radius: 7px; background: #fafafa; outline: none; font-family: inherit;" />
+          </div>
+          <div>
+            <label style="display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; color: #52525b; margin-bottom: 3px; letter-spacing: 0.03em;">Password</label>
+            <input type="password" id="widget-auth-password" placeholder="Password" required style="width: 100%; box-sizing: border-box; padding: 7px 9px; font-size: 12px; border: 1px solid #d4d4d8; border-radius: 7px; background: #fafafa; outline: none; font-family: inherit;" />
+          </div>
+          <button type="submit" id="widget-auth-submit" style="margin-top: 4px; width: 100%; padding: 8px 12px; background: #09090b; color: #fff; border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; font-family: inherit;">
+            <span id="widget-auth-btn-text">Sign In</span>
+            <span id="widget-auth-spinner" class="hidden" style="display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite;"></span>
+          </button>
+        </form>
       </div>
 
-      <div id="auto-feedback-bar" class="auto-feedback-bar hidden">
-        <div id="auto-spinner" class="auto-spinner hidden"></div>
-        <span id="auto-feedback-text">Auto mode active · Waiting for dialer number...</span>
-      </div>
+      <!-- Main Search Views (hidden until authenticated) -->
+      <div id="widget-main-view" class="widget-main-view hidden">
+        <!-- Mode Toggle (Manual / Auto) -->
+        <div class="mode-toggle-bar">
+          <div class="mode-segmented">
+            <button id="mode-manual-btn" class="mode-btn active" type="button">Manual</button>
+            <button id="mode-auto-btn" class="mode-btn" type="button">
+              <span>Auto</span>
+            </button>
+          </div>
+        </div>
 
-      <!-- Search Input -->
-      <div class="search-row">
-        <input
-          type="tel"
-          id="phone-input"
-          class="phone-input"
-          placeholder="(555) 555-5555"
-          maxlength="14"
-          spellcheck="false"
-          autocomplete="off"
-        />
-        <button id="search-btn" class="search-btn" type="button">Search</button>
-      </div>
+        <div id="auto-feedback-bar" class="auto-feedback-bar hidden">
+          <div id="auto-spinner" class="auto-spinner hidden"></div>
+          <span id="auto-feedback-text">Auto mode active · Waiting for dialer number...</span>
+        </div>
 
-      <!-- Error Message -->
-      <div id="error-container" class="error-banner hidden">
-        <span id="error-text"></span>
-      </div>
+        <!-- Search Input -->
+        <div class="search-row">
+          <input
+            type="tel"
+            id="phone-input"
+            class="phone-input"
+            placeholder="(555) 555-5555"
+            maxlength="14"
+            spellcheck="false"
+            autocomplete="off"
+          />
+          <button id="search-btn" class="search-btn" type="button">Search</button>
+        </div>
 
-      <!-- Results Area -->
-      <div id="results-container" class="results-area hidden">
-        <div id="records-list"></div>
+        <!-- Error Message -->
+        <div id="error-container" class="error-banner hidden">
+          <span id="error-text"></span>
+        </div>
+
+        <!-- Results Area -->
+        <div id="results-container" class="results-area hidden">
+          <div id="records-list"></div>
+        </div>
       </div>
     </div>
 
-    <!-- Settings & Recording Sidebar Drawer -->
+    <!-- Settings Sidebar Drawer -->
     <aside id="settings-sidebar" class="settings-sidebar closed">
       <div class="sidebar-header">
         <div class="sidebar-title">
@@ -1526,121 +1461,64 @@
 
       <div class="sidebar-body">
         <div class="sidebar-section-header">
-          <span class="sidebar-section-title">Cursor Macro Recording</span>
-          <span class="sidebar-section-desc">Record the click coordinates used for Turnstile verification.</span>
+          <span class="sidebar-section-title">Info Lookup</span>
+          <span class="sidebar-section-desc">Which records the number is searched on.</span>
         </div>
 
-        <div class="record-buttons-group">
-          <button id="btn-record-unmask" class="macro-record-btn" type="button">
-            <span class="rec-btn-text" id="label-record-unmask">Unmask Record</span>
-          </button>
-          <button id="btn-record-thatsthem" class="macro-record-btn" type="button">
-            <span class="rec-btn-text" id="label-record-thatsthem">ThatsThem Record</span>
-          </button>
+        <div class="settings-list">
+          <label class="setting-row">
+            <span class="setting-label">Record 1</span>
+            <input type="checkbox" class="setting-toggle" data-setting="records.record1" />
+            <span class="setting-track"><span class="setting-knob"></span></span>
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">Record 2</span>
+            <input type="checkbox" class="setting-toggle" data-setting="records.record2" />
+            <span class="setting-track"><span class="setting-knob"></span></span>
+          </label>
         </div>
 
-        <div id="rec-status-banner" class="rec-status-banner">
-          <div class="rec-status-indicator" id="rec-status-dot"></div>
-          <div class="rec-status-text-wrap">
-            <div class="rec-status-main" id="rec-status-title">Ready to Record</div>
-            <div class="rec-status-sub" id="rec-status-sub">Click a button above to record the Turnstile click point.</div>
-          </div>
+        <div class="sidebar-section-header">
+          <span class="sidebar-section-title">DOB Sources</span>
+          <span class="sidebar-section-desc">Which platforms the DOB button may ask. A source that is off is never searched, and never a fallback.</span>
         </div>
 
-        <!-- Unmask Macro Card -->
-        <div id="card-macro-unmask" class="rec-summary-card">
-          <div class="rec-summary-header">
-            <div class="rec-site-title-wrap">
-              <span class="rec-summary-title">Unmask.com</span>
-              <span id="badge-macro-unmask" class="rec-badge empty">Not Recorded</span>
-            </div>
-            <span class="rec-summary-time" id="time-macro-unmask">--</span>
-          </div>
-
-          <div id="stats-macro-unmask" class="rec-stats-content hidden">
-            <div class="rec-stats-grid">
-              <div class="rec-stat-box">
-                <span class="rec-stat-label">Duration</span>
-                <span class="rec-stat-val" id="duration-macro-unmask">0 ms</span>
-              </div>
-              <div class="rec-stat-box">
-                <span class="rec-stat-label">Waypoints</span>
-                <span class="rec-stat-val" id="points-macro-unmask">0 pts</span>
-              </div>
-              <div class="rec-stat-box">
-                <span class="rec-stat-label">Avg Speed</span>
-                <span class="rec-stat-val" id="speed-macro-unmask">0 px/s</span>
-              </div>
-              <div class="rec-stat-box">
-                <span class="rec-stat-label">First Click</span>
-                <span class="rec-stat-val" id="click-macro-unmask">(0, 0)</span>
-              </div>
-            </div>
-            <div class="rec-target-row">
-              <span class="rec-stat-label">Target:</span>
-              <span class="rec-target-elem" id="elem-macro-unmask">None</span>
-            </div>
-          </div>
-
-          <div id="empty-macro-unmask" class="rec-empty-state">
-            <span>No recorded movement saved.</span>
-          </div>
-
-          <div class="rec-card-actions">
-            <button id="btn-delete-unmask" class="rec-action-btn delete-btn hidden" type="button" title="Delete Unmask Recording">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-              <span>Delete</span>
-            </button>
-          </div>
+        <div class="settings-list">
+          <label class="setting-row">
+            <span class="setting-label">Unmask</span>
+            <input type="checkbox" class="setting-toggle" data-setting="dob.unmask" />
+            <span class="setting-track"><span class="setting-knob"></span></span>
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">ThatSthem</span>
+            <input type="checkbox" class="setting-toggle" data-setting="dob.thatsthem" />
+            <span class="setting-track"><span class="setting-knob"></span></span>
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">AI</span>
+            <input type="checkbox" class="setting-toggle" data-setting="dob.ai" />
+            <span class="setting-track"><span class="setting-knob"></span></span>
+          </label>
         </div>
 
-        <!-- ThatsThem Macro Card -->
-        <div id="card-macro-thatsthem" class="rec-summary-card">
-          <div class="rec-summary-header">
-            <div class="rec-site-title-wrap">
-              <span class="rec-summary-title">ThatsThem.com</span>
-              <span id="badge-macro-thatsthem" class="rec-badge empty">Not Recorded</span>
-            </div>
-            <span class="rec-summary-time" id="time-macro-thatsthem">--</span>
-          </div>
-
-          <div id="stats-macro-thatsthem" class="rec-stats-content hidden">
-            <div class="rec-stats-grid">
-              <div class="rec-stat-box">
-                <span class="rec-stat-label">Duration</span>
-                <span class="rec-stat-val" id="duration-macro-thatsthem">0 ms</span>
-              </div>
-              <div class="rec-stat-box">
-                <span class="rec-stat-label">Waypoints</span>
-                <span class="rec-stat-val" id="points-macro-thatsthem">0 pts</span>
-              </div>
-              <div class="rec-stat-box">
-                <span class="rec-stat-label">Avg Speed</span>
-                <span class="rec-stat-val" id="speed-macro-thatsthem">0 px/s</span>
-              </div>
-              <div class="rec-stat-box">
-                <span class="rec-stat-label">First Click</span>
-                <span class="rec-stat-val" id="click-macro-thatsthem">(0, 0)</span>
-              </div>
-            </div>
-            <div class="rec-target-row">
-              <span class="rec-stat-label">Target:</span>
-              <span class="rec-target-elem" id="elem-macro-thatsthem">None</span>
-            </div>
-          </div>
-
-          <div id="empty-macro-thatsthem" class="rec-empty-state">
-            <span>No recorded movement saved.</span>
-          </div>
-
-          <div class="rec-card-actions">
-            <button id="btn-delete-thatsthem" class="rec-action-btn delete-btn hidden" type="button" title="Delete ThatsThem Recording">
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-              <span>Delete</span>
-            </button>
-          </div>
+        <div class="sidebar-section-header">
+          <span class="sidebar-section-title">DNC Status</span>
+          <span class="sidebar-section-desc">Which records show their DNC / Litigator / Blacklist status.</span>
         </div>
-      </div>
+
+        <div class="settings-list">
+          <label class="setting-row">
+            <span class="setting-label">Record 1</span>
+            <input type="checkbox" class="setting-toggle" data-setting="dnc.record1" />
+            <span class="setting-track"><span class="setting-knob"></span></span>
+          </label>
+          <label class="setting-row">
+            <span class="setting-label">Record 2</span>
+            <input type="checkbox" class="setting-toggle" data-setting="dnc.record2" />
+            <span class="setting-track"><span class="setting-knob"></span></span>
+          </label>
+        </div>
+
     </aside>
   `;
 
@@ -1672,6 +1550,205 @@
   const autoFeedbackBar = shadow.getElementById("auto-feedback-bar");
   const autoFeedbackText = shadow.getElementById("auto-feedback-text");
   const autoSpinner = shadow.getElementById("auto-spinner");
+
+  // Widget Authentication Elements
+  const widgetAuthView = shadow.getElementById("widget-auth-view");
+  const widgetAuthAlert = shadow.getElementById("widget-auth-alert");
+  const widgetAuthAlertText = shadow.getElementById("widget-auth-alert-text");
+  const widgetAuthForm = shadow.getElementById("widget-auth-form");
+  const widgetAuthUsername = shadow.getElementById("widget-auth-username");
+  const widgetAuthPassword = shadow.getElementById("widget-auth-password");
+  const widgetAuthSubmit = shadow.getElementById("widget-auth-submit");
+  const widgetAuthBtnText = shadow.getElementById("widget-auth-btn-text");
+  const widgetAuthSpinner = shadow.getElementById("widget-auth-spinner");
+  const widgetMainView = shadow.getElementById("widget-main-view");
+  const authHeaderPill = shadow.getElementById("auth-header-pill");
+  const authQuotaDisplay = shadow.getElementById("auth-quota-display");
+  const authLogoutBtn = shadow.getElementById("auth-logout-btn");
+
+  let widgetUser = null;
+  let widgetToken = null;
+
+  function showWidgetLogin(alertMessage) {
+    if (widgetAuthView) widgetAuthView.classList.remove("hidden");
+    if (widgetMainView) widgetMainView.classList.add("hidden");
+    if (authHeaderPill) authHeaderPill.classList.add("hidden");
+    if (alertMessage) {
+      if (widgetAuthAlertText) widgetAuthAlertText.textContent = alertMessage;
+      if (widgetAuthAlert) widgetAuthAlert.classList.remove("hidden");
+    } else {
+      if (widgetAuthAlert) widgetAuthAlert.classList.add("hidden");
+    }
+  }
+
+  function showWidgetMain(user) {
+    widgetUser = user;
+    if (widgetAuthView) widgetAuthView.classList.add("hidden");
+    if (widgetMainView) widgetMainView.classList.remove("hidden");
+    if (authHeaderPill) authHeaderPill.classList.remove("hidden");
+    updateWidgetQuotaDisplay(user?.lookupsRemaining, user?.lookupsTotal);
+  }
+
+  function updateWidgetQuotaDisplay(remaining, total) {
+    if (!authQuotaDisplay) return;
+    if (widgetUser?.role === "admin") {
+      authQuotaDisplay.textContent = "Admin (∞)";
+      authQuotaDisplay.classList.remove("low");
+      return;
+    }
+    const rem = typeof remaining === "number" ? remaining : 0;
+    const tot = typeof total === "number" ? total : 0;
+    authQuotaDisplay.textContent = `${rem} / ${tot} left`;
+    if (rem <= 10) {
+      authQuotaDisplay.classList.add("low");
+    } else {
+      authQuotaDisplay.classList.remove("low");
+    }
+  }
+
+  function syncWidgetQuota() {
+    if (!widgetToken) return;
+    try {
+      chrome.runtime.sendMessage({ action: "AUTH_SYNC_QUOTA" }, (res) => {
+        if (chrome.runtime.lastError || !res) return;
+        if (res.success && res.user) {
+          widgetUser = res.user;
+          updateWidgetQuotaDisplay(res.user.lookupsRemaining, res.user.lookupsTotal);
+        } else if (res.code === "LIMIT_REACHED" || res.error?.includes("limit reached")) {
+          showWidgetLogin("limit reached contact admin for more limit");
+        }
+      });
+    } catch (_) {}
+  }
+
+  // Check login on widget initialization
+  if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.get(["dnc_auth_token", "dnc_auth_user", "dnc_api_url"], (res) => {
+      widgetToken = res ? res.dnc_auth_token : null;
+      widgetUser = res ? res.dnc_auth_user : null;
+      if (widgetToken && widgetUser) {
+        showWidgetMain(widgetUser);
+        syncWidgetQuota();
+      } else {
+        showWidgetLogin();
+      }
+    });
+
+    if (chrome.storage.onChanged) {
+      chrome.storage.onChanged.addListener((changes, area) => {
+        if (area === "local" && changes.dnc_auth_user) {
+          const newUser = changes.dnc_auth_user.newValue;
+          if (newUser) {
+            widgetUser = newUser;
+            updateWidgetQuotaDisplay(newUser.lookupsRemaining, newUser.lookupsTotal);
+          } else {
+            widgetUser = null;
+            widgetToken = null;
+            showWidgetLogin();
+          }
+        }
+      });
+    }
+
+    chrome.runtime.onMessage.addListener((msg) => {
+      if (!msg) return;
+      if (msg.action === "AUTH_QUOTA_UPDATED") {
+        if (widgetUser) {
+          widgetUser.lookupsRemaining = msg.lookupsRemaining;
+          widgetUser.lookupsTotal = msg.lookupsTotal;
+        }
+        updateWidgetQuotaDisplay(msg.lookupsRemaining, msg.lookupsTotal);
+      } else if (msg.action === "AUTH_LIMIT_REACHED") {
+        showWidgetLogin("limit reached contact admin for more limit");
+      } else if (msg.action === "AUTH_LOGGED_OUT" || msg.action === "AUTH_REQUIRED") {
+        showWidgetLogin(msg.error);
+      }
+    });
+  }
+
+  // Auto-sync quota periodically (every 20s) and on tab focus
+  setInterval(() => {
+    if (widgetToken && widgetUser) {
+      syncWidgetQuota();
+    }
+  }, 20000);
+
+  window.addEventListener("focus", () => {
+    if (widgetToken && widgetUser) {
+      syncWidgetQuota();
+    }
+  });
+
+  if (authHeaderPill) {
+    authHeaderPill.addEventListener("click", (e) => {
+      if (e.target && (e.target === authLogoutBtn || authLogoutBtn?.contains(e.target))) {
+        return;
+      }
+      syncWidgetQuota();
+      authHeaderPill.style.transform = "scale(0.96)";
+      setTimeout(() => { authHeaderPill.style.transform = "none"; }, 150);
+    });
+  }
+
+  if (authLogoutBtn) {
+    authLogoutBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      widgetToken = null;
+      widgetUser = null;
+      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.remove(["dnc_auth_token", "dnc_auth_user"], () => {
+          showWidgetLogin();
+          try {
+            chrome.runtime.sendMessage({ action: "AUTH_LOGGED_OUT" }).catch(() => {});
+          } catch (_) {}
+        });
+      } else {
+        showWidgetLogin();
+      }
+    });
+  }
+
+  if (widgetAuthForm) {
+    widgetAuthForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const username = widgetAuthUsername?.value?.trim();
+      const password = widgetAuthPassword?.value;
+      if (!username || !password) return;
+
+      if (widgetAuthAlert) widgetAuthAlert.classList.add("hidden");
+      if (widgetAuthSubmit) widgetAuthSubmit.disabled = true;
+      if (widgetAuthBtnText) widgetAuthBtnText.classList.add("hidden");
+      if (widgetAuthSpinner) widgetAuthSpinner.classList.remove("hidden");
+
+      chrome.runtime.sendMessage(
+        {
+          action: "AUTH_LOGIN",
+          username: username,
+          password: password,
+        },
+        (res) => {
+          if (widgetAuthSubmit) widgetAuthSubmit.disabled = false;
+          if (widgetAuthBtnText) widgetAuthBtnText.classList.remove("hidden");
+          if (widgetAuthSpinner) widgetAuthSpinner.classList.add("hidden");
+
+          if (!res) {
+            showWidgetLogin("No response from extension background worker.");
+            return;
+          }
+
+          if (!res.success) {
+            showWidgetLogin(res.error || "Login failed");
+            return;
+          }
+
+          widgetToken = res.token;
+          widgetUser = res.user;
+          if (widgetAuthPassword) widgetAuthPassword.value = "";
+          showWidgetMain(res.user);
+        }
+      );
+    });
+  }
 
   let currentLookupMode = "manual"; // "manual" | "auto"
   let autoPollTimer = null;
@@ -1801,45 +1878,51 @@
   function checkAutoNumber() {
     if (currentLookupMode !== "auto") return;
 
-    const rawPhone = scanForDialerPhone();
-    if (rawPhone && rawPhone.length === 10) {
-      if (rawPhone !== lastAutoLookedUpPhone) {
-        lastAutoLookedUpPhone = rawPhone;
-        const formatted = `(${rawPhone.slice(0, 3)}) ${rawPhone.slice(3, 6)}-${rawPhone.slice(6, 10)}`;
+    if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      chrome.storage.local.get(["dnc_auth_token"], (res) => {
+        if (!res || !res.dnc_auth_token) return;
 
-        if (phoneInput) phoneInput.value = formatted;
-        if (autoFeedbackBar) autoFeedbackBar.classList.remove("waiting");
-        if (autoSpinner) autoSpinner.classList.remove("hidden");
-        if (autoFeedbackText)
-          autoFeedbackText.textContent = `Auto-detected: ${rawPhone} · Looking up...`;
+        const rawPhone = scanForDialerPhone();
+        if (rawPhone && rawPhone.length === 10) {
+          if (rawPhone !== lastAutoLookedUpPhone) {
+            lastAutoLookedUpPhone = rawPhone;
+            const formatted = `(${rawPhone.slice(0, 3)}) ${rawPhone.slice(3, 6)}-${rawPhone.slice(6, 10)}`;
 
-        // Broadcast to other extension views (window / popup)
-        chrome.runtime
-          .sendMessage({
-            action: "PAGE_PHONE_DETECTED",
-            phone: rawPhone,
-          })
-          .catch(() => {});
+            if (phoneInput) phoneInput.value = formatted;
+            if (autoFeedbackBar) autoFeedbackBar.classList.remove("waiting");
+            if (autoSpinner) autoSpinner.classList.remove("hidden");
+            if (autoFeedbackText)
+              autoFeedbackText.textContent = `Auto-detected: ${rawPhone} · Looking up...`;
 
-        // Automatically execute search
-        if (searchBtn) searchBtn.click();
-      }
-    } else {
-      if (!lastAutoLookedUpPhone) {
-        if (autoSpinner) autoSpinner.classList.add("hidden");
-        if (autoFeedbackBar) autoFeedbackBar.classList.add("waiting");
-        if (autoFeedbackText)
-          autoFeedbackText.textContent =
-            "Auto mode active · Waiting for dialer number...";
-      } else {
-        // Dialer cleared between calls
-        lastAutoLookedUpPhone = "";
-        if (autoSpinner) autoSpinner.classList.add("hidden");
-        if (autoFeedbackBar) autoFeedbackBar.classList.add("waiting");
-        if (autoFeedbackText)
-          autoFeedbackText.textContent =
-            "Auto mode active · Waiting for next dialer number...";
-      }
+            // Broadcast to other extension views (window / popup)
+            chrome.runtime
+              .sendMessage({
+                action: "PAGE_PHONE_DETECTED",
+                phone: rawPhone,
+              })
+              .catch(() => {});
+
+            // Automatically execute search
+            if (searchBtn) searchBtn.click();
+          }
+        } else {
+          if (!lastAutoLookedUpPhone) {
+            if (autoSpinner) autoSpinner.classList.add("hidden");
+            if (autoFeedbackBar) autoFeedbackBar.classList.add("waiting");
+            if (autoFeedbackText)
+              autoFeedbackText.textContent =
+                "Auto mode active · Waiting for dialer number...";
+          } else {
+            // Dialer cleared between calls
+            lastAutoLookedUpPhone = "";
+            if (autoSpinner) autoSpinner.classList.add("hidden");
+            if (autoFeedbackBar) autoFeedbackBar.classList.add("waiting");
+            if (autoFeedbackText)
+              autoFeedbackText.textContent =
+                "Auto mode active · Waiting for next dialer number...";
+          }
+        }
+      });
     }
   }
 
@@ -1885,17 +1968,15 @@
   // Track results from both sources
   let activeResults = []; // [{ source, data }]
 
-  // Restore saved position & visibility
-  chrome.storage.local.get(["widgetPosition", "widgetVisible"], (res) => {
+  // Restore the saved position. Visibility is deliberately not restored: the widget only exists on a
+  // page because the toolbar icon was clicked there, so a widget that was injected is one the user
+  // asked for. (The close button hides this page's copy; the next click on the icon brings it back.)
+  chrome.storage.local.get(["widgetPosition"], (res) => {
     if (res.widgetPosition) {
       const { top, left } = res.widgetPosition;
       container.style.top = `${Math.max(10, Math.min(top, window.innerHeight - 80))}px`;
       container.style.left = `${Math.max(10, Math.min(left, window.innerWidth - 410))}px`;
       container.style.right = "auto";
-    }
-
-    if (res.widgetVisible === false) {
-      container.classList.add("hidden");
     }
   });
 
@@ -1960,7 +2041,6 @@
   // Close Button
   closeBtn.addEventListener("click", () => {
     container.classList.add("hidden");
-    chrome.storage.local.set({ widgetVisible: false });
   });
 
   // Phone input formatting
@@ -1983,6 +2063,19 @@
 
   // Search Action
   searchBtn.addEventListener("click", async () => {
+    const authData = await new Promise((resolve) => {
+      if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.get(["dnc_auth_token"], (res) => resolve(res || {}));
+      } else {
+        resolve({});
+      }
+    });
+
+    if (!authData || !authData.dnc_auth_token) {
+      showError("Please sign in via the extension window to access lookups.");
+      return;
+    }
+
     const phone = phoneInput.value.trim();
     const digits = phone.replace(/\D/g, "");
 
@@ -2025,6 +2118,14 @@
         throw new Error("No response from background service worker.");
       }
 
+      if (response && typeof response.lookupsRemaining === 'number') {
+        if (widgetUser) {
+          widgetUser.lookupsRemaining = response.lookupsRemaining;
+          widgetUser.lookupsTotal = response.lookupsTotal;
+        }
+        updateWidgetQuotaDisplay(response.lookupsRemaining, response.lookupsTotal);
+      }
+
       if (response.success && response.data) {
         handleIncomingStreamResult({
           source: response.source || "fastest",
@@ -2034,7 +2135,10 @@
           session: session,
         });
       } else if (!response.success && activeResults.length === 0) {
-        showError(response.error || "Failed to retrieve compliance records.");
+        const errMsg = (response.code === 'LIMIT_REACHED' || response.error?.includes('limit reached'))
+          ? 'limit reached contact admin for more limit'
+          : (response.error || "Failed to retrieve compliance records.");
+        showError(errMsg);
         hideStatus();
         setLoading(false);
       }
@@ -2056,13 +2160,22 @@
         return;
       }
 
+      if (typeof msg.lookupsRemaining === 'number') {
+        if (widgetUser) {
+          widgetUser.lookupsRemaining = msg.lookupsRemaining;
+          widgetUser.lookupsTotal = msg.lookupsTotal;
+        }
+        updateWidgetQuotaDisplay(msg.lookupsRemaining, msg.lookupsTotal);
+      }
+
       if (msg.data) {
         handleIncomingStreamResult(msg);
       } else if (msg.error) {
         if (activeResults.length > 0) {
-          // Say which source failed instead of silently showing one record only.
-          const okSources = activeResults.map((r) => r.source).join(" & ");
-          sourceStatusText.textContent = `Completed (${okSources}) - ${msg.source || "the other source"} failed`;
+          // Say which record failed instead of silently showing one record only. The label (Record 1 /
+          // Record 2) is what a user can act on; the source behind it is not theirs to know.
+          const okRecords = activeResults.map((r) => recordLabel(r.source)).join(" & ");
+          sourceStatusText.textContent = `Completed (${okRecords}) - ${msg.source ? recordLabel(msg.source) : "the other record"} failed`;
           hideStatus();
           setLoading(false);
         } else if (msg.isAllDone) {
@@ -2075,9 +2188,11 @@
       if (msg.isAllDone) {
         hideStatus();
         setLoading(false);
+        syncWidgetQuota();
       }
     }
 
+    // The toolbar icon is what shows and hides the widget on a page.
     if (msg.action === "TOGGLE_WIDGET") {
       const isHidden = container.classList.contains("hidden");
       if (isHidden) {
@@ -2085,10 +2200,8 @@
         container.classList.remove("minimized");
         minBtn.textContent = "_";
         phoneInput.focus();
-        chrome.storage.local.set({ widgetVisible: true });
       } else {
         container.classList.add("hidden");
-        chrome.storage.local.set({ widgetVisible: false });
       }
     }
   });
@@ -2157,11 +2270,11 @@
 
     if (activeResults.length === 1) {
       if (isAllDone) {
-        if (sourceStatusText) sourceStatusText.textContent = `Completed (${source})`;
+        if (sourceStatusText) sourceStatusText.textContent = `Completed (${recordLabel(source)})`;
         hideStatus();
         setLoading(false);
       } else {
-        if (sourceStatusText) sourceStatusText.textContent = `Fastest Result: ${source} (awaiting secondary...)`;
+        if (sourceStatusText) sourceStatusText.textContent = `Fastest Result: ${recordLabel(source)} (awaiting secondary...)`;
         hideStatus();
         setLoading(false);
       }
@@ -2374,11 +2487,20 @@
   // ZIP filter on the record cards
   //
   // The navigation row of every record card carries a small 5 digit ZIP box: typing a ZIP shows
-  // only the people of that record whose addresses include it. The value is shared, so both
-  // record cards (infolookup.site and vibegenx.com) filter together and either box can clear it.
+  // only the people of that record whose addresses include it.
+  //
+  // The value is kept **per record**. It used to be one shared value, which meant a ZIP typed for
+  // Record 1 also narrowed Record 2 - so asking "who of these is in 77047?" for one source silently
+  // hid people from the other one, with nothing on screen saying why.
   // ---------------------------------------------------------------------------
-  let zipFilterValue = "";
-  const zipFilterRepaints = []; // [{ element, repaint }]
+  const zipFiltersByRecord = Object.create(null); // record source -> normalised ZIP
+  const zipFilterRepaints = []; // [{ source, element, repaint }]
+
+  // The value the user has typed for a record. It is stored even while partial, so the box can be
+  // re-rendered mid-typing without losing what was typed.
+  function zipFilterFor(recordSource) {
+    return zipFiltersByRecord[String(recordSource == null ? "" : recordSource)] || "";
+  }
 
   function normalizeZipFilter(value) {
     return String(value == null ? "" : value)
@@ -2388,7 +2510,7 @@
 
   // Only a complete ZIP filters - 1-4 digits are still being typed.
   function activeZipFilter(value) {
-    const zip = normalizeZipFilter(value == null ? zipFilterValue : value);
+    const zip = normalizeZipFilter(value == null ? "" : value);
     return zip.length === 5 ? zip : "";
   }
 
@@ -2414,23 +2536,29 @@
     return list.filter((person) => personMatchesZipFilter(person, filter));
   }
 
-  // Applies a new filter to every record card on screen (stale cards are dropped).
-  function setZipFilter(value) {
-    zipFilterValue = normalizeZipFilter(value);
+  // Applies a new filter to the record it was typed in, and to that record only. Stale cards are
+  // dropped; the other record's card is left exactly as it is.
+  function setZipFilter(recordSource, value) {
+    const key = String(recordSource == null ? "" : recordSource);
+    zipFiltersByRecord[key] = normalizeZipFilter(value);
+
     for (let i = zipFilterRepaints.length - 1; i >= 0; i--) {
       const entry = zipFilterRepaints[i];
       if (!entry || !entry.element || !entry.element.isConnected) {
         zipFilterRepaints.splice(i, 1);
         continue;
       }
+      if (String(entry.source || "") !== key) continue; // not this record's card
       try {
         entry.repaint();
       } catch (e) {}
     }
   }
 
-  // The navigation row of a record card: record chevrons on the left, ZIP box on the right.
-  function recordNavRowHtml(index, total) {
+  // The navigation row of a record card: record chevrons on the left, ZIP box on the right. The box
+  // carries the value for *this* record only.
+  function recordNavRowHtml(index, total, recordSource) {
+    const filterValue = zipFilterFor(recordSource);
     return `
         <div class="person-slide-header">
           <div class="slide-counter-badge"${total > 1 ? "" : ' style="display:none;"'}>
@@ -2443,36 +2571,74 @@
             </button>
           </div>
           <div class="zip-filter-box">
-            <input class="zip-filter-input" type="text" inputmode="numeric" autocomplete="off" maxlength="5" placeholder="ZIP code" title="Show only the people whose address is in this ZIP" aria-label="Filter this record by ZIP code" value="${escapeHtml(zipFilterValue)}" />
-            <button class="zip-filter-clear${zipFilterValue ? "" : " hidden"}" type="button" title="Clear the ZIP filter" aria-label="Clear the ZIP filter">✕</button>
+            <input class="zip-filter-input" type="text" inputmode="numeric" autocomplete="off" maxlength="5" placeholder="ZIP code" title="Show only the people whose address is in this ZIP" aria-label="Filter this record by ZIP code" value="${escapeHtml(filterValue)}" />
+            <button class="zip-filter-clear${filterValue ? "" : " hidden"}" type="button" title="Clear the ZIP filter" aria-label="Clear the ZIP filter">✕</button>
           </div>
         </div>
       `;
   }
 
-  // Keeps a rendered card's ZIP box in step with the shared filter (the input the user is
+  // Keeps a rendered card's ZIP box in step with that record's own filter (the input the user is
   // typing in is left alone, so their keystrokes are never overwritten).
-  function syncZipFilterBox(container) {
+  function syncZipFilterBox(container, recordSource) {
     if (!container) return;
+    const filterValue = zipFilterFor(recordSource);
     const input = container.querySelector(".zip-filter-input");
     const clear = container.querySelector(".zip-filter-clear");
     const focused = shadow && shadow.activeElement ? shadow.activeElement : null;
-    if (input && input !== focused && input.value !== zipFilterValue) {
-      input.value = zipFilterValue;
+    if (input && input !== focused && input.value !== filterValue) {
+      input.value = filterValue;
     }
-    if (clear) clear.classList.toggle("hidden", !zipFilterValue);
+    if (clear) clear.classList.toggle("hidden", !filterValue);
   }
 
   function zipFilterNoteHtml(index, source, hiddenCount) {
     return `
         <div class="card person-card">
           <div class="record-header-tag">
-            <span>Record ${index} · ${escapeHtml(source)}</span>
+            <span>${escapeHtml(recordLabel(source))}</span>
           </div>
-          ${recordNavRowHtml(0, 0)}
-          <div class="zip-filter-note">No address of this record is in ZIP ${escapeHtml(activeZipFilter())} - ${hiddenCount} ${hiddenCount === 1 ? "person" : "people"} hidden.</div>
+          ${recordNavRowHtml(0, 0, source)}
+          <div class="zip-filter-note">No address of this record is in ZIP ${escapeHtml(activeZipFilter(zipFilterFor(source)))} - ${hiddenCount} ${hiddenCount === 1 ? "person" : "people"} hidden.</div>
         </div>
       `;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Which record card owns a lookup
+  //
+  // Both record cards render the same element ids (card-vehicle-progress, card-dob-results, ...),
+  // and shadow.getElementById() returns the FIRST match in the whole shadow root - always Record
+  // 1's card. So a lookup started from Record 2 used to paint its progress and results onto Record
+  // 1 unless the two records happened to be the same person.
+  //
+  // Everything a lookup touches is therefore looked up inside the card that owns it. What is
+  // remembered is the record's *name*, not the element: a card is rebuilt whenever a search runs,
+  // so a held element would go stale, while the name keeps resolving.
+  // ---------------------------------------------------------------------------
+  const lookupRecordByProvider = Object.create(null); // amica | mercury | dob -> record source
+
+  function lookupRecord(provider) {
+    return lookupRecordByProvider[String(provider == null ? "" : provider).toLowerCase()] || "";
+  }
+
+  // The card element that renders a record's person section.
+  function recordCard(recordSource) {
+    if (!shadow || !recordSource) return null;
+    const wanted = String(recordSource);
+    const cards = shadow.querySelectorAll("[data-record-source]");
+    for (let i = 0; i < cards.length; i++) {
+      if (cards[i].getAttribute("data-record-source") === wanted) return cards[i];
+    }
+    return null;
+  }
+
+  // Finds an element inside the card that owns it. With no record known - a path that is not tied
+  // to any card - the whole shadow root is searched, which is what happened before.
+  function recordElement(recordSource, id) {
+    if (!recordSource) return shadow ? shadow.getElementById(id) : null;
+    const card = recordCard(recordSource);
+    return card ? card.querySelector("#" + id) : null;
   }
 
   // Render individual card block in order
@@ -2494,11 +2660,15 @@
         : data.person
           ? [data.person]
           : [];
-    // The ZIP box on the navigation row narrows this list down to the matching people.
-    let personsList = filterPersonsByZip(allPersons, activeZipFilter());
+    // The ZIP box on the navigation row narrows this list down to the matching people. It uses
+    // this record's own filter, so a ZIP typed for the other record cannot narrow this one.
+    let personsList = filterPersonsByZip(allPersons, activeZipFilter(zipFilterFor(source)));
     let currentPersonIdx = 0;
 
     const personCardContainer = document.createElement("div");
+    // Marks the card that owns these elements. Both record cards render the same element ids, so a
+    // lookup has to find *its* card instead of the first match in the whole shadow root.
+    personCardContainer.setAttribute("data-record-source", source);
 
     function updatePersonCardView(pIdx) {
       const p = personsList[pIdx];
@@ -2544,12 +2714,12 @@
         p.address?.full ||
         streetDisplay;
 
-      const slideNavHtml = recordNavRowHtml(pIdx, personsList.length);
+      const slideNavHtml = recordNavRowHtml(pIdx, personsList.length, source);
 
       personCardContainer.innerHTML = `
         <div class="card person-card">
           <div class="record-header-tag">
-            <span>Record ${index} · ${source}</span>
+            <span>${recordLabel(source)}</span>
           </div>
           ${slideNavHtml}
           <div class="person-header-row">
@@ -2558,8 +2728,8 @@
                 <span class="person-name">${name}</span>
                 <div class="person-actions">
                   <button class="mini-btn copy-name-action" data-copy="${escapeHtml(name)}" type="button">Copy</button>
-                  <button class="mini-btn vehicle-btn amica-action-btn" type="button" title="Discover vehicles on Amica">Amica</button>
-                  <button class="mini-btn vehicle-btn mercury-action-btn" type="button" title="Discover vehicles on Mercury">Mercury</button>
+                  <button class="mini-btn vehicle-btn amica-action-btn" type="button" title="Discover vehicles on Ride 1">${rideLabel("amica")}</button>
+                  <button class="mini-btn vehicle-btn mercury-action-btn" type="button" title="Discover vehicles on Ride 2">${rideLabel("mercury")}</button>
                   <button class="mini-btn dob-btn dob-action-btn" type="button" title="Deep research DOB on Unmask">DOB</button>
                 </div>
               </div>
@@ -2585,7 +2755,7 @@
           <div class="vehicle-progress-box hidden" id="card-vehicle-progress">
             <div class="vehicle-progress-header">
               <div class="vehicle-progress-left">
-                <span class="vehicle-provider-tag" id="vehicle-provider-tag">Amica</span>
+                <span class="vehicle-provider-tag" id="vehicle-provider-tag">${rideLabel("amica")}</span>
                 <span class="vehicle-progress-status" id="vehicle-progress-status">Starting lookup...</span>
               </div>
               <button class="vehicle-cancel-btn" id="vehicle-cancel-btn" type="button">✕ Cancel</button>
@@ -2685,21 +2855,21 @@
       if (amicaBtn) {
         amicaBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          startVehicleAutomation("amica", p);
+          startVehicleAutomation("amica", p, source);
         });
       }
 
       if (mercuryBtn) {
         mercuryBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          startVehicleAutomation("mercury", p);
+          startVehicleAutomation("mercury", p, source);
         });
       }
 
       if (dobBtn) {
         dobBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          startDobAutomation(p);
+          startDobAutomation(p, source);
         });
       }
 
@@ -2707,47 +2877,56 @@
         cancelBtn.addEventListener("click", (e) => {
           e.stopPropagation();
           cancelVehicleAutomation();
-          cancelDobAutomation();
+          cancelDobAutomation(source);
         });
       }
 
       // If this person already had vehicles discovered, render them
       if (p.vehicles && p.vehicles.length > 0) {
-        renderDiscoveredVehicles(p.vehicles);
+        renderDiscoveredVehicles(source, p.vehicles);
       }
 
       // If this person already had DOB discovered, render it prominently
-      if (p.dob || p.dob1 || p.dob2) {
+      if (p.dob || p.dob1 || p.dob2 || p.dob3) {
         const firstDob = p.dob1 || p.dob;
-        renderDiscoveredDob({
+        renderDiscoveredDob(source, {
           dob1: firstDob,
           dob1Source: p.dob1Source,
           dob1Note: p.dob1Note || (isJanuaryPlaceholder(firstDob) ? "month/day unknown" : ""),
           dob2: p.dob2,
-          dob2Source: p.dob2Source
+          dob2Source: p.dob2Source,
+          dob3: p.dob3,
+          dob3Source: p.dob3Source,
+          dob3Note: p.dob3Note
         });
       } else {
-        const dobBox = shadow.getElementById("card-dob-results");
+        const dobBox = recordElement(source, "card-dob-results");
         if (dobBox) dobBox.classList.add("hidden");
       }
 
       // If this person already had emails discovered, render them
       if (p.emails && p.emails.length > 0) {
-        renderDiscoveredEmails(p.emails);
+        renderDiscoveredEmails(source, p.emails);
       } else {
-        const emailBox = shadow.getElementById("card-email-results");
+        const emailBox = recordElement(source, "card-email-results");
         if (emailBox) emailBox.classList.add("hidden");
       }
 
       // The ZIP box travelled with the navigation row that was just rebuilt.
       bindZipFilterBox();
-      syncZipFilterBox(personCardContainer);
+      syncZipFilterBox(personCardContainer, source);
     }
 
-    // Keeps the caret in the ZIP box while the card is rebuilt on every keystroke.
+    // Keeps the caret in the ZIP box while the card is rebuilt on every keystroke. Only *this*
+    // card's box counts: with a per-record filter the other record no longer repaints from a
+    // keystroke here, but it can still repaint for its own reasons, and it must not then steal the
+    // caret out of the box being typed in.
     function isZipInputFocused() {
       const focused = shadow && shadow.activeElement ? shadow.activeElement : null;
-      return !!(focused && focused.classList && focused.classList.contains("zip-filter-input"));
+      if (!focused || !focused.classList || !focused.classList.contains("zip-filter-input")) {
+        return false;
+      }
+      return personCardContainer.contains(focused);
     }
 
     function focusZipInput() {
@@ -2764,7 +2943,7 @@
       if (input) {
         input.addEventListener("input", (e) => {
           e.stopPropagation();
-          setZipFilter(e.target.value);
+          setZipFilter(source, e.target.value);
         });
         input.addEventListener("click", (e) => e.stopPropagation());
         input.addEventListener("keydown", (e) => {
@@ -2776,7 +2955,7 @@
       if (clearBtn) {
         clearBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          setZipFilter("");
+          setZipFilter(source, "");
           focusZipInput();
         });
       }
@@ -2791,7 +2970,7 @@
       if (!person) {
         personCardContainer.innerHTML = zipFilterNoteHtml(index, source, allPersons.length);
         bindZipFilterBox();
-        syncZipFilterBox(personCardContainer);
+        syncZipFilterBox(personCardContainer, source);
       } else {
         updatePersonCardView(currentPersonIdx);
       }
@@ -2812,11 +2991,13 @@
       cardWrapper.appendChild(personCardContainer);
     }
 
-    // Any ZIP box on screen filters every record card, so the two records stay in step.
+    // Repaints this record's card when its own ZIP filter changes. The other record's card is
+    // registered separately and is not touched.
     zipFilterRepaints.push({
+      source: source,
       element: cardWrapper,
       repaint: () => {
-        personsList = filterPersonsByZip(allPersons, activeZipFilter());
+        personsList = filterPersonsByZip(allPersons, activeZipFilter(zipFilterFor(source)));
         currentPersonIdx = 0;
         if (!shouldShowPersonSection()) return;
         renderPersonSection();
@@ -2824,15 +3005,18 @@
       }
     });
 
-    const dncBadgeClass = getBadgeClass(dnc);
-    const litBadgeClass = getBadgeClass(litigator);
-    const blackBadgeClass = getBadgeClass(blacklist);
+    // The DNC / Litigator / Blacklist card belongs to one record, and the Settings panel switches each
+    // record's status on or off on its own.
+    if (automationSetting("dnc." + recordKey(source))) {
+      const dncBadgeClass = getBadgeClass(dnc);
+      const litBadgeClass = getBadgeClass(litigator);
+      const blackBadgeClass = getBadgeClass(blacklist);
 
-    const complianceCard = document.createElement("div");
-    complianceCard.innerHTML = `
+      const complianceCard = document.createElement("div");
+      complianceCard.innerHTML = `
       <div class="card compliance-card">
         <div class="record-header-tag">
-          <span>Compliance · ${source}</span>
+          <span>Compliance · ${recordLabel(source)}</span>
         </div>
         <div class="compliance-grid">
           <div class="compliance-cell">
@@ -2851,7 +3035,9 @@
       </div>
     `;
 
-    cardWrapper.appendChild(complianceCard);
+      cardWrapper.appendChild(complianceCard);
+    }
+
     recordsList.appendChild(cardWrapper);
   }
 
@@ -2885,7 +3071,7 @@
     uniqueRecords.forEach((r, idx) => {
       const { source, data } = r;
       if (uniqueRecords.length > 1) {
-        summary += `--- RECORD ${idx + 1} (${source}) ---\n`;
+        summary += `--- ${recordLabel(source)} ---\n`;
       }
       const persons =
         data.persons && data.persons.length > 0
@@ -3155,16 +3341,21 @@
     };
   }
 
-  function startVehicleAutomation(provider, person) {
+  function startVehicleAutomation(provider, person, recordSource) {
+    // Remember which card asked, so the progress and results are drawn on that card and not on
+    // whichever record happens to be first in the shadow root.
+    lookupRecordByProvider[String(provider).toLowerCase()] = recordSource || "";
+
     const profile = extractProfileForVehicleLookup(person, phoneInput ? phoneInput.value : "");
     activeVehicleSession = {
       provider,
       person,
       profile,
-      vehicles: []
+      vehicles: [],
+      record: recordSource || ""
     };
 
-    const providerTitle = provider === "amica" ? "Amica" : "Mercury";
+    const providerTitle = rideLabel(provider);
     const initMsg = profile.skippedPoBox
       ? `Initializing ${providerTitle} (using ${profile.address.street})...`
       : `Initializing ${providerTitle} vehicle lookup...`;
@@ -3183,21 +3374,25 @@
   }
 
   function cancelVehicleAutomation() {
+    const provider = activeVehicleSession ? activeVehicleSession.provider : "";
     chrome.runtime.sendMessage({ action: "CANCEL_VEHICLE_LOOKUP" }).catch(() => {});
-    hideVehicleProgress();
+    hideVehicleProgress(provider);
     activeVehicleSession = null;
   }
 
-  function showVehicleProgress(provider, pct, message, isWarning = false) {
-    const box = shadow.getElementById("card-vehicle-progress");
-    const tag = shadow.getElementById("vehicle-provider-tag");
-    const status = shadow.getElementById("vehicle-progress-status");
-    const fill = shadow.getElementById("vehicle-progress-fill");
-    const cancelBtn = shadow.getElementById("vehicle-cancel-btn");
+  // `record` names the card a lookup has to be drawn on. It is only needed when that is not the
+  // card the provider last started from - every DOB message says which record its run belongs to.
+  function showVehicleProgress(provider, pct, message, isWarning = false, record) {
+    const owner = record === undefined ? lookupRecord(provider) : record;
+    const box = recordElement(owner, "card-vehicle-progress");
+    const tag = recordElement(owner, "vehicle-provider-tag");
+    const status = recordElement(owner, "vehicle-progress-status");
+    const fill = recordElement(owner, "vehicle-progress-fill");
+    const cancelBtn = recordElement(owner, "vehicle-cancel-btn");
 
     if (!box) return;
     box.classList.remove("hidden");
-    if (tag) tag.textContent = provider === "amica" ? "Amica" : (provider === "DOB" ? "DOB" : "Mercury");
+    if (tag) tag.textContent = provider === "DOB" ? "DOB" : rideLabel(provider);
     if (status) status.textContent = message || "Processing...";
     if (fill) {
       fill.style.width = `${Math.min(100, Math.max(8, pct))}%`;
@@ -3214,19 +3409,21 @@
     }
   }
 
-  function hideVehicleProgress() {
-    const box = shadow.getElementById("card-vehicle-progress");
+  function hideVehicleProgress(provider, record) {
+    const owner = record === undefined ? lookupRecord(provider) : record;
+    const box = recordElement(owner, "card-vehicle-progress");
     if (box) box.classList.add("hidden");
   }
 
   function renderEmptyVehicleNotice(provider, message) {
-    const box = shadow.getElementById("card-vehicle-results");
-    const countLabel = shadow.getElementById("vehicle-results-count-label");
-    const container = shadow.getElementById("vehicle-badges-container");
-    const copyAllVehiclesBtn = shadow.getElementById("copy-all-vehicles-btn");
+    const record = lookupRecord(provider);
+    const box = recordElement(record, "card-vehicle-results");
+    const countLabel = recordElement(record, "vehicle-results-count-label");
+    const container = recordElement(record, "vehicle-badges-container");
+    const copyAllVehiclesBtn = recordElement(record, "copy-all-vehicles-btn");
 
     if (!box || !container) return;
-    const providerName = provider === "amica" ? "Amica" : "Mercury";
+    const providerName = rideLabel(provider);
     const text = message || `No vehicle found on ${providerName}`;
 
     if (countLabel) countLabel.textContent = `Vehicle Lookup (${providerName})`;
@@ -3242,11 +3439,11 @@
     box.classList.remove("hidden");
   }
 
-  function renderDiscoveredVehicles(vehicles) {
-    const box = shadow.getElementById("card-vehicle-results");
-    const countLabel = shadow.getElementById("vehicle-results-count-label");
-    const container = shadow.getElementById("vehicle-badges-container");
-    const copyAllVehiclesBtn = shadow.getElementById("copy-all-vehicles-btn");
+  function renderDiscoveredVehicles(recordSource, vehicles) {
+    const box = recordElement(recordSource, "card-vehicle-results");
+    const countLabel = recordElement(recordSource, "vehicle-results-count-label");
+    const container = recordElement(recordSource, "vehicle-badges-container");
+    const copyAllVehiclesBtn = recordElement(recordSource, "copy-all-vehicles-btn");
 
     if (!box || !container) return;
 
@@ -3294,24 +3491,28 @@
     return /^jan(uary)?\.?\s+(?:1(?:st)?,?\s+)?\d{4}$/i.test(s);
   }
 
+  // The three sources a DOB row can come from. Google AI Mode answers beside the Unmask run, so its
+  // date is shown next to theirs rather than replacing it.
   function dobSourceLabel(source) {
     if (source === "unmask.com") return "Unmask";
     if (source === "thatsthem.com") return "ThatSthem";
+    if (source === "google.ai") return "AI";
     return source || "";
   }
 
-  // DOB 1 (first source, possibly a placeholder / year-only value) and DOB 2 (the
-  // confirmed date) are shown side by side so both can be compared and copied.
-  function renderDiscoveredDob(info) {
+  // DOB 1 (first source, possibly a placeholder / year-only value), DOB 2 (the confirmed date) and
+  // DOB 3 (Google AI Mode) are shown side by side so all of them can be compared and copied.
+  function renderDiscoveredDob(recordSource, info) {
     const data = info || {};
-    const box = shadow.getElementById("card-dob-results");
-    const container = shadow.getElementById("dob-badges-container");
+    const box = recordElement(recordSource, "card-dob-results");
+    const container = recordElement(recordSource, "dob-badges-container");
 
     if (!box || !container) return;
 
     const entries = [];
     if (data.dob1) entries.push({ source: data.dob1Source || "", note: data.dob1Note || "", value: data.dob1 });
     if (data.dob2) entries.push({ source: data.dob2Source || "", note: data.dob2Note || "", value: data.dob2 });
+    if (data.dob3) entries.push({ source: data.dob3Source || "google.ai", note: data.dob3Note || "", value: data.dob3 });
 
     if (entries.length === 0) {
       box.classList.add("hidden");
@@ -3342,9 +3543,9 @@
     box.classList.remove("hidden");
   }
 
-  function renderDiscoveredEmails(emails) {
-    const box = shadow.getElementById("card-email-results");
-    const container = shadow.getElementById("email-badges-container");
+  function renderDiscoveredEmails(recordSource, emails) {
+    const box = recordElement(recordSource, "card-email-results");
+    const container = recordElement(recordSource, "email-badges-container");
 
     if (!box || !container) return;
 
@@ -3376,29 +3577,77 @@
     box.classList.remove("hidden");
   }
 
+  // A DOB run belongs to the record card that asked for it, and every line the run produces has to
+  // come back to that card. The record travels with the run (it is sent with START_DOB_LOOKUP and
+  // echoed on every message the run produces), so a run that was already replaced by a press on
+  // the other card can no longer paint its result there or write it onto the other card's person.
+  //
+  // `activeDobSession` stays as the most recent run: it is the fallback for a message that carries
+  // no record at all (an older worker still answering, for instance).
+  const dobSessionsByRecord = Object.create(null); // record source -> { person, record }
   let activeDobSession = null;
 
-  function startDobAutomation(person) {
-    activeDobSession = { person };
-    showVehicleProgress("DOB", 15, `Searching Unmask for ${person.name || "person"}...`);
+  // The session of the run that started on this record, or the run in flight when the record is
+  // unknown.
+  function dobSessionFor(recordSource) {
+    const key = String(recordSource == null ? "" : recordSource);
+    return dobSessionsByRecord[key] || activeDobSession || null;
+  }
+
+  // The record a DOB message belongs to: what the run itself was started for, and only when that
+  // is missing the record of the run in flight.
+  function dobMessageRecord(msg) {
+    const tagged = msg && msg.record ? String(msg.record) : "";
+    return tagged || lookupRecord("dob");
+  }
+
+  function startDobAutomation(person, recordSource) {
+    const record = recordSource || "";
+    // Only one DOB run exists at a time, so a run the other card started cannot be finished any
+    // more: its progress box is closed instead of being left spinning forever.
+    const supersededRecord = lookupRecord("dob");
+    if (supersededRecord && supersededRecord !== record) {
+      hideVehicleProgress("DOB", supersededRecord);
+    }
+
+    lookupRecordByProvider.dob = record;
+    activeDobSession = { person, record };
+    dobSessionsByRecord[record] = activeDobSession;
+    // The first line names the platform the run will actually ask: Unmask unless Settings left only
+    // ThatSthem (or only AI) switched on.
+    const dobLabel = automationSetting("dob.unmask")
+      ? "Unmask"
+      : (automationSetting("dob.thatsthem") ? "ThatSthem" : "AI");
+    showVehicleProgress("DOB", 15, `Searching ${dobLabel} for ${person.name || "person"}...`, false, record);
 
     const phone = (phoneInput?.value || "").replace(/\D/g, "") || person?.phone || person?.phoneNumber || "";
 
     chrome.runtime.sendMessage({
       action: "START_DOB_LOOKUP",
       person,
-      phone
+      phone,
+      record
     }, (res) => {
       if (res && !res.success) {
-        showVehicleProgress("DOB", 100, `Error: ${res.error || "Failed to start"}`, true);
+        showVehicleProgress("DOB", 100, `Error: ${res.error || "Failed to start"}`, true, record);
       }
     });
   }
 
-  function cancelDobAutomation() {
+  // Cancels the DOB run and closes the progress of every card that could be showing it: the one
+  // the cancel button lives in, and the one that started the run in flight.
+  function cancelDobAutomation(recordSource) {
+    const runRecord = lookupRecord("dob");
+    const record = recordSource === undefined ? runRecord : (recordSource || "");
     chrome.runtime.sendMessage({ action: "CANCEL_DOB_LOOKUP" }).catch(() => {});
-    hideVehicleProgress();
-    activeDobSession = null;
+
+    [record, runRecord].forEach((key) => {
+      if (key) hideVehicleProgress("DOB", key);
+      if (key && dobSessionsByRecord[key]) delete dobSessionsByRecord[key];
+    });
+
+    if (activeDobSession && activeDobSession.record === record) activeDobSession = null;
+    if (!runRecord || runRecord === record) lookupRecordByProvider.dob = "";
   }
 
   // Listen for vehicle & DOB discovery messages from background
@@ -3407,21 +3656,21 @@
       const pct = Math.round((msg.step / msg.totalSteps) * 100);
       showVehicleProgress(msg.provider, pct, msg.message);
     } else if (msg.action === "VEHICLE_LOOKUP_EMPTY") {
-      const providerName = msg.provider === "amica" ? "Amica" : "Mercury";
+      const providerName = rideLabel(msg.provider);
       const emptyMsg = msg.message || `No vehicle found on ${providerName}`;
       showVehicleProgress(msg.provider, 100, emptyMsg, true);
       renderEmptyVehicleNotice(msg.provider, emptyMsg);
       setTimeout(() => {
-        hideVehicleProgress();
+        hideVehicleProgress(msg.provider);
       }, 4000);
     } else if (msg.action === "VEHICLE_LOOKUP_SUCCESS") {
       if (!msg.vehicles || msg.vehicles.length === 0) {
-        const providerName = msg.provider === "amica" ? "Amica" : "Mercury";
+        const providerName = rideLabel(msg.provider);
         const emptyMsg = msg.message || `No vehicle found on ${providerName}`;
         showVehicleProgress(msg.provider, 100, emptyMsg, true);
         renderEmptyVehicleNotice(msg.provider, emptyMsg);
         setTimeout(() => {
-          hideVehicleProgress();
+          hideVehicleProgress(msg.provider);
         }, 4000);
         return;
       }
@@ -3429,25 +3678,29 @@
       if (activeVehicleSession && activeVehicleSession.person) {
         activeVehicleSession.person.vehicles = msg.vehicles;
       }
-      renderDiscoveredVehicles(msg.vehicles);
+      renderDiscoveredVehicles(lookupRecord(msg.provider), msg.vehicles);
       copyText(msg.vehicles.join("\n"));
       setTimeout(() => {
-        hideVehicleProgress();
+        hideVehicleProgress(msg.provider);
       }, 2500);
       updateRawSummary();
     } else if (msg.action === "VEHICLE_LOOKUP_ERROR") {
       showVehicleProgress(msg.provider, 100, msg.error || "No vehicles discovered", true);
       renderEmptyVehicleNotice(msg.provider, msg.error || "No vehicles discovered");
       setTimeout(() => {
-        hideVehicleProgress();
+        hideVehicleProgress(msg.provider);
       }, 4000);
     }
 
-    // DOB Messages from Unmask
+    // DOB Messages from Unmask. Every one of them names the record its run was started for, so a
+    // late line from a run the other card replaced is drawn on its own card - and its DOB is
+    // stored on that card's person - instead of on whichever card was pressed last.
     if (msg.action === "DOB_LOOKUP_PROGRESS") {
       const pct = Math.round((msg.step / msg.totalSteps) * 100);
-      showVehicleProgress("DOB", pct, msg.message);
+      showVehicleProgress("DOB", pct, msg.message, false, dobMessageRecord(msg));
     } else if (msg.action === "DOB_LOOKUP_SUCCESS") {
+      const record = dobMessageRecord(msg);
+      const session = dobSessionFor(record);
       const firstDob = msg.dob1 || (msg.dob2 ? "" : msg.dob);
       const secondDob = msg.dob2 || "";
       const bestDob = secondDob || firstDob || msg.dob;
@@ -3455,61 +3708,204 @@
       const dob1Note = msg.dob1Note || (msg.yearOnly ? "year only" : msg.placeholder ? "month/day unknown" : "");
       const dob2Source = msg.dob2Source || (secondDob ? msg.source || "" : "");
 
-      if (activeDobSession && activeDobSession.person) {
+      if (session && session.person) {
         if (firstDob) {
-          activeDobSession.person.dob1 = firstDob;
-          activeDobSession.person.dob1Source = dob1Source;
-          activeDobSession.person.dob1Note = dob1Note;
+          session.person.dob1 = firstDob;
+          session.person.dob1Source = dob1Source;
+          session.person.dob1Note = dob1Note;
         }
         if (secondDob) {
-          activeDobSession.person.dob2 = secondDob;
-          activeDobSession.person.dob2Source = dob2Source;
+          session.person.dob2 = secondDob;
+          session.person.dob2Source = dob2Source;
         }
-        activeDobSession.person.dob = bestDob;
+        session.person.dob = bestDob;
         if (msg.emails && msg.emails.length > 0) {
-          activeDobSession.person.emails = msg.emails;
+          session.person.emails = msg.emails;
         }
       }
 
-      renderDiscoveredDob({
+      // The AI row lives on the person as dob3, and it has to be carried into every re-render: this
+      // handler draws the Unmask / ThatSthem dates, so without it the AI answer that arrived first
+      // was wiped off the card the moment this one landed.
+      const aiDob = session && session.person ? session.person.dob3 || "" : "";
+      const aiSource = session && session.person ? session.person.dob3Source || "" : "";
+      const aiNote = session && session.person ? session.person.dob3Note || "" : "";
+
+      renderDiscoveredDob(record, {
         dob1: firstDob,
         dob1Source,
         dob1Note,
         dob2: secondDob,
-        dob2Source
+        dob2Source,
+        dob3: aiDob,
+        dob3Source: aiSource,
+        dob3Note: aiNote
       });
       if (msg.emails && msg.emails.length > 0) {
-        renderDiscoveredEmails(msg.emails);
+        renderDiscoveredEmails(record, msg.emails);
       }
       copyText(bestDob);
 
       if (msg.searchContinues) {
         // Only a placeholder / year-only value so far - DOB 1 is already on screen and
         // the run keeps looking for a fuller date.
-        showVehicleProgress("DOB", 60, `${dob1Source === "thatsthem.com" ? "ThatSthem" : "Unmask"} ${firstDob} - checking for a fuller date...`);
+        showVehicleProgress("DOB", 60, `${dob1Source === "thatsthem.com" ? "ThatSthem" : "Unmask"} ${firstDob} - checking for a fuller date...`, false, record);
       } else {
         showVehicleProgress(
           "DOB",
           100,
           secondDob
             ? `DOB 1 (${dob1Source === "thatsthem.com" ? "ThatSthem" : "Unmask"}): ${firstDob}  •  DOB 2 (ThatSthem): ${secondDob}`
-            : `DOB discovered: ${msg.dob}!`
+            : `DOB discovered: ${msg.dob}!`,
+          false,
+          record
         );
         setTimeout(() => {
-          hideVehicleProgress();
+          hideVehicleProgress("DOB", record);
         }, 3000);
       }
       updateRawSummary();
+    } else if (msg.action === "GOOGLE_DOB_RESULT") {
+      // Google AI Mode answers beside the Unmask / ThatSthem run, so its date is drawn as a third
+      // row on the card whose person was asked about - and written onto that card's person, so
+      // navigating away and back keeps it. The clipboard is deliberately left alone: Unmask already
+      // puts the date it found there, and this row has its own Copy button.
+      const record = dobMessageRecord(msg);
+      const session = dobSessionFor(record);
+      const person = session && session.person ? session.person : null;
+
+      if (person) {
+        person.dob3 = msg.dob;
+        person.dob3Source = msg.source || "google.ai";
+        person.dob3Note = msg.note || "";
+      }
+
+      const firstDob = person ? person.dob1 || person.dob : "";
+      const secondDob = person && person.dob2 ? person.dob2 : "";
+
+      renderDiscoveredDob(record, {
+        dob1: firstDob,
+        dob1Source: person ? person.dob1Source : "",
+        dob1Note: person ? person.dob1Note || (isJanuaryPlaceholder(firstDob) ? "month/day unknown" : "") : "",
+        dob2: secondDob,
+        dob2Source: person ? person.dob2Source : "",
+        dob3: msg.dob,
+        dob3Source: msg.source || "google.ai",
+        dob3Note: msg.note || ""
+      });
+
+      updateRawSummary();
     } else if (msg.action === "DOB_LOOKUP_EMPTY") {
-      showVehicleProgress("DOB", 100, msg.message || "No DOB found on Unmask", true);
+      const record = dobMessageRecord(msg);
+      showVehicleProgress("DOB", 100, msg.message || "No DOB found on Unmask", true, record);
       setTimeout(() => {
-        hideVehicleProgress();
+        hideVehicleProgress("DOB", record);
       }, 4000);
     } else if (msg.action === "DOB_LOOKUP_ERROR") {
-      showVehicleProgress("DOB", 100, msg.error || "DOB lookup error", true);
+      const record = dobMessageRecord(msg);
+      showVehicleProgress("DOB", 100, msg.error || "DOB lookup error", true, record);
       setTimeout(() => {
-        hideVehicleProgress();
+        hideVehicleProgress("DOB", record);
       }, 4000);
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Run-time settings (Settings & Calibration panel)
+  //
+  // One storage key for the widget, the popup, the detached window and the background: which records
+  // the number is looked up on, which platforms the DOB button may ask, and which records show their
+  // DNC status. Everything defaults to on, so an install that never opens the panel behaves exactly as
+  // it always has.
+  // ---------------------------------------------------------------------------
+  const AUTOMATION_SETTINGS_KEY = "automation_settings";
+  const AUTOMATION_SETTINGS_DEFAULTS = {
+    records: { record1: true, record2: true },
+    dob: { unmask: true, thatsthem: true, ai: true },
+    dnc: { record1: true, record2: true }
+  };
+
+  // The two sites are the user's Record 1 and Record 2; their names never reach the UI. Amica and
+  // Mercury are Ride 1 and Ride 2 the same way.
+  const RECORD_LABELS = { "infolookup.site": "Record 1", "infolookupp.com": "Record 2" };
+  const RECORD_KEYS = { "infolookup.site": "record1", "infolookupp.com": "record2" };
+  const RIDE_LABELS = { amica: "Ride 1", mercury: "Ride 2" };
+
+  function recordLabel(source) {
+    return RECORD_LABELS[String(source == null ? "" : source).toLowerCase()] || "Record";
+  }
+
+  function recordKey(source) {
+    return RECORD_KEYS[String(source == null ? "" : source).toLowerCase()] || "";
+  }
+
+  function rideLabel(provider) {
+    return RIDE_LABELS[String(provider == null ? "" : provider).toLowerCase()] || "Ride";
+  }
+
+  // Every group and every switch is filled in from the defaults, so a stored object that is missing a
+  // key (an older install, a half-written value) can never read as "off".
+  function normalizeAutomationSettings(raw) {
+    const stored = raw && typeof raw === "object" ? raw : {};
+    const merge = (group, defaults) => {
+      const fromStored = stored[group] && typeof stored[group] === "object" ? stored[group] : {};
+      const out = {};
+      Object.keys(defaults).forEach((key) => {
+        out[key] = fromStored[key] === undefined ? defaults[key] : !!fromStored[key];
+      });
+      return out;
+    };
+    return {
+      records: merge("records", AUTOMATION_SETTINGS_DEFAULTS.records),
+      dob: merge("dob", AUTOMATION_SETTINGS_DEFAULTS.dob),
+      dnc: merge("dnc", AUTOMATION_SETTINGS_DEFAULTS.dnc)
+    };
+  }
+
+  // "dnc.record1" -> its value. An unknown path reads as on, which is the safe default.
+  function settingValue(settings, path) {
+    const parts = String(path || "").split(".");
+    let node = normalizeAutomationSettings(settings);
+    for (let i = 0; i < parts.length; i++) {
+      if (!node || typeof node !== "object" || !(parts[i] in node)) return true;
+      node = node[parts[i]];
+    }
+    return node === undefined ? true : !!node;
+  }
+
+  function readAutomationSettings(callback) {
+    chrome.storage.local.get([AUTOMATION_SETTINGS_KEY], (res) => {
+      callback(normalizeAutomationSettings(res ? res[AUTOMATION_SETTINGS_KEY] : null));
+    });
+  }
+
+  function writeAutomationSetting(path, value, callback) {
+    const parts = String(path || "").split(".");
+    readAutomationSettings((settings) => {
+      let node = settings;
+      for (let i = 0; i < parts.length - 1; i++) node = node[parts[i]];
+      node[parts[parts.length - 1]] = !!value;
+      chrome.storage.local.set({ [AUTOMATION_SETTINGS_KEY]: settings }, () => {
+        if (callback) callback(settings);
+      });
+    });
+  }
+
+  // The settings a render reads, kept in step with storage so a card repaint never has to wait on a
+  // storage round-trip.
+  let automationSettings = normalizeAutomationSettings(null);
+
+  function automationSetting(path) {
+    return settingValue(automationSettings, path);
+  }
+
+  readAutomationSettings((settings) => {
+    automationSettings = settings;
+  });
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === "local" && changes[AUTOMATION_SETTINGS_KEY]) {
+      automationSettings = normalizeAutomationSettings(changes[AUTOMATION_SETTINGS_KEY].newValue);
     }
   });
 
@@ -3518,242 +3914,58 @@
     const settingsToggleBtn = shadow.getElementById("settings-toggle-btn");
     const settingsSidebar = shadow.getElementById("settings-sidebar");
     const closeSidebarBtn = shadow.getElementById("close-sidebar-btn");
-    const btnRecordUnmask = shadow.getElementById("btn-record-unmask");
-    const btnRecordThatsThem = shadow.getElementById("btn-record-thatsthem");
-
-    const recStatusDot = shadow.getElementById("rec-status-dot");
-    const recStatusTitle = shadow.getElementById("rec-status-title");
-    const recStatusSub = shadow.getElementById("rec-status-sub");
 
     if (!settingsToggleBtn || !settingsSidebar) return;
 
-    // Each site owns one recording slot that can be re-recorded or deleted.
-    const MACRO_TARGETS = [
-      { key: "unmask", site: "Unmask.com", storageKey: "recorded_macro_unmask", defaultLabel: "Unmask Record" },
-      { key: "thatsthem", site: "ThatsThem.com", storageKey: "recorded_macro_thatsthem", defaultLabel: "ThatsThem Record" }
-    ];
+    const toggles = Array.from(settingsSidebar.querySelectorAll(".setting-toggle"));
 
-    function el(id) {
-      return shadow.getElementById(id);
+    function paint(settings) {
+      toggles.forEach((input) => {
+        const on = settingValue(settings, input.dataset.setting);
+        input.checked = on;
+        const row = input.closest(".setting-row");
+        if (row) row.classList.toggle("off", !on);
+      });
     }
 
-    function macroEls(key) {
-      return {
-        badge: el(`badge-macro-${key}`),
-        time: el(`time-macro-${key}`),
-        stats: el(`stats-macro-${key}`),
-        duration: el(`duration-macro-${key}`),
-        points: el(`points-macro-${key}`),
-        speed: el(`speed-macro-${key}`),
-        click: el(`click-macro-${key}`),
-        elem: el(`elem-macro-${key}`),
-        empty: el(`empty-macro-${key}`),
-        recordBtn: el(`btn-record-${key}`),
-        recordLabel: el(`label-record-${key}`),
-        deleteBtn: el(`btn-delete-${key}`)
-      };
+    function refresh() {
+      readAutomationSettings((settings) => {
+        automationSettings = settings;
+        paint(settings);
+      });
     }
 
     function openSidebar() {
       settingsSidebar.classList.remove("closed");
-      loadMacroStats();
+      refresh();
     }
 
     function closeSidebar() {
       settingsSidebar.classList.add("closed");
     }
 
-    settingsToggleBtn.addEventListener("click", openSidebar);
+    settingsToggleBtn.addEventListener("click", () => {
+      if (settingsSidebar.classList.contains("closed")) openSidebar();
+      else closeSidebar();
+    });
+
     if (closeSidebarBtn) closeSidebarBtn.addEventListener("click", closeSidebar);
 
-    function setStatus(state, title, subtitle) {
-      if (!recStatusDot || !recStatusTitle || !recStatusSub) return;
-      recStatusDot.className = "rec-status-indicator";
-      if (state === "recording") recStatusDot.classList.add("recording");
-      else if (state === "busy") recStatusDot.classList.add("busy");
-
-      recStatusTitle.textContent = title;
-      recStatusSub.textContent = subtitle;
-    }
-
-    function formatMacroTime(iso) {
-      try {
-        return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-      } catch (e) {
-        return "Recent";
-      }
-    }
-
-    // Records saved before per-site slots existed only live in last_macro_recording.
-    function macroForTarget(store, target) {
-      const direct = store[target.storageKey];
-      if (direct && direct.path) return direct;
-      const legacy = store.last_macro_recording;
-      if (legacy && legacy.path && legacy.target === target.key) return legacy;
-      return null;
-    }
-
-    // One site card: stats when a macro is saved, empty state + hidden Delete otherwise.
-    function renderMacroCard(target, rec) {
-      const e = macroEls(target.key);
-      const hasRec = !!(rec && rec.path);
-
-      if (e.badge) {
-        e.badge.textContent = hasRec ? "Recorded" : "Not Recorded";
-        e.badge.classList.toggle("saved", hasRec);
-        e.badge.classList.toggle("empty", !hasRec);
-      }
-      if (e.time) e.time.textContent = hasRec ? formatMacroTime(rec.recordedAt) : "--";
-      if (e.stats) e.stats.classList.toggle("hidden", !hasRec);
-      if (e.empty) e.empty.classList.toggle("hidden", hasRec);
-      if (e.recordLabel) e.recordLabel.textContent = hasRec ? `${target.site} Re-record` : target.defaultLabel;
-      if (e.deleteBtn) {
-        e.deleteBtn.classList.toggle("hidden", !hasRec);
-        e.deleteBtn.disabled = false;
-        delete e.deleteBtn.dataset.armed;
-        const lbl = e.deleteBtn.querySelector("span");
-        if (lbl) lbl.textContent = "Delete";
-      }
-
-      if (!hasRec) return;
-
-      if (e.duration) e.duration.textContent = `${rec.durationMs || 0} ms`;
-      if (e.points) e.points.textContent = `${rec.pointCount || (rec.path && rec.path.length) || 0} pts`;
-      if (e.speed) e.speed.textContent = `${rec.avgSpeedPxPerSec || 0} px/s`;
-      if (e.click) {
-        const c = rec.click;
-        e.click.textContent = c ? `(${c.x}, ${c.y})` : "N/A";
-      }
-      if (e.elem) {
-        const c = rec.click;
-        if (c && c.targetTag) {
-          const idStr = c.targetId ? `#${c.targetId}` : "";
-          const classStr = c.targetClass ? `.${c.targetClass.trim().split(/\s+/)[0]}` : "";
-          e.elem.textContent = `<${c.targetTag.toLowerCase()}${idStr}${classStr}>`;
-          e.elem.title = `${c.targetTag} ${c.targetText ? `"${c.targetText}"` : ""}`;
-        } else {
-          e.elem.textContent = "None";
-          e.elem.title = "";
-        }
-      }
-    }
-
-    function loadMacroStats() {
-      const keys = ["last_macro_recording", "active_mouse_recording"].concat(MACRO_TARGETS.map((t) => t.storageKey));
-      chrome.storage.local.get(keys, (res) => {
-        const store = res || {};
-        const active = store.active_mouse_recording;
-        if (active && active.active) {
-          const targetName = active.target === "unmask" ? "Unmask.com" : "ThatsThem.com";
-          setStatus("recording", `Recording on ${targetName}...`, "Move cursor and click target element on the tab to finish.");
-        } else {
-          setStatus("ready", "Ready to Record", "Record a fresh macro, or delete an old one and record it again.");
-        }
-        MACRO_TARGETS.forEach((target) => renderMacroCard(target, macroForTarget(store, target)));
-      });
-    }
-
-    // First click arms the button, second click removes the saved macro.
-    async function deleteRecording(target) {
-      const e = macroEls(target.key);
-      const label = e.deleteBtn ? e.deleteBtn.querySelector("span") : null;
-
-      if (e.deleteBtn && e.deleteBtn.dataset.armed !== "1") {
-        e.deleteBtn.dataset.armed = "1";
-        if (label) label.textContent = "Confirm?";
-        setTimeout(() => {
-          if (e.deleteBtn && e.deleteBtn.dataset.armed === "1") {
-            delete e.deleteBtn.dataset.armed;
-            if (label) label.textContent = "Delete";
-          }
-        }, 3000);
-        return;
-      }
-
-      if (e.deleteBtn) {
-        delete e.deleteBtn.dataset.armed;
-        e.deleteBtn.disabled = true;
-      }
-
-      let deleteError = null;
-      try {
-        await chrome.runtime.sendMessage({ action: "DELETE_MOUSE_RECORDING", target: target.key });
-      } catch (err) {
-        console.error("Failed to delete recording:", err);
-        deleteError = err.message || "Could not delete the saved macro.";
-      }
-      // Refresh first: loadMacroStats() rewrites the status banner, so the result is set after it.
-      loadMacroStats();
-      setStatus(
-        "ready",
-        deleteError ? "Delete Failed" : `${target.site} recording deleted`,
-        deleteError || "Click the record button above to capture a fresh macro."
-      );
-    }
-
-    async function triggerRecording(target) {
-      const isUnmask = target === "unmask";
-      const targetName = isUnmask ? "Unmask.com" : "ThatsThem.com";
-      const btn = isUnmask ? btnRecordUnmask : btnRecordThatsThem;
-      const otherBtn = isUnmask ? btnRecordThatsThem : btnRecordUnmask;
-
-      if (btn) btn.classList.add("recording");
-      if (otherBtn) otherBtn.disabled = true;
-
-      setStatus("recording", `Recording on ${targetName}...`, "Tab opened. Move cursor & click anywhere on that tab to capture.");
-
-      try {
-        await chrome.runtime.sendMessage({
-          action: "START_MOUSE_RECORDING",
-          target: target
+    toggles.forEach((input) => {
+      input.addEventListener("change", () => {
+        writeAutomationSetting(input.dataset.setting, input.checked, (settings) => {
+          automationSettings = settings;
+          paint(settings);
         });
-      } catch (err) {
-        console.error("Failed to trigger recording:", err);
-        setStatus("ready", "Recording Failed", err.message || "Could not start recording session.");
-        if (btn) btn.classList.remove("recording");
-        if (otherBtn) otherBtn.disabled = false;
-      }
-    }
-
-    if (btnRecordUnmask) {
-      btnRecordUnmask.addEventListener("click", () => triggerRecording("unmask"));
-    }
-    if (btnRecordThatsThem) {
-      btnRecordThatsThem.addEventListener("click", () => triggerRecording("thatsthem"));
-    }
-
-    // Delete buttons on the recording cards
-    MACRO_TARGETS.forEach((target) => {
-      const deleteBtn = el(`btn-delete-${target.key}`);
-      if (deleteBtn) {
-        deleteBtn.addEventListener("click", () => deleteRecording(target));
-      }
+      });
     });
 
-    // Listen for recording finished
-    chrome.runtime.onMessage.addListener((msg) => {
-      if (msg.action === "MOUSE_RECORDING_SAVED") {
-        if (btnRecordUnmask) {
-          btnRecordUnmask.classList.remove("recording");
-          btnRecordUnmask.disabled = false;
-        }
-        if (btnRecordThatsThem) {
-          btnRecordThatsThem.classList.remove("recording");
-          btnRecordThatsThem.disabled = false;
-        }
-        const site = msg.target === "unmask" ? "Unmask.com" : "ThatsThem.com";
-        setStatus("ready", `Saved ${site} Macro!`, `Captured ${msg.result?.pointCount || 0} points & click at (${msg.result?.click?.x}, ${msg.result?.click?.y}).`);
-        loadMacroStats();
-      } else if (msg.action === "MOUSE_RECORDING_DELETED") {
-        loadMacroStats();
-        const site = msg.target === "unmask" ? "Unmask.com" : "ThatsThem.com";
-        setStatus("ready", `${site} recording deleted`, "Record a fresh macro whenever you are ready.");
-      } else if (msg.action === "MOUSE_RECORDING_CANCELLED") {
-        loadMacroStats();
-      }
+    // The other panels share these settings: a switch flipped in the popup updates this one too.
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === "local" && changes[AUTOMATION_SETTINGS_KEY]) refresh();
     });
 
-    loadMacroStats();
+    refresh();
   }
 
   initWidgetSettingsSidebar();

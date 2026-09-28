@@ -1,7 +1,11 @@
 (function () {
   "use strict";
 
-  if (window !== window.top) return;
+  // Whether this frame is one the extension itself put on the page is decided at the very bottom
+  // of this file, by confirmRunnerIsOurs(): it is a message round-trip to the background, so it
+  // cannot be answered here. Only the cheap de-duplication check happens up front, because a
+  // second injection into the same document (the manifest can inject into every matching frame)
+  // must not start a second quote run.
   if (window.__amicaAutomationLoaded) return;
   window.__amicaAutomationLoaded = true;
 
@@ -32,12 +36,13 @@
   // ---------------------------------------------------------------------------
   // Tick engine
   //
-  // The Amica tab is opened in the background (`chrome.tabs.create({ active: false })`), and
-  // Chrome clamps timers in a hidden tab to one call per second - and to one call a minute
-  // once the tab has been hidden for five minutes. Polling with setInterval(..., 50) is what
-  // made the whole funnel crawl as soon as Amica was not the tab on screen. DOM mutation
-  // callbacks are NOT throttled, so the funnel is driven by a MutationObserver instead, with
-  // a slow safety timer for the steps that wait on time rather than on a DOM change.
+  // Amica runs in the offscreen document's own iframe, which Chrome does not throttle at all.
+  // It can still fall back to a real background tab (`chrome.tabs.create({ active: false })`)
+  // when the offscreen document is unavailable, and Chrome clamps timers in a hidden tab to one
+  // call per second - and to one call a minute once the tab has been hidden for five minutes.
+  // Polling with setInterval(..., 50) is what made the whole funnel crawl in that case. DOM
+  // mutation callbacks are NOT throttled, so the funnel is driven by a MutationObserver instead,
+  // with a slow safety timer for the steps that wait on time rather than on a DOM change.
   // ---------------------------------------------------------------------------
   var TICK_MIN_GAP_MS = 60; // never step more than ~16x per second
   var SAFETY_TICK_MS = 400; // covers waiting that happens while the page sits still
@@ -730,6 +735,51 @@
     }
   }
 
+  // The quote finished but Amica returned no vehicles for the address it was given. Amica only
+  // lists vehicles for an address it can tie to the person, and a record's primary address is not
+  // always that one - so the person's other addresses are tried before the lookup is reported empty.
+  //
+  // A retry is a fresh quote: the background starts a new Amica session with the next address as the
+  // primary one and points the runner at it, and the new page walks the funnel from the quoting ZIP.
+  // Which addresses have already been tried is remembered by the background for the whole run, so
+  // this can never bounce between two of them.
+  function retryWithNextAddress(state, profile, reason) {
+    var candidates = state.addressCandidates || buildAddressCandidates(profile);
+    var usedUpTo = typeof state.addressAttempt === "number" ? state.addressAttempt : 0;
+    var used = candidates[usedUpTo];
+
+    state.stopped = true;
+
+    sendProgress(
+      4,
+      6,
+      (reason || "No vehicles found") +
+        (used ? " for " + describeAddress(used) : "") +
+        " - trying the next address...",
+    );
+
+    try {
+      chrome.runtime.sendMessage(
+        {
+          action: "AMICA_NEXT_ADDRESS",
+          candidates: candidates,
+          usedUpTo: usedUpTo,
+          reason: reason || "No vehicles found",
+        },
+        function (res) {
+          // The background is pointing Amica at the next address; this page is done.
+          if (res && res.ok) return;
+
+          sendEmpty("No vehicle found on Amica for any known address", profile);
+          clearPendingQuote();
+        },
+      );
+    } catch (e) {
+      sendEmpty("No vehicle found on Amica", profile);
+      clearPendingQuote();
+    }
+  }
+
   // Automation Engine
   function runAutomation(profile) {
     var state = {
@@ -803,12 +853,13 @@
         }
       }
 
-      // Check if Amica indicates NO vehicles found for customer
+      // Check if Amica indicates NO vehicles found for customer. Amica only lists vehicles for an
+      // address it can tie to the person, so the person's other addresses are tried before this is
+      // reported as empty (see retryWithNextAddress).
       if (checkAmicaNoVehiclesFound()) {
         state.vehiclesFound = false;
         ticker.stop();
-        sendEmpty("No vehicle found on Amica", profile);
-        clearPendingQuote();
+        retryWithNextAddress(state, profile, "No vehicles found");
         return;
       }
 
@@ -1103,10 +1154,110 @@
     }, MAX_RUNTIME_MS + 15000);
   }
 
-  // Start when page is loaded
-  getPendingQuote(function (quote) {
-    if (quote) {
-      runAutomation(quote);
+  // Whether this frame is one the extension itself put on the page.
+  //
+  // A top-level tab is always fine (that is the long-standing path). A subframe has to be
+  // confirmed by the background, because there is no reliable way to tell from inside the
+  // frame who the parent is:
+  //
+  //   - `parent.location` throws across origins from the isolated world, so it cannot be read.
+  //   - `document.referrer` is empty here: Chrome sends no Referer header from an extension
+  //     page, so the offscreen runner looks exactly like a frame with no parent at all. It is
+  //     also wrong in the other direction - once the quote flow navigates (ZIP step -> quote
+  //     app) the referrer becomes an amica.com URL, so a referrer check would kill the run on
+  //     its second page even after it had started.
+  //
+  // The background can answer authoritatively: a content script running in a normal tab always
+  // has `sender.tab`, and the offscreen document is not a tab, so it is the only context where
+  // a frame can legitimately say yes. A page that embeds www.amica.com in one of its own
+  // frames is in a tab, and is refused.
+  function confirmRunnerIsOurs(callback) {
+    if (window.parent === window) {
+      callback(true);
+      return;
     }
+    try {
+      chrome.runtime.sendMessage({ action: "RUNNER_HELLO" }, function (res) {
+        if (chrome.runtime.lastError) {
+          callback(false);
+          return;
+        }
+        callback(!!(res && res.ok));
+      });
+    } catch (e) {
+      callback(false);
+    }
+  }
+
+  // ------------------------------------------------------------------ staying loaded and idle
+  //
+  // The background keeps this page loaded between searches (see prewarmAmica), so a lookup can begin
+  // straight at the quoting ZIP instead of waiting for Amica to boot again. Two things are needed for
+  // that: the background has to know when this page is genuinely usable, and this page has to notice a
+  // quote that arrives while it is already sitting here.
+
+  // How long the page may take to become usable before it is reported as not usable.
+  var READY_MAX_MS = 20000;
+
+  // One page serves exactly one run: the funnel navigates deep into the quote flow, so the next
+  // search gets a freshly loaded frame rather than this one.
+  var started = false;
+
+  function reportRunnerReady(ready) {
+    try {
+      chrome.runtime.sendMessage({ action: "AMICA_RUNNER_READY", ready: !!ready });
+    } catch (e) {}
+  }
+
+  function startWithQuote(quote) {
+    if (started) return;
+    if (!quote || !quote.address) return;
+    started = true;
+    // From here on this page is no longer a parked, idle runner.
+    reportRunnerReady(false);
+    runAutomation(quote);
+  }
+
+  // The page is usable once its quoting ZIP field is on screen. A quote written before that would not
+  // be noticed, and the background would have to load Amica the slow way after all - so this is
+  // reported honestly rather than as soon as the document says it is complete.
+  function waitUntilUsable(callback) {
+    var began = Date.now();
+    (function poll() {
+      if (document.readyState === "complete" && document.getElementById("zipcodeInitInputQuoting")) {
+        callback(true);
+        return;
+      }
+      if (Date.now() - began > READY_MAX_MS) {
+        callback(false);
+        return;
+      }
+      setTimeout(poll, 300);
+    })();
+  }
+
+  // Start when page is loaded. The runner check is a message round-trip, so the whole start is
+  // deferred until the background has answered - starting before then would drive the quote flow in a
+  // frame that may not be ours.
+  confirmRunnerIsOurs(function (isOurs) {
+    if (!isOurs) return;
+
+    // A quote that was already pending when this page loaded: a cold start, or a reload.
+    getPendingQuote(function (quote) {
+      startWithQuote(quote);
+    });
+
+    // A quote that arrives while this page is parked and warm. This is the fast path: no reload, so
+    // the run begins at the quoting ZIP immediately.
+    try {
+      chrome.storage.onChanged.addListener(function (changes, area) {
+        if (area !== "local" || !changes.amica_pending_quote) return;
+        startWithQuote(changes.amica_pending_quote.newValue);
+      });
+    } catch (e) {}
+
+    waitUntilUsable(function (usable) {
+      reportRunnerReady(usable);
+    });
   });
 })();

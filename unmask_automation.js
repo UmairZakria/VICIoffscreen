@@ -69,6 +69,16 @@
     return Math.floor(Math.random() * (max - min + 1)) + min;
   }
 
+  // The session this frame is running. It is kept so that every message - and every "give me the
+  // next step" request - can name the record card the run belongs to. A press on the other
+  // record's card replaces the run, so a page that outlives its own run must keep reporting for
+  // its own record instead of for whatever run happens to be in flight.
+  var currentSession = null;
+
+  function sessionRecord() {
+    return (currentSession && currentSession.record) || "";
+  }
+
   function sendProgress(step, totalSteps, message) {
     try {
       chrome.runtime.sendMessage({
@@ -76,6 +86,7 @@
         step: step,
         totalSteps: totalSteps,
         message: message,
+        record: sessionRecord(),
       });
     } catch (e) {}
   }
@@ -89,6 +100,7 @@
         emails: emails || [],
         person: person,
         source: "unmask.com",
+        record: sessionRecord(),
         placeholder: !!opts.placeholder,
         continueSearch: !!opts.continueSearch
       });
@@ -101,6 +113,7 @@
         action: "DOB_LOOKUP_EMPTY",
         message: message || "No DOB found on Unmask",
         person: person,
+        record: sessionRecord(),
       });
     } catch (e) {}
   }
@@ -135,7 +148,63 @@
     } catch (e) {}
   }
 
-  // Detects Cloudflare Turnstile "Just a moment..." and challenge interstitials
+  // Unmask normally runs in the offscreen document's hidden runner, which has no tab to bring
+  // forward - the background promotes the run into a real one when the check appears. A tab that
+  // is already in front just stays there.
+  //
+  // Tells the background the check is done with: the tab it was solved in is put back into the
+  // background and the user is returned to where they started. The run itself carries on here.
+  function notifyChallengeCleared() {
+    try {
+      chrome.runtime.sendMessage({ action: "CHALLENGE_CLEARED" });
+    } catch (e) {}
+  }
+
+  // Whether this frame is one the extension itself put on the page.
+  //
+  // A top-level tab is always fine. A subframe has to be confirmed by the background, because
+  // there is no reliable way to tell from inside the frame who the parent is:
+  //
+  //   - `parent.location` throws across origins from the isolated world, so it cannot be read.
+  //   - `document.referrer` is empty for an extension parent, so the offscreen runner looks
+  //     exactly like a frame with no parent at all.
+  //
+  // The background can answer authoritatively: a content script in a normal tab always has
+  // `sender.tab`, and the offscreen document is not a tab. A page that embeds unmask.com in a
+  // frame of its own is in a tab, and is refused - it must not get a DOB run driven with
+  // somebody else's saved search.
+  function confirmRunnerIsOurs(callback) {
+    if (window.parent === window) {
+      callback(true);
+      return;
+    }
+    try {
+      chrome.runtime.sendMessage({ action: "RUNNER_HELLO" }, function (res) {
+        if (chrome.runtime.lastError) {
+          callback(false);
+          return;
+        }
+        callback(!!(res && res.ok));
+      });
+    } catch (e) {
+      callback(false);
+    }
+  }
+
+  // Detects a genuine Cloudflare interstitial ("Just a moment...", the managed challenge) - NOT a
+  // page that merely loads Cloudflare.
+  //
+  // That distinction matters because seeing a check is what hands the run over to a *visible* tab
+  // so the user can solve it. A normal page behind Cloudflare carries bot-management scripts and
+  // can embed a Turnstile widget of its own, and the old selector list treated any of those as a
+  // challenge - which made every run promote itself into a visible tab the moment it loaded, with
+  // nothing on screen for the user to solve.
+  //
+  // The markers kept here are the interstitial's own shell. Cloudflare serves it as
+  //   <main class="challenge"> ... <h1 class="challenge__title">Performing security verification
+  // and the script it injects comes from .../orchestrate/chl_page/... ("chl_page" = challenge
+  // page). The broad src markers are deliberately gone: /cdn-cgi/challenge-platform/scripts/jsd/...
+  // and the Turnstile widget both appear on perfectly normal pages.
   function isCloudflareChallengePage() {
     var title = (document.title || "").toLowerCase();
     if (
@@ -143,169 +212,22 @@
       title.includes("security check") ||
       title.includes("attention required") ||
       title.includes("checking your browser") ||
-      title.includes("verify you are human")
+      title.includes("verify you are human") ||
+      title.includes("performing security verification")
     ) {
       return true;
     }
-    var challengeEl = document.querySelector(
-      "main.challenge, .challenge__hero, [aria-label*='Security check'], [aria-label*='security check'], script[src*='challenge-platform'], script[src*='challenges.cloudflare.com'], iframe[src*='turnstile'], iframe[src*='challenges.cloudflare.com'], #challenge-running, #challenge-stage, #challenge-form"
-    );
-    if (challengeEl) return true;
-    return false;
-  }
 
-  // ---- Trusted click target resolution -------------------------------------
-  // Turnstile lives behind a closed shadow root, so nothing inside it reacts to DOM
-  // events: the old "Engine 1" (replaying the recorded cursor path and firing synthetic
-  // pointer/mouse events) never cleared a challenge because Cloudflare only trusts real
-  // input. The only engine left is Engine 2 - a genuine OS-level click that background.js
-  // dispatches over the Chrome DevTools Protocol. All this side has to do is resolve the
-  // viewport coordinates of the Turnstile checkbox.
-  function findTurnstileElement() {
-    var iframe = document.querySelector(
-      "iframe[src*='challenges.cloudflare.com'], iframe[src*='challenge-platform'], iframe[src*='turnstile'], .challenge iframe, #captcha-container iframe"
-    );
-    if (iframe) return iframe;
-
-    // Turnstile is now often rendered with declarative shadow DOM
-    // (<template shadowrootmode="closed">): the widget iframe then sits inside a closed shadow
-    // root, where querySelector cannot see it. The hidden response input stays in the light DOM
-    // and shares the widget's host element, so the host can still be measured - which is what
-    // keeps the repeated clicks landing on the widget instead of on a stale recording.
-    var response = document.querySelector(
-      "input[name='cf-turnstile-response'], input[id*='cf-chl-widget'][type='hidden']"
-    );
-    if (response && response.parentElement) return response.parentElement;
-
-    return document.querySelector(
-      "#captcha-container, .cf-turnstile, .challenge__captcha, .challenge__hero, main.challenge, .challenge"
+    // The interstitial shell, plus the older challenge-page IDs Cloudflare still uses. `chl_page`
+    // is the challenge-page script specifically - a normal page's bot-management script is not it.
+    return !!document.querySelector(
+      "main.challenge, .challenge__hero, .challenge__title, .challenge__hero-image, " +
+        "#challenge-running, #challenge-stage, #challenge-form, script[src*='chl_page']"
     );
   }
 
-  // A normal Turnstile widget is ~300x65px and its checkbox sits ~30px in from the left
-  // edge, vertically centred.
-  var TURNSTILE_WIDGET_MAX_WIDTH = 400;
-
-  function checkboxPointForRect(rect) {
-    return {
-      x: Math.round(rect.left + Math.min(30, rect.width * 0.18)),
-      y: Math.round(rect.top + rect.height / 2)
-    };
-  }
-
-  function pointInsideRect(point, rect) {
-    return (
-      point.x >= rect.left && point.x <= rect.right && point.y >= rect.top && point.y <= rect.bottom
-    );
-  }
-
-  // Coordinates for the trusted click, best source first:
-  //   1. the recorded click point while the widget still sits exactly where it was recorded
-  //   2. the checkbox of the widget that is on screen right now (survives layout shifts)
-  //   3. the recorded click point on its own (widget unreachable or still loading)
-  //   4. the middle of the viewport as a last resort
-  function resolveTrustedClickPoint(macro) {
-    var recorded = null;
-    if (macro && macro.click && isFinite(macro.click.x) && isFinite(macro.click.y)) {
-      recorded = { x: Math.round(macro.click.x), y: Math.round(macro.click.y) };
-    }
-
-    var el = findTurnstileElement();
-    if (el) {
-      try {
-        el.scrollIntoView({ behavior: "auto", block: "center" });
-      } catch (e) {
-        try {
-          el.scrollIntoView();
-        } catch (e2) {}
-      }
-
-      var rect = null;
-      try {
-        rect = el.getBoundingClientRect();
-      } catch (e3) {}
-
-      if (rect && rect.width > 0 && rect.height > 0) {
-        if (recorded && pointInsideRect(recorded, rect)) {
-          return { x: recorded.x, y: recorded.y, source: "recorded" };
-        }
-        // Only trust the checkbox estimate on something widget sized - a full width
-        // wrapper would put the estimate at the far left of the page.
-        if (el.tagName === "IFRAME" || rect.width <= TURNSTILE_WIDGET_MAX_WIDTH) {
-          var pt = checkboxPointForRect(rect);
-          return { x: pt.x, y: pt.y, source: "widget" };
-        }
-      }
-    }
-
-    if (recorded) return { x: recorded.x, y: recorded.y, source: "recorded" };
-    return {
-      x: Math.round(window.innerWidth / 2),
-      y: Math.round(window.innerHeight / 2),
-      source: "viewport"
-    };
-  }
-
-  // Cosmetic marker for the point the trusted click was sent to (helps spot a bad
-  // calibration); it dispatches no events itself.
-  function showClickRipple(x, y) {
-    try {
-      var ripple = document.createElement("div");
-      ripple.style.cssText =
-        "position: fixed; left: " + (x - 15) + "px; top: " + (y - 15) + "px; width: 30px; height: 30px; border-radius: 50%; border: 2px solid #3b82f6; pointer-events: none; z-index: 2147483647; opacity: 0.9; transition: opacity 0.45s ease-out, transform 0.45s ease-out;";
-      (document.body || document.documentElement).appendChild(ripple);
-
-      var fadeOut = function () {
-        ripple.style.opacity = "0";
-        ripple.style.transform = "scale(2.2)";
-      };
-      if (typeof requestAnimationFrame === "function") requestAnimationFrame(fadeOut);
-      else fadeOut();
-
-      setTimeout(function () {
-        if (ripple.parentNode) ripple.parentNode.removeChild(ripple);
-      }, 500);
-    } catch (e) {}
-  }
-
-  // ---- Trusted click pacing -------------------------------------------------
-  // One click is not enough for Cloudflare's interactive widget: it re-renders (and can move)
-  // after every attempt, the first click often lands while the widget is still loading, and a
-  // stubborn challenge needs a few tries before it clears. The click is therefore repeated
-  // with freshly measured coordinates until the challenge page is gone - the caps below only
-  // stop a widget that will never clear from being clicked forever.
-  var TRUSTED_CLICK_SETTLE_MS = 600; // let the widget render before the first click
-  var TRUSTED_CLICK_GAP_MS = 3000; // gap between two trusted clicks
-  var TRUSTED_CLICK_MAX = 30; // ~90s of clicking: the run's own budget stops it first
-  var TRUSTED_CLICK_FOCUS_AFTER = 3; // surface the tab once this many clicks did nothing
-
-  // True on the tick after the widget settled, then once per gap, until the cap is reached.
-  // The branch itself decides when to stop: the moment the challenge page is gone this is
-  // never asked again.
-  function trustedClickDue(clicks, detectedAt, lastClickAt, now) {
-    if (clicks >= TRUSTED_CLICK_MAX) return false;
-    if (clicks === 0) return now - detectedAt > TRUSTED_CLICK_SETTLE_MS;
-    return now - lastClickAt > TRUSTED_CLICK_GAP_MS;
-  }
-
-  // Engine 2: the only engine used - a real OS-level trusted click that background.js
-  // dispatches over the Chrome DevTools Protocol.
-  async function replayMacroEngine2(targetX, targetY) {
-    return new Promise(function (resolve) {
-      try {
-        chrome.runtime.sendMessage(
-          { action: "REPLAY_MACRO_CLICK", x: targetX, y: targetY },
-          function (res) {
-            resolve(res && res.success);
-          }
-        );
-      } catch (err) {
-        resolve(false);
-      }
-    });
-  }
-
-  // Realistic human click dispatcher
+  // Realistic human click dispatcher, used for Unmask's own "unlock search results" toggle
+  // (a plain in-page checkbox, not a security check).
   async function simulateHumanClick(el) {
     if (!el) return false;
     try {
@@ -349,6 +271,51 @@
     }
 
     return true;
+  }
+
+  // Detects an active Cloudflare Turnstile verification widget that is awaiting human interaction.
+  // A page that already has search results, or where the Turnstile token is already submitted,
+  // or a page still in the middle of normal loading, is NOT an active challenge.
+  function isTurnstileChallengeActive(state) {
+    // 1. If result cards, search summary, dialogs, no-results, or profile are already present,
+    // Turnstile is NOT blocking.
+    if (
+      document.querySelector(
+        "div.clickable.person, div[itemtype*='Person'].person, .person, " +
+          ".um-dialog__title, .tz-dialog h2, .tz-dialog__inner h2, " +
+          ".um-results__none, .no-results, .um-alert--warning, " +
+          "#summary, .um-profile-summary, .um-results-profile__section, h1.um-profile-summary__name, " +
+          "input[type='checkbox'][aria-label*='Search'], " +
+          "input[aria-label*='Search']"
+      )
+    ) {
+      return false;
+    }
+
+    // 2. If Turnstile response input exists and has a valid token, it has already been cleared.
+    var tokenInput = document.querySelector("input[name='cf-turnstile-response']");
+    if (tokenInput && tokenInput.value && tokenInput.value.trim().length > 10) {
+      return false;
+    }
+
+    // 3. Allow an initial window for normal page elements to hydrate/render
+    if (state && state.startedAt && Date.now() - state.startedAt < 1500) {
+      return false;
+    }
+
+    // 4. An active challenge iframe must exist and be visibly rendered in layout.
+    // Passive containers like div#cf-turnstile or [data-sitekey] in static HTML are NOT challenges.
+    var turnstileIframe = document.querySelector(
+      "iframe[src*='challenges.cloudflare.com'], iframe[src*='turnstile/if']"
+    );
+    if (turnstileIframe && isElementVisible(turnstileIframe)) {
+      var rect = turnstileIframe.getBoundingClientRect();
+      if (rect.width >= 100 && rect.height >= 40) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   function normalizeName(str) {
@@ -560,6 +527,167 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Link safety: the run only ever follows an internal unmask.com person profile
+  //
+  // Unmask's own chrome (header, footer, "share" rows, app banners) carries anchors that leave
+  // the site - Facebook, X, Instagram, YouTube, data brokers, ... A relative card can sit right
+  // next to one of them, and a bare `a[href]` sweep matches both. So every link the run
+  // considers is resolved first, and only a person profile on the host we are already on is
+  // scrolled to or loaded. A social network, an external site, a mailto:/tel: link and the
+  // site's own furniture pages (login, privacy, terms, ...) are dropped before they can pull
+  // the run off the profile whose DOB is being read.
+  // ---------------------------------------------------------------------------
+  var SOCIAL_HOST_PATTERN =
+    /^(?:[a-z0-9-]+\.)*(?:facebook|fb|fbcdn|twitter|x|instagram|linkedin|youtube|youtu|ytimg|tiktok|pinterest|reddit|tumblr|snapchat|whatsapp|telegram|discord|threads|nextdoor|trustpilot|yelp|zoominfo|spokeo|whitepages|beenverified|intelius|truthfinder|peoplefinders|fastpeoplesearch|radaris|mylife|nuwber|ancestry|myheritage|23andme|gravatar|maps|apple|amazon|paypal)\.[a-z]{2,}$/i;
+
+  // The site's own furniture and listings: never a person, never worth a scroll or a load.
+  // (An address or phone page is a listing of a person, not the person's profile - the old
+  // scan skipped those two explicitly, and this is the same rule in one place.)
+  var NON_PROFILE_PATH_PATTERN =
+    /^\/(?:login|logout|signin|sign-in|signup|sign-up|register|account|privacy|terms|tos|legal|cookies|opt-out|do-not-sell|ccpa|gdpr|about|faq|help|support|contact|blog|news|pricing|plans|search|reviews|unlock|checkout|cart|app|mobile|sitemap|unsubscribe|address|addresses|phone|phones|email|emails)(?:[\/?#-]|$)/i;
+
+  // Person profiles: /Name/ST-City/<id>, /Name/ST/<id>, /Name/<uuid>, /Name/ST-ChCity, and the
+  // site's short name slug /First-Last/. Anything else that stays on the host is a listing.
+  var PROFILE_UUID_PATTERN = /[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}/i;
+  var PROFILE_PATH_PATTERN = /^\/[A-Za-z0-9_.'-]+\/[A-Za-z]{2}(?:-[A-Za-z0-9_.'-]+)?\/[a-f0-9-]{10,}\/?$/;
+  var NAME_STATE_PATH_PATTERN = /^\/[A-Za-z0-9_.'-]+\/[A-Za-z]{2}(?:-[A-Za-z0-9_.'-]+)?\/?$/;
+  var NAME_SLUG_PATH_PATTERN = /^\/[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\/?$/;
+
+  function hostOf(name) {
+    return String(name || "").toLowerCase().replace(/^www\./, "");
+  }
+
+  // Resolves a link to an absolute URL, but only when it stays on the site we are on.
+  // Everything else - another host, a social network, mailto:/tel:/javascript:/data:, an
+  // in-page "#" jump - resolves to null, so it is never scrolled to and never loaded.
+  function resolveInternalUrl(rawHref, baseUrl) {
+    if (!rawHref) return null;
+    var raw = String(rawHref).trim();
+    if (!raw || raw.charAt(0) === "#") return null;
+    if (/^(?:mailto|tel|sms|callto|javascript|data|blob|file|ftp):/i.test(raw)) return null;
+
+    var base = baseUrl || "";
+    if (!base) {
+      try {
+        base = (typeof window !== "undefined" && window.location && window.location.href) || "";
+      } catch (e) {
+        base = "";
+      }
+    }
+    var url = null;
+    try {
+      url = base ? new URL(raw, base) : new URL(raw);
+    } catch (e) {
+      return null;
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+
+    var baseHost = "";
+    if (base) {
+      try {
+        baseHost = hostOf(new URL(base).hostname);
+      } catch (e2) {
+        baseHost = "";
+      }
+    }
+    if (!baseHost) {
+      try {
+        baseHost = hostOf(typeof window !== "undefined" && window.location ? window.location.hostname : "");
+      } catch (e3) {
+        baseHost = "";
+      }
+    }
+
+    var host = hostOf(url.hostname);
+    if (!host || host !== baseHost) return null; // another site
+    if (SOCIAL_HOST_PATTERN.test(host)) return null; // social network
+    return url.href;
+  }
+
+  // The internal person profile a link points at, or null when it points anywhere else
+  // (social network, external site, listing, address or phone page, furniture page).
+  function isInternalProfileUrl(rawHref, baseUrl) {
+    var abs = resolveInternalUrl(rawHref, baseUrl);
+    if (!abs) return null;
+    var path = "";
+    try {
+      path = new URL(abs).pathname || "";
+    } catch (e) {
+      return null;
+    }
+    if (NON_PROFILE_PATH_PATTERN.test(path)) return null;
+    if (PROFILE_UUID_PATTERN.test(path)) return abs;
+    if (PROFILE_PATH_PATTERN.test(path)) return abs;
+    if (NAME_STATE_PATH_PATTERN.test(path)) return abs;
+    if (NAME_SLUG_PATH_PATTERN.test(path)) return abs;
+    return null;
+  }
+
+  // A "see all relatives" control is a button, or a link that stays on the site. An anchor
+  // that leaves the site is never clicked, because a click is a navigation.
+  function isExternalAnchor(el) {
+    if (!el || !el.getAttribute) return false;
+    if (String(el.tagName || "").toUpperCase() !== "A") return false;
+    var href = el.getAttribute("href");
+    if (!href || String(href).charAt(0) === "#") return false;
+    return !resolveInternalUrl(href);
+  }
+
+  // The person name written on a relative card: the title element when the card has one,
+  // otherwise the card's own text with the location line ("Blossom, TX") stripped off.
+  function relativeLinkText(link) {
+    if (!link) return "";
+    var titleEl = link.querySelector ? link.querySelector(".wl-card-item__title") : null;
+    var text = titleEl ? titleEl.textContent : "";
+    if (!text && link.cloneNode) {
+      var clone = link.cloneNode(true);
+      var strip = clone.querySelectorAll
+        ? clone.querySelectorAll(".wl-card-item__sub-text, .sub-text, span.location, span.address")
+        : [];
+      for (var s = 0; s < strip.length; s++) {
+        if (strip[s] && strip[s].remove) strip[s].remove();
+      }
+      var head = clone.querySelector ? clone.querySelector("h2, h3, h4, span") : null;
+      text = head ? head.textContent : clone.textContent;
+    }
+    return String(text || "").replace(/\s+/g, " ").trim();
+  }
+
+  // The first relative card that belongs to the target person, together with the internal
+  // profile URL it points at - or null. A card whose link is external, social or furniture is
+  // skipped outright: it is neither matched by name, nor scrolled to, nor loaded.
+  function pickRelativeProfileLink(links, targetName, baseUrl) {
+    var targetSlug = String(targetName || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+    var list = links || [];
+    for (var i = 0; i < list.length; i++) {
+      var link = list[i];
+      if (!link || !link.getAttribute) continue;
+
+      var profileUrl = isInternalProfileUrl(link.getAttribute("href"), baseUrl);
+      if (!profileUrl) continue;
+      if (profileUrl.indexOf("/address/") !== -1 || profileUrl.indexOf("/phone/") !== -1) continue;
+
+      var hrefLower = profileUrl.toLowerCase();
+      var isSlugMatched = !!targetSlug && (
+        hrefLower.indexOf("/" + targetSlug + "/") !== -1 ||
+        hrefLower.indexOf("/" + targetSlug + "-") !== -1
+      );
+
+      var cardText = relativeLinkText(link);
+      var cleanedRName = cardText.replace(/,\s*[A-Za-z\s]+$/, "").trim();
+
+      if (
+        isSlugMatched ||
+        (cleanedRName && isNameMatch(targetName, cleanedRName)) ||
+        (cardText && isNameMatch(targetName, cardText))
+      ) {
+        return { url: profileUrl, name: cleanedRName || cardText || targetName };
+      }
+    }
+    return null;
+  }
+
+  // ---------------------------------------------------------------------------
   // Date of birth matching
   //
   // The record tells us how old the person is (e.g. "72 yrs (1954)"), so the only
@@ -578,6 +706,10 @@
   var CARDS_SETTLE_MS = 500;
   // How often the page state is re-checked (every step reacts within one tick).
   var TICK_MS = 150;
+  // How long a Cloudflare check is left to the user before the run gives up on this address.
+  // Nothing is ever clicked: the tab is brought forward once and simply watched, so this only
+  // has to be long enough for a person to notice, switch over and tick the box.
+  var CHALLENGE_WAIT_MS = 180000;
 
   var MONTH_NAMES = [
     "january", "february", "march", "april", "may", "june",
@@ -1031,6 +1163,7 @@
 
   // Automation runner
   function runUnmaskAutomation(session) {
+    currentSession = session;
     var targetName = session.targetName || "";
     var targetAge = session.targetAge || null;
     // Explicit birth year from the record (e.g. "72 yrs (1954)") when available.
@@ -1061,12 +1194,12 @@
       dobExtractLogged: false,
       profileReadyAt: 0,
       profileSnapshot: "",
+      // The security check belongs to the user: this only remembers when it appeared and that they
+      // have already been pointed at it.
       challengeDetectedAt: 0,
-      challengeReplayInProgress: false,
-      challengeClicks: 0,
-      challengeLastClickAt: 0,
-      challengeFocusSteps: 0,
-      lastCalibratedCoords: null,
+      challengePrompted: false,
+      // Set once the hand-back has been reported, so a promoted run does not report it every tick.
+      challengeClearedSent: false
     };
 
     var interval = null;
@@ -1078,7 +1211,7 @@
 
       sendProgress(2, 4, reason || "Moving to next address...");
       try {
-        chrome.runtime.sendMessage({ action: "DOB_LOOKUP_NEXT_ADDRESS" }, function (res) {
+        chrome.runtime.sendMessage({ action: "DOB_LOOKUP_NEXT_ADDRESS", record: sessionRecord() }, function (res) {
           if (res && res.nextUrl && !res.exhausted) {
             if (window.location.href !== res.nextUrl) {
               window.location.href = res.nextUrl;
@@ -1096,74 +1229,53 @@
       // ==========================================
       // SCENARIO 0: Cloudflare Turnstile Challenge Intercept
       // ==========================================
-      if (isCloudflareChallengePage()) {
+      var isChallengePresent = isCloudflareChallengePage() || isTurnstileChallengeActive(state);
+      if (isChallengePresent) {
+        // The check is left entirely to the user. The extension does not click it - not with a
+        // recorded click, not with a measured one: Cloudflare only accepts a real hand, and every
+        // automated attempt only made the page start over. All that happens here is that the tab is
+        // brought to the front once, with a plain instruction, and the page is then watched - so the
+        // moment the user has solved it, the run carries on by itself.
         if (!state.challengeDetectedAt) {
           state.challengeDetectedAt = Date.now();
-          sendProgress(1, 4, "Security check detected on Unmask. Preparing calibration...");
         }
 
-        // Safety timeout for Cloudflare challenge (90 seconds max)
-        if (Date.now() - state.challengeDetectedAt > 90000) {
-          advanceToNextAddress("Security check timed out. Trying next address...");
-          return;
-        }
-
-        if (state.challengeReplayInProgress) return;
-
-        // The challenge only clears for a real input event, so the trusted click (Engine 2)
-        // is dispatched straight away. Engine 1 (replaying the recorded cursor path with
-        // synthetic DOM events) is gone - Cloudflare ignores untrusted events.
-        // The first click waits for the widget to render, and clicks are then repeated once
-        // per gap until the challenge page is gone - each one measured again, because the
-        // widget re-renders (and can move) after every attempt.
-        if (trustedClickDue(state.challengeClicks, state.challengeDetectedAt, state.challengeLastClickAt, Date.now())) {
-          state.challengeReplayInProgress = true;
-          var isRetry = state.challengeClicks > 0;
-          state.challengeClicks += 1;
-          state.challengeLastClickAt = Date.now();
-          chrome.storage.local.get(["recorded_macro_unmask", "last_macro_recording"], async function (res) {
-            var macro = res ? (res.recorded_macro_unmask || res.last_macro_recording) : null;
-            var point = resolveTrustedClickPoint(macro);
-            state.lastCalibratedCoords = { x: point.x, y: point.y };
-
-            sendProgress(1, 4, (isRetry ? "Retrying trusted click (Engine 2) at " : "Trusted click (Engine 2) at ") + point.x + ", " + point.y + " [" + point.source + "] (attempt " + state.challengeClicks + "/" + TRUSTED_CLICK_MAX + ")...");
-            var clicked = await replayMacroEngine2(point.x, point.y);
-            if (clicked) showClickRipple(point.x, point.y);
-            state.challengeReplayInProgress = false;
-            sendProgress(1, 4, clicked ? "Engine 2 click dispatched. Verifying resolution..." : "Engine 2 click could not be sent - verifying resolution...");
-          });
-          return;
-        }
-
-        // The user should be able to watch the check being solved: the lookup tab is brought to
-        // the front the moment the check appears, and once more if it survives a few clicks.
-        // The trusted clicks keep landing on the widget either way - surfacing the tab only
-        // makes them visible.
-        var focusStep = state.challengeClicks >= TRUSTED_CLICK_FOCUS_AFTER ? 2 : 1;
-        if ((state.challengeFocusSteps || 0) < focusStep) {
-          state.challengeFocusSteps = focusStep;
+        if (!state.challengePrompted) {
+          state.challengePrompted = true;
           focusThisTab();
           sendProgress(
             1,
             4,
-            focusStep === 1
-              ? "Security check on Unmask - bringing the tab forward to solve it here..."
-              : "Unmask is still checking - retrying the click here, please hold..."
+            "Security check on Unmask - please tick the checkbox in the tab that just came forward. The lookup continues on its own once it clears."
           );
+        }
+
+        // The user may take as long as they like; only when they have clearly walked away does the
+        // run give up on this address. Nothing is ever clicked, reloaded or fought with.
+        if (Date.now() - state.challengeDetectedAt > CHALLENGE_WAIT_MS) {
+          advanceToNextAddress("Security check was not cleared. Trying next address...");
           return;
         }
 
-        return; // Stay on challenge page while waiting for Turnstile to clear
+        return; // watch the page: the token (or the page going away) is what ends this branch
       }
 
       // If challenge cleared on this same page, reset challenge state so search gets a fresh window
-      if (state.challengeDetectedAt && !isCloudflareChallengePage()) {
+      if (state.challengeDetectedAt && !isChallengePresent) {
         state.challengeDetectedAt = 0;
-        state.challengeClicks = 0;
-        state.challengeLastClickAt = 0;
-        state.challengeFocusSteps = 0;
+        state.challengePrompted = false;
         state.startedAt = Date.now();
         sendProgress(2, 4, "Security check passed. Reading Unmask results...");
+      }
+
+      // The run may have been promoted into this tab so the user could clear a check. Once there
+      // is no check on the page any more, they are handed back to their own tab: the promoted tab
+      // is sent to the background and this run carries on inside it. Reaching this line at all
+      // means no challenge is present, so it covers both "cleared in place" and "the promoted tab
+      // landed straight on the results" - the latter never sees a challenge to begin with.
+      if (session.promotedForChallenge && !state.challengeClearedSent) {
+        state.challengeClearedSent = true;
+        notifyChallengeCleared();
       }
 
       // ==========================================
@@ -1253,8 +1365,10 @@
           }
         }
 
-        // If on relative's profile or not yet on target profile
-        if (session.status === "on_relative_profile" || !isTargetProfile) {
+        // The target profile's own DOB is read to completion first. While that read is in
+        // flight nothing else happens on this page - no scrolling, no relative-card scan, no
+        // navigation - so a relative or footer link can never cut the DOB extraction short.
+        if (!isTargetProfile) {
           sendProgress(3, 4, "Checking relatives for " + targetName + "...");
 
           // 1. Scroll down to relatives section so it renders into DOM
@@ -1267,64 +1381,33 @@
               relativesSec.scrollIntoView({ behavior: "smooth", block: "center" });
             } catch (e) {}
 
-            // Expand "See all relatives" if button present
+            // Expand "See all relatives" if button present. A control that is an anchor to
+            // another site is never clicked - the click itself would be a navigation.
             var seeAllBtn = relativesSec.querySelector(
               ".wl-card__cta-link, button.wl-card__cta-link, .um-btn-more, button[class*='more'], a[class*='more']"
             );
-            if (seeAllBtn && !seeAllBtn.dataset.clicked) {
+            if (seeAllBtn && !seeAllBtn.dataset.clicked && !isExternalAnchor(seeAllBtn)) {
               seeAllBtn.dataset.clicked = "true";
               seeAllBtn.click();
             }
           }
 
-          // 2. Scan relative links specifically (#relatives, .wl-card-items, .wl-card-item)
+          // 2. Scan the relative cards (#relatives, .wl-card-items, .wl-card-item). Every
+          //    candidate is resolved first and only an internal person profile can win, so a
+          //    social or footer anchor is never matched, scrolled to or loaded.
           var relativeLinks = Array.from(
             document.querySelectorAll("#relatives a, .wl-card-items a, a.wl-card-item, a[href]")
           );
 
-          var targetSlug = targetName.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-
-          for (var pl = 0; pl < relativeLinks.length; pl++) {
-            var pLink = relativeLinks[pl];
-            var href = pLink.getAttribute("href") || "";
-            if (!href || href.startsWith("#") || href.includes("login") || href.includes("privacy") || href.includes("terms")) continue;
-            if (href.includes("/address/") || href.includes("/phone/")) continue;
-
-            // Direct URL slug match (e.g. href contains "/trenton-shupp/")
-            var hrefLower = href.toLowerCase();
-            var isSlugMatched = targetSlug && (
-              hrefLower.includes("/" + targetSlug + "/") ||
-              hrefLower.includes("/" + targetSlug + "-")
-            );
-
-            // Clean title extraction from relative card (.wl-card-item__title)
-            var titleEl = pLink.querySelector(".wl-card-item__title");
-            var rName = "";
-            if (titleEl) {
-              rName = titleEl.textContent.trim();
-            } else {
-              var clone = pLink.cloneNode(true);
-              clone.querySelectorAll(".wl-card-item__sub-text, .sub-text, span.location, span.address").forEach(function (el) {
-                el.remove();
-              });
-              var hEl = clone.querySelector("h2, h3, h4, span");
-              rName = (hEl ? hEl.textContent : clone.textContent).trim();
-            }
-            rName = rName.replace(/\s+/g, " ");
-
-            // Strip location if attached (e.g. "Trenton Shupp Blossom, TX")
-            var cleanedRName = rName.replace(/,\s*[A-Za-z\s]+$/, "").trim();
-
-            if (isSlugMatched || (cleanedRName && isNameMatch(targetName, cleanedRName)) || (rName && isNameMatch(targetName, rName))) {
-              state.processed = true;
-              clearInterval(interval);
-              session.status = "on_target_profile";
-              chrome.storage.local.set({ unmask_pending_lookup: session }).catch(function () {});
-              sendProgress(4, 4, "Found " + (rName || targetName) + " in relatives list. Loading profile...");
-              var dest = pLink.href || (window.location.origin + (href.startsWith("/") ? "" : "/") + href);
-              window.location.href = dest;
-              return;
-            }
+          var relativeMatch = pickRelativeProfileLink(relativeLinks, targetName, currentUrl);
+          if (relativeMatch) {
+            state.processed = true;
+            clearInterval(interval);
+            session.status = "on_target_profile";
+            chrome.storage.local.set({ unmask_pending_lookup: session }).catch(function () {});
+            sendProgress(4, 4, "Found " + relativeMatch.name + " in relatives list. Loading profile...");
+            window.location.href = relativeMatch.url;
+            return;
           }
         }
 
@@ -1461,17 +1544,17 @@
               }
             }
 
-            // Also check all links in card for target name or slug
+            // Also check all links in card for target name or slug. Only an internal person
+            // profile counts, so a social or external anchor inside the card is never followed.
             var cardTargetSlug = (targetName || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
             var cardLinks = Array.from(card.querySelectorAll("a[href]"));
             for (var cl = 0; cl < cardLinks.length; cl++) {
               var cLink = cardLinks[cl];
-              var cHref = cLink.getAttribute("href") || "";
               var cText = cLink.textContent.trim();
-              if (cHref && cardTargetSlug && (cHref.toLowerCase().includes("/" + cardTargetSlug + "/") || cHref.toLowerCase().includes("/" + cardTargetSlug + "-"))) {
-                var fullDest = cHref.startsWith("http") ? cHref : (window.location.origin + (cHref.startsWith("/") ? "" : "/") + cHref);
-                if (!relatives.some(function(item) { return item.href === fullDest; })) {
-                  relatives.push({ name: cText || targetName, href: fullDest });
+              var cProfileUrl = isInternalProfileUrl(cLink.getAttribute("href"), currentUrl);
+              if (cProfileUrl && cardTargetSlug && (cProfileUrl.toLowerCase().includes("/" + cardTargetSlug + "/") || cProfileUrl.toLowerCase().includes("/" + cardTargetSlug + "-"))) {
+                if (!relatives.some(function(item) { return item.href === cProfileUrl; })) {
+                  relatives.push({ name: cText || targetName, href: cProfileUrl });
                 }
               }
             }
@@ -1553,15 +1636,15 @@
               var relNameScore = matchNameScore(targetDetails, relNameDetails);
               if (relNameScore > 0) {
                 var relScore = relNameScore + 25; // Relative base score (e.g. 100 + 25 = 125)
-                var hasProfileUuid = /[a-f0-9]{8}-[a-f0-9]{4}/i.test(relObj.href || "");
-                var destUrl = hasProfileUuid
-                  ? (relObj.href.startsWith("http") ? relObj.href : (window.location.origin + (relObj.href.startsWith("/") ? "" : "/") + relObj.href))
-                  : reportHref;
+                // Only an internal person profile is worth the hop. A social, external or
+                // furniture anchor that answered to the name falls back to the card's own
+                // report link - which the candidate gate below checks as well.
+                var relProfileUrl = isInternalProfileUrl(relObj.href, currentUrl);
                 candidates.push({
                   cardIndex: cIdx,
                   score: relScore,
-                  reportUrl: destUrl,
-                  isDirect: hasProfileUuid ? true : false,
+                  reportUrl: relProfileUrl || reportHref,
+                  isDirect: !!relProfileUrl,
                   name: relObj.name + " (Relative of " + cardName + ")",
                   age: null,
                   ageDiff: 999
@@ -1569,6 +1652,16 @@
               }
             }
           }
+
+          // Every candidate is resolved to an internal person profile before one can win: a
+          // social or external anchor that answered to the name is dropped here, so the run is
+          // never navigated off the site and away from the DOB it is after.
+          var followableCandidates = [];
+          for (var cf = 0; cf < candidates.length; cf++) {
+            candidates[cf].reportUrl = isInternalProfileUrl(candidates[cf].reportUrl, currentUrl);
+            if (candidates[cf].reportUrl) followableCandidates.push(candidates[cf]);
+          }
+          candidates = followableCandidates;
 
           // Sort candidates by score descending, then by closest age
           candidates.sort(function (a, b) {
@@ -1623,21 +1716,18 @@
             return;
           }
 
-          // Priority 3: Only if NO cards are present, check and click human verification checkbox
+          // Priority 3: Only if NO cards are present, tick Unmask's own "unlock search
+          // results" checkbox. This is a plain in-page toggle that reveals the results list,
+          // not a security check - the selectors are deliberately narrow so a human-verification
+          // widget can never be picked up here. Security checks are the user's to clear
+          // (see isCloudflareChallengePage above).
           var checkbox =
-            document.querySelector('input[type="checkbox"][aria-label*="Address Search"]') ||
             document.querySelector('input[type="checkbox"][aria-label*="View Address Search"]') ||
-            document.querySelector('input[type="checkbox"][aria-label*="Phone Search"]') ||
+            document.querySelector('input[type="checkbox"][aria-label*="Address Search"]') ||
             document.querySelector('input[type="checkbox"][aria-label*="View Phone Search"]') ||
-            document.querySelector('input[type="checkbox"][aria-label*="Name Search"]') ||
+            document.querySelector('input[type="checkbox"][aria-label*="Phone Search"]') ||
             document.querySelector('input[type="checkbox"][aria-label*="View Name Search"]') ||
-            document.querySelector('input[type="checkbox"][aria-label*="Verify you are human"]') ||
-            document.querySelector('input[type="checkbox"][aria-label*="human"]') ||
-            document.querySelector('input[type="checkbox"][aria-label*="Verify"]') ||
-            document.querySelector('input[aria-label*="Verify you are human"]') ||
-            document.querySelector('input[aria-label*="View Address Search"]') ||
-            document.querySelector('input[aria-label*="View Phone Search"]') ||
-            document.querySelector('input[aria-label*="View Name Search"]');
+            document.querySelector('input[type="checkbox"][aria-label*="Name Search"]');
 
           if (checkbox && isElementVisible(checkbox) && !checkbox.checked && !state.checkboxClicked) {
             state.checkboxClicked = true;
@@ -1664,14 +1754,16 @@
     }, TICK_MS);
   }
 
-  // Initialize
-  chrome.storage.local.get(["unmask_pending_lookup", "active_mouse_recording"], function (res) {
-    if (res && res.active_mouse_recording && res.active_mouse_recording.active) {
-      // Mouse recording is active on this tab - do not run search automation
-      return;
-    }
-    var session = res ? res.unmask_pending_lookup : null;
-    if (!session) return;
-    runUnmaskAutomation(session);
+  // Initialize. The runner check is a message round-trip, so the whole start is deferred until the
+  // background has answered - starting before then would drive a run in a frame that may not be
+  // the extension's own.
+  confirmRunnerIsOurs(function (isOurs) {
+    if (!isOurs) return;
+
+    chrome.storage.local.get(["unmask_pending_lookup"], function (res) {
+      var session = res ? res.unmask_pending_lookup : null;
+      if (!session) return;
+      runUnmaskAutomation(session);
+    });
   });
 })();

@@ -3,10 +3,26 @@
 <head>
   <meta charset="UTF-8">
   <title>Offscreen Parallel Compliance Runner</title>
+  <style>
+    /* Every runner is a real page that wants to be laid out - Amica, for one, refuses to
+       render its quote flow at all until the viewport looks like a desktop. They are parked
+       off to the left rather than display:none, because display:none would give them a
+       zero-size layout box. The container keeps them out of view instead of having to move
+       the tab strip out of the user's way. */
+    body { margin: 0; }
+    #runners { position: absolute; left: -10000px; top: 0; width: 1400px; }
+    iframe { display: block; width: 1280px; height: 800px; border: none; }
+  </style>
 </head>
 <body>
-  <iframe id="frame-vibegenx" src="https://vibegenx.com/infolookup" style="width: 1280px; height: 800px; border: none;"></iframe>
-  <iframe id="frame-infolookup" src="https://infolookup.site/" style="width: 1280px; height: 800px; border: none;"></iframe>
+  <div id="runners">
+    <iframe id="frame-infolookupp" src="https://infolookupp.com/" title="infolookupp.com runner"></iframe>
+    <iframe id="frame-infolookup" src="https://infolookup.site/" title="infolookup.site runner"></iframe>
+    <iframe id="frame-amica" src="about:blank" title="amica.com quote runner"></iframe>
+    <iframe id="frame-unmask" src="about:blank" title="unmask.com DOB runner"></iframe>
+    <iframe id="frame-thatsthem" src="about:blank" title="thatsthem.com DOB runner"></iframe>
+    <iframe id="frame-google" src="about:blank" title="google.com AI Mode runner"></iframe>
+  </div>
   <script src="offscreen.js"></script>
 </body>
 </html>

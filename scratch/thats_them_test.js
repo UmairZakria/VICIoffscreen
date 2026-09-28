@@ -28,7 +28,7 @@ const them = new Function(
     ' parseNameDetails, matchNameScore, evaluateAliasMatch, isAgeWithinTolerance, matchAgeScore,' +
     ' evaluateRecord, buildTarget, streetKey, normalizeZip, stateToCode, cleanText,' +
     ' readRecord, readRecords, readAddressList, isNoResultsPage,' +
-    ' isBrowserCheckPage, isBrowserCheckFailed, clickBrowserCheckRetry, BROWSER_CHECK_MAX_MS,' +
+    ' isBrowserCheckPage, CHALLENGE_WAIT_MS,' +
     ' CARDS_SETTLE_MS, PAGE_TIMEOUT_MS, recordsFingerprint };'
 )();
 
@@ -489,12 +489,33 @@ function browserCheckDocument(opts) {
 
   globalThis.document = {
     title: o.pageTitle === undefined ? 'Security Check' : o.pageTitle,
-    querySelectorAll: () => [],
+    querySelectorAll: (sel) => {
+      // Its own "No Results Found" card (heading + amber panel), as the live page renders it.
+      if (sel.indexOf('h1, h2, h3') !== -1) {
+        return o.noResultsHeading || o.noResultsPanel ? [node('nrheading', 'No Results Found', '')] : [];
+      }
+      if (sel.indexOf('amber') !== -1 || sel.indexOf('.no-results') !== -1) {
+        return o.noResultsPanel ? [node('nrpanel', 'No Results Found', '')] : [];
+      }
+      return [];
+    },
     body: { innerText: o.bodyText || '' },
     querySelector: (sel) => {
       if (sel.indexOf('meta[name=') !== -1) return o.securityMeta ? node('meta', '', '') : null;
       if (sel.indexOf('#captcha-container') !== -1 || sel.indexOf('.cf-turnstile') !== -1) {
         return o.captcha ? node('captcha', '', '') : null;
+      }
+      // Cloudflare's interstitial markup (never a bare widget).
+      if (
+        sel.indexOf('#challenge-form') !== -1 ||
+        sel.indexOf('main.challenge') !== -1 ||
+        sel.indexOf("script[src*='chl_page']") !== -1
+      ) {
+        return o.challengeMarkup ? node('challengemarkup', '', '') : null;
+      }
+      // The site's own search box, which every page of its layout carries.
+      if (sel.indexOf("input[name='phone']") !== -1 || sel.indexOf("input[type='tel']") !== -1) {
+        return o.siteSearchBox ? node('searchbox', '', '') : null;
       }
       if (sel.indexOf('#spinner') !== -1) return o.spinner === false ? null : node('spinner', '', '');
       if (sel === '#title') {
@@ -526,8 +547,45 @@ check('the sentinel meta alone is enough', them.isBrowserCheckPage(), true);
 browserCheckDocument({ pageTitle: 'Security Check', captcha: false, titleText: '', descriptionText: '' });
 check('the "Security Check" title alone is enough', them.isBrowserCheckPage(), true);
 
-browserCheckDocument({ pageTitle: 'ThatsThem', captcha: true, titleText: '', descriptionText: '' });
-check('the visible Turnstile alone is enough', them.isBrowserCheckPage(), true);
+browserCheckDocument({
+  pageTitle: 'ThatsThem',
+  captcha: true,
+  titleText: '',
+  descriptionText: '',
+});
+check('a Turnstile widget on its own is not a check', them.isBrowserCheckPage(), false);
+
+browserCheckDocument({
+  pageTitle: 'ThatsThem',
+  challengeMarkup: true,
+  titleText: '',
+  descriptionText: '',
+});
+check('the Cloudflare interstitial markup is a check', them.isBrowserCheckPage(), true);
+
+// THE REPORTED BUG: ThatSthem answers a search with nothing, and the page it renders carries its own
+// Turnstile widget. Reading that widget as a challenge handed the "No Results Found" page to the user
+// as something to solve - and the run then sat there for up to three minutes.
+browserCheckDocument({
+  pageTitle: 'People named Raymond Rodriguez - ThatsThem',
+  captcha: true,
+  noResultsPanel: true,
+  siteSearchBox: true,
+  bodyText: "No Results Found We couldn't find any records matching your search. Try a different spelling or broader search terms.",
+  titleText: '',
+  descriptionText: '',
+});
+check('a no-results page carrying the site widget is not a check', them.isBrowserCheckPage(), false);
+check('and it is still read as "no records"', them.isNoResultsPage(), true);
+
+browserCheckDocument({
+  pageTitle: 'ThatsThem',
+  captcha: true,
+  siteSearchBox: true,
+  titleText: '',
+  descriptionText: '',
+});
+check('a page carrying the site search box is not a check', them.isBrowserCheckPage(), false);
 
 browserCheckDocument({
   pageTitle: 'ThatsThem',
@@ -560,12 +618,15 @@ browserCheckDocument({
 check('the no-results page is not a verification page', them.isBrowserCheckPage(), false);
 check('the no-results page is still detected as empty', them.isNoResultsPage(), true);
 
+// The check is the user's to clear: even when it reports itself as failed, the extension
+// must lay off completely - no "Try again", no retry click, nothing.
 const clickCount = browserCheckDocument({ securityMeta: true, captcha: true, failed: true });
-check('failed verification is noticed', them.isBrowserCheckFailed(), true);
-check('"Try again" is clicked once', [them.clickBrowserCheckRetry(), clickCount()], [true, 1]);
-check('"Try again" is not clicked twice', [them.clickBrowserCheckRetry(), clickCount()], [false, 1]);
+check('a failed check is still a check', them.isBrowserCheckPage(), true);
+check('nothing on the check is ever clicked', clickCount(), 0);
 
-check('the run waits at least 60s through the check', them.BROWSER_CHECK_MAX_MS >= 60000, true);
+// The run waits for the user rather than solving, so the window must be a real one.
+check('the run waits at least 60s through the check', them.CHALLENGE_WAIT_MS >= 60000, true);
+check('the run does not wait forever', them.CHALLENGE_WAIT_MS <= 600000, true);
 
 console.log(`\n=== TOTAL: ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);

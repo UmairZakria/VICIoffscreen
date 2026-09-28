@@ -1,4 +1,8 @@
 document.addEventListener('DOMContentLoaded', () => {
+  if (window.DNCAuthClient) {
+    window.DNCAuthClient.init();
+  }
+
   const phoneInput = document.getElementById('phone-input');
   const searchBtn = document.getElementById('search-btn');
   const clearBtn = document.getElementById('clear-btn');
@@ -99,6 +103,9 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function handleAutoDetectedPhone(rawPhone) {
+    if (window.DNCAuthClient && !window.DNCAuthClient.isAuthenticated()) {
+      return;
+    }
     if (rawPhone && rawPhone.length === 10 && rawPhone !== lastAutoLookedUpPhone) {
       lastAutoLookedUpPhone = rawPhone;
       const formatted = `(${rawPhone.slice(0, 3)}) ${rawPhone.slice(3, 6)}-${rawPhone.slice(6, 10)}`;
@@ -111,6 +118,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function checkActiveTabPhone() {
     if (currentLookupMode !== 'auto') return;
+    if (window.DNCAuthClient && !window.DNCAuthClient.isAuthenticated()) return;
     try {
       const tabs = await chrome.tabs.query({ active: true });
       for (const t of tabs) {
@@ -217,6 +225,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Search button click handler
   searchBtn.addEventListener('click', async () => {
+    if (window.DNCAuthClient && !window.DNCAuthClient.isAuthenticated()) {
+      window.DNCAuthClient.showLoginOverlay('Please sign in to your account first.');
+      return;
+    }
+
     const phone = phoneInput.value.trim();
     const digits = phone.replace(/\D/g, '');
 
@@ -245,6 +258,24 @@ document.addEventListener('DOMContentLoaded', () => {
 
       if (!response) {
         throw new Error('No response from background service worker.');
+      }
+
+      if (response.code === 'LIMIT_REACHED' || response.error?.includes('limit reached')) {
+        if (window.DNCAuthClient) {
+          window.DNCAuthClient.handleLimitReached('limit reached contact admin for more limit');
+        }
+        return;
+      }
+
+      if (response.code === 'NOT_LOGGED_IN' || response.code === 'SESSION_EXPIRED') {
+        if (window.DNCAuthClient) {
+          window.DNCAuthClient.showLoginOverlay(response.error);
+        }
+        return;
+      }
+
+      if (typeof response.lookupsRemaining === 'number' && window.DNCAuthClient) {
+        window.DNCAuthClient.updateQuotaDisplay(response.lookupsRemaining, response.lookupsTotal);
       }
 
       if (response.success) {
@@ -469,6 +500,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   function setBadgeStyle(el, value) {
+    if (!el) return;
     el.className = 'badge';
     const lower = (value || '').toLowerCase().trim();
     if (!lower || lower === '-' || lower === '--' || lower.includes('loading')) {
@@ -680,7 +712,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function startVehicleLookup(provider, person) {
     activeVehicleLookupPerson = person;
     const profile = extractProfileForVehicle(person);
-    const providerName = provider === 'amica' ? 'Amica' : 'Mercury';
+    const providerName = rideLabel(provider);
     const initMsg = profile.skippedPoBox
       ? `Starting ${providerName} (using ${profile.address.street})...`
       : `Starting ${providerName} lookup...`;
@@ -707,7 +739,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function showVehicleProgress(provider, pct, message, isWarning = false) {
     if (!vehicleProgressBox) return;
     vehicleProgressBox.classList.remove('hidden');
-    if (vehicleProviderTag) vehicleProviderTag.textContent = provider === 'amica' ? 'Amica' : (provider === 'DOB' ? 'DOB' : 'Mercury');
+    if (vehicleProviderTag) vehicleProviderTag.textContent = provider === 'DOB' ? 'DOB' : rideLabel(provider);
     if (vehicleProgressStatus) vehicleProgressStatus.textContent = message || 'Processing...';
     if (vehicleProgressFill) {
       vehicleProgressFill.style.width = `${Math.min(100, Math.max(8, pct))}%`;
@@ -740,7 +772,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   function renderEmptyVehicleNotice(provider, message) {
     if (!vehicleResultsBox || !vehicleBadgesContainer) return;
-    const providerName = provider === 'amica' ? 'Amica' : 'Mercury';
+    const providerName = rideLabel(provider);
     const text = message || `No vehicle found on ${providerName}`;
 
     if (vehicleResultsCountLabel) {
@@ -924,7 +956,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const pct = Math.round((msg.step / msg.totalSteps) * 100);
       showVehicleProgress(msg.provider, pct, msg.message);
     } else if (msg.action === 'VEHICLE_LOOKUP_EMPTY') {
-      const providerName = msg.provider === 'amica' ? 'Amica' : 'Mercury';
+      const providerName = rideLabel(msg.provider);
       const emptyMsg = msg.message || `No vehicle found on ${providerName}`;
       showVehicleProgress(msg.provider, 100, emptyMsg, true);
       renderEmptyVehicleNotice(msg.provider, emptyMsg);
@@ -933,7 +965,7 @@ document.addEventListener('DOMContentLoaded', () => {
       }, 4000);
     } else if (msg.action === 'VEHICLE_LOOKUP_SUCCESS') {
       if (!msg.vehicles || msg.vehicles.length === 0) {
-        const providerName = msg.provider === 'amica' ? 'Amica' : 'Mercury';
+        const providerName = rideLabel(msg.provider);
         const emptyMsg = msg.message || `No vehicle found on ${providerName}`;
         showVehicleProgress(msg.provider, 100, emptyMsg, true);
         renderEmptyVehicleNotice(msg.provider, emptyMsg);
@@ -1034,265 +1066,166 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
+  // ---------------------------------------------------------------------------
+  // Run-time settings (Settings & Calibration panel)
+  //
+  // One storage key for the widget, the popup, the detached window and the background: which records
+  // the number is looked up on, which platforms the DOB button may ask, and which records show their
+  // DNC status. Everything defaults to on, so an install that never opens the panel behaves exactly as
+  // it always has.
+  // ---------------------------------------------------------------------------
+  const AUTOMATION_SETTINGS_KEY = 'automation_settings';
+  const AUTOMATION_SETTINGS_DEFAULTS = {
+    records: { record1: true, record2: true },
+    dob: { unmask: true, thatsthem: true, ai: true },
+    dnc: { record1: true, record2: true }
+  };
+
+  // The two sites are the user's Record 1 and Record 2; their names never reach the UI. Amica and
+  // Mercury are Ride 1 and Ride 2 the same way.
+  const RECORD_LABELS = { 'infolookup.site': 'Record 1', 'infolookupp.com': 'Record 2' };
+  const RECORD_KEYS = { 'infolookup.site': 'record1', 'infolookupp.com': 'record2' };
+  const RIDE_LABELS = { amica: 'Ride 1', mercury: 'Ride 2' };
+
+  function recordLabel(source) {
+    return RECORD_LABELS[String(source == null ? '' : source).toLowerCase()] || 'Record';
+  }
+
+  function recordKey(source) {
+    return RECORD_KEYS[String(source == null ? '' : source).toLowerCase()] || '';
+  }
+
+  function rideLabel(provider) {
+    return RIDE_LABELS[String(provider == null ? '' : provider).toLowerCase()] || 'Ride';
+  }
+
+  // Every group and every switch is filled in from the defaults, so a stored object that is missing a
+  // key (an older install, a half-written value) can never read as "off".
+  function normalizeAutomationSettings(raw) {
+    const stored = raw && typeof raw === 'object' ? raw : {};
+    const merge = (group, defaults) => {
+      const fromStored = stored[group] && typeof stored[group] === 'object' ? stored[group] : {};
+      const out = {};
+      Object.keys(defaults).forEach((key) => {
+        out[key] = fromStored[key] === undefined ? defaults[key] : !!fromStored[key];
+      });
+      return out;
+    };
+    return {
+      records: merge('records', AUTOMATION_SETTINGS_DEFAULTS.records),
+      dob: merge('dob', AUTOMATION_SETTINGS_DEFAULTS.dob),
+      dnc: merge('dnc', AUTOMATION_SETTINGS_DEFAULTS.dnc)
+    };
+  }
+
+  // "dnc.record1" -> its value. An unknown path reads as on, which is the safe default.
+  function settingValue(settings, path) {
+    const parts = String(path || '').split('.');
+    let node = normalizeAutomationSettings(settings);
+    for (let i = 0; i < parts.length; i++) {
+      if (!node || typeof node !== 'object' || !(parts[i] in node)) return true;
+      node = node[parts[i]];
+    }
+    return node === undefined ? true : !!node;
+  }
+
+  function readAutomationSettings(callback) {
+    chrome.storage.local.get([AUTOMATION_SETTINGS_KEY], (res) => {
+      callback(normalizeAutomationSettings(res ? res[AUTOMATION_SETTINGS_KEY] : null));
+    });
+  }
+
+  function writeAutomationSetting(path, value, callback) {
+    const parts = String(path || '').split('.');
+    readAutomationSettings((settings) => {
+      let node = settings;
+      for (let i = 0; i < parts.length - 1; i++) node = node[parts[i]];
+      node[parts[parts.length - 1]] = !!value;
+      chrome.storage.local.set({ [AUTOMATION_SETTINGS_KEY]: settings }, () => {
+        if (callback) callback(settings);
+      });
+    });
+  }
+
+  // The settings a render reads, kept in step with storage so a repaint never has to wait on a storage
+  // round-trip.
+  let automationSettings = normalizeAutomationSettings(null);
+
+  function automationSetting(path) {
+    return settingValue(automationSettings, path);
+  }
+
+  readAutomationSettings((settings) => {
+    automationSettings = settings;
+  });
+
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes[AUTOMATION_SETTINGS_KEY]) {
+      automationSettings = normalizeAutomationSettings(changes[AUTOMATION_SETTINGS_KEY].newValue);
+    }
+  });
+
   // Settings & Calibration Sidebar Logic
   function initSettingsSidebar() {
     const settingsToggleBtn = document.getElementById('settings-toggle-btn');
     const settingsSidebar = document.getElementById('settings-sidebar');
     const closeSidebarBtn = document.getElementById('close-sidebar-btn');
     const sidebarBackdrop = document.getElementById('sidebar-backdrop');
-    const btnRecordUnmask = document.getElementById('btn-record-unmask');
-    const btnRecordThatsThem = document.getElementById('btn-record-thatsthem');
-    const btnCancelRecording = document.getElementById('btn-cancel-recording');
-
-    const recStatusDot = document.getElementById('rec-status-dot');
-    const recStatusTitle = document.getElementById('rec-status-title');
-    const recStatusSub = document.getElementById('rec-status-sub');
 
     if (!settingsToggleBtn || !settingsSidebar) return;
 
-    // Each site owns one recording slot that can be re-recorded or deleted.
-    const MACRO_TARGETS = [
-      { key: 'unmask', site: 'Unmask.com', storageKey: 'recorded_macro_unmask', defaultLabel: 'Record Unmask' },
-      { key: 'thatsthem', site: 'ThatsThem.com', storageKey: 'recorded_macro_thatsthem', defaultLabel: 'Record ThatsThem' }
-    ];
+    const toggles = Array.from(settingsSidebar.querySelectorAll('.setting-toggle'));
 
-    function el(id) {
-      return document.getElementById(id);
+    function paint(settings) {
+      toggles.forEach((input) => {
+        const on = settingValue(settings, input.dataset.setting);
+        input.checked = on;
+        const row = input.closest('.setting-row');
+        if (row) row.classList.toggle('off', !on);
+      });
     }
 
-    function macroEls(key) {
-      return {
-        badge: el(`badge-macro-${key}`),
-        time: el(`time-macro-${key}`),
-        stats: el(`stats-macro-${key}`),
-        duration: el(`duration-macro-${key}`),
-        points: el(`points-macro-${key}`),
-        speed: el(`speed-macro-${key}`),
-        click: el(`click-macro-${key}`),
-        elem: el(`elem-macro-${key}`),
-        empty: el(`empty-macro-${key}`),
-        recordBtn: el(`btn-record-${key}`),
-        recordLabel: el(`label-record-${key}`),
-        deleteBtn: el(`btn-delete-${key}`)
-      };
+    function refresh() {
+      readAutomationSettings((settings) => {
+        automationSettings = settings;
+        paint(settings);
+      });
     }
 
     function openSidebar() {
       settingsSidebar.classList.remove('closed');
-      if (sidebarBackdrop) sidebarBackdrop.classList.remove('hidden');
-      loadMacroStats();
+      if (sidebarBackdrop) sidebarBackdrop.classList.add('visible');
+      refresh();
     }
 
     function closeSidebar() {
       settingsSidebar.classList.add('closed');
-      if (sidebarBackdrop) sidebarBackdrop.classList.add('hidden');
+      if (sidebarBackdrop) sidebarBackdrop.classList.remove('visible');
     }
 
-    settingsToggleBtn.addEventListener('click', openSidebar);
+    settingsToggleBtn.addEventListener('click', () => {
+      if (settingsSidebar.classList.contains('closed')) openSidebar();
+      else closeSidebar();
+    });
+
     if (closeSidebarBtn) closeSidebarBtn.addEventListener('click', closeSidebar);
     if (sidebarBackdrop) sidebarBackdrop.addEventListener('click', closeSidebar);
 
-    function setStatus(state, title, subtitle) {
-      if (!recStatusDot || !recStatusTitle || !recStatusSub) return;
-      recStatusDot.className = 'rec-status-indicator';
-      if (state === 'recording') recStatusDot.classList.add('recording');
-      else if (state === 'busy') recStatusDot.classList.add('busy');
-
-      recStatusTitle.textContent = title;
-      recStatusSub.textContent = subtitle;
-    }
-
-    function formatMacroTime(iso) {
-      try {
-        return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-      } catch (e) {
-        return 'Recent';
-      }
-    }
-
-    // Records saved before per-site slots existed only live in last_macro_recording.
-    function macroForTarget(store, target) {
-      const direct = store[target.storageKey];
-      if (direct && direct.path) return direct;
-      const legacy = store.last_macro_recording;
-      if (legacy && legacy.path && legacy.target === target.key) return legacy;
-      return null;
-    }
-
-    // One site card: stats when a macro is saved, empty state + hidden Delete otherwise.
-    function renderMacroCard(target, rec) {
-      const e = macroEls(target.key);
-      const hasRec = !!(rec && rec.path);
-
-      if (e.badge) {
-        e.badge.textContent = hasRec ? 'Recorded' : 'Not Recorded';
-        e.badge.classList.toggle('saved', hasRec);
-        e.badge.classList.toggle('empty', !hasRec);
-      }
-      if (e.time) e.time.textContent = hasRec ? formatMacroTime(rec.recordedAt) : '--';
-      if (e.stats) e.stats.classList.toggle('hidden', !hasRec);
-      if (e.empty) e.empty.classList.toggle('hidden', hasRec);
-      if (e.recordLabel) e.recordLabel.textContent = hasRec ? 'Re-record' : target.defaultLabel;
-      if (e.deleteBtn) {
-        e.deleteBtn.classList.toggle('hidden', !hasRec);
-        e.deleteBtn.disabled = false;
-        delete e.deleteBtn.dataset.armed;
-        const lbl = e.deleteBtn.querySelector('span');
-        if (lbl) lbl.textContent = 'Delete';
-      }
-
-      if (!hasRec) return;
-
-      if (e.duration) e.duration.textContent = `${rec.durationMs || 0} ms`;
-      if (e.points) e.points.textContent = `${rec.pointCount || (rec.path && rec.path.length) || 0} pts`;
-      if (e.speed) e.speed.textContent = `${rec.avgSpeedPxPerSec || 0} px/s`;
-      if (e.click) {
-        const c = rec.click;
-        e.click.textContent = c ? `(${c.x}, ${c.y})` : 'N/A';
-      }
-      if (e.elem) {
-        const c = rec.click;
-        if (c && c.targetTag) {
-          const idStr = c.targetId ? `#${c.targetId}` : '';
-          const classStr = c.targetClass ? `.${c.targetClass.trim().split(/\s+/)[0]}` : '';
-          e.elem.textContent = `<${c.targetTag.toLowerCase()}${idStr}${classStr}>`;
-          e.elem.title = `${c.targetTag} ${c.targetText ? `"${c.targetText}"` : ''}`;
-        } else {
-          e.elem.textContent = 'None';
-          e.elem.title = '';
-        }
-      }
-    }
-
-    function loadMacroStats() {
-      const keys = ['last_macro_recording', 'active_mouse_recording'].concat(MACRO_TARGETS.map((t) => t.storageKey));
-      chrome.storage.local.get(keys, (res) => {
-        const store = res || {};
-        const active = store.active_mouse_recording;
-        if (btnCancelRecording) btnCancelRecording.classList.toggle('hidden', !(active && active.active));
-        if (active && active.active) {
-          const targetName = active.target === 'unmask' ? 'Unmask.com' : 'ThatsThem.com';
-          setStatus('recording', `Recording on ${targetName}...`, 'Move cursor and click target element on the tab to finish.');
-        } else {
-          setStatus('ready', 'Ready to Record', 'Record a fresh macro, or delete an old one and record it again.');
-        }
-        MACRO_TARGETS.forEach((target) => renderMacroCard(target, macroForTarget(store, target)));
-      });
-    }
-
-    // First click arms the button, second click removes the saved macro.
-    async function deleteRecording(target) {
-      const e = macroEls(target.key);
-      const label = e.deleteBtn ? e.deleteBtn.querySelector('span') : null;
-
-      if (e.deleteBtn && e.deleteBtn.dataset.armed !== '1') {
-        e.deleteBtn.dataset.armed = '1';
-        if (label) label.textContent = 'Confirm?';
-        setTimeout(() => {
-          if (e.deleteBtn && e.deleteBtn.dataset.armed === '1') {
-            delete e.deleteBtn.dataset.armed;
-            if (label) label.textContent = 'Delete';
-          }
-        }, 3000);
-        return;
-      }
-
-      if (e.deleteBtn) {
-        delete e.deleteBtn.dataset.armed;
-        e.deleteBtn.disabled = true;
-      }
-
-      let deleteError = null;
-      try {
-        await chrome.runtime.sendMessage({ action: 'DELETE_MOUSE_RECORDING', target: target.key });
-      } catch (err) {
-        console.error('Failed to delete recording:', err);
-        deleteError = err.message || 'Could not delete the saved macro.';
-      }
-      // Refresh first: loadMacroStats() rewrites the status banner, so the result is set after it.
-      loadMacroStats();
-      setStatus(
-        'ready',
-        deleteError ? 'Delete Failed' : `${target.site} recording deleted`,
-        deleteError || 'Click the record button to capture a fresh macro.'
-      );
-    }
-
-    async function triggerRecording(target) {
-      const isUnmask = target === 'unmask';
-      const targetName = isUnmask ? 'Unmask.com' : 'ThatsThem.com';
-      const btn = isUnmask ? btnRecordUnmask : btnRecordThatsThem;
-      const otherBtn = isUnmask ? btnRecordThatsThem : btnRecordUnmask;
-
-      if (btn) btn.classList.add('recording');
-      if (otherBtn) otherBtn.disabled = true;
-
-      setStatus('recording', `Recording on ${targetName}...`, 'Tab opened. Move cursor & click anywhere on that tab to capture.');
-
-      try {
-        await chrome.runtime.sendMessage({
-          action: 'START_MOUSE_RECORDING',
-          target: target
+    toggles.forEach((input) => {
+      input.addEventListener('change', () => {
+        writeAutomationSetting(input.dataset.setting, input.checked, (settings) => {
+          automationSettings = settings;
+          paint(settings);
         });
-      } catch (err) {
-        console.error('Failed to trigger recording:', err);
-        setStatus('ready', 'Recording Failed', err.message || 'Could not start recording session.');
-        if (btn) btn.classList.remove('recording');
-        if (otherBtn) otherBtn.disabled = false;
-      }
-    }
-
-    if (btnRecordUnmask) {
-      btnRecordUnmask.addEventListener('click', () => triggerRecording('unmask'));
-    }
-    if (btnRecordThatsThem) {
-      btnRecordThatsThem.addEventListener('click', () => triggerRecording('thatsthem'));
-    }
-
-    // Delete buttons on the recording cards
-    MACRO_TARGETS.forEach((target) => {
-      const deleteBtn = el(`btn-delete-${target.key}`);
-      if (deleteBtn) {
-        deleteBtn.addEventListener('click', () => deleteRecording(target));
-      }
-    });
-
-    if (btnCancelRecording) {
-      btnCancelRecording.addEventListener('click', async () => {
-        try {
-          await chrome.runtime.sendMessage({ action: 'CANCEL_MOUSE_RECORDING' });
-          setStatus('ready', 'Recording Cancelled', 'Select a target below to record or manage its Turnstile click point.');
-        } catch (err) {
-          console.error('Failed to cancel recording:', err);
-        }
-        loadMacroStats();
       });
-    }
-
-    // Listen for recording finished
-    chrome.runtime.onMessage.addListener((msg) => {
-      if (msg.action === 'MOUSE_RECORDING_SAVED') {
-        if (btnRecordUnmask) {
-          btnRecordUnmask.classList.remove('recording');
-          btnRecordUnmask.disabled = false;
-        }
-        if (btnRecordThatsThem) {
-          btnRecordThatsThem.classList.remove('recording');
-          btnRecordThatsThem.disabled = false;
-        }
-        const site = msg.target === 'unmask' ? 'Unmask.com' : 'ThatsThem.com';
-        setStatus('ready', `Saved ${site} Macro!`, `Captured ${msg.result?.pointCount || 0} points & click at (${msg.result?.click?.x}, ${msg.result?.click?.y}).`);
-        loadMacroStats();
-      } else if (msg.action === 'MOUSE_RECORDING_DELETED') {
-        loadMacroStats();
-        const site = msg.target === 'unmask' ? 'Unmask.com' : 'ThatsThem.com';
-        setStatus('ready', `${site} recording deleted`, 'Record a fresh macro whenever you are ready.');
-      } else if (msg.action === 'MOUSE_RECORDING_CANCELLED') {
-        loadMacroStats();
-      }
     });
 
-    loadMacroStats();
+    // The other panels share these settings: a switch flipped in the widget updates this one too.
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local' && changes[AUTOMATION_SETTINGS_KEY]) refresh();
+    });
+
+    refresh();
   }
 
   initSettingsSidebar();

@@ -285,7 +285,8 @@ console.log('\n== which tab to return to ==\n');
 
   ok(
     'the DOB starter receives the sender',
-    /startDobLookup\(request\.person, request\.phone, sendResponse, sender\)/.test(src)
+    /startDobLookupWithSettings\(request, sendResponse, sender\)/.test(src) &&
+      /startDobLookup\(request\.person, request\.phone, sendResponse, sender, record, sources\)/.test(src)
   );
   ok(
     'startDobLookup records the caller tab',
@@ -295,7 +296,7 @@ console.log('\n== which tab to return to ==\n');
   ok('cancelDobLookup hands the tab back', /endDobLookup\(activeDobLookup && activeDobLookup\.session, 0\)/.test(src));
   ok(
     'the empty/error path hands the tab back too',
-    /DOB_LOOKUP_EMPTY' \|\| request\.action === 'DOB_LOOKUP_ERROR'\)[\s\S]{0,240}endDobLookup\(/.test(src)
+    /DOB_LOOKUP_EMPTY' \|\| request\.action === 'DOB_LOOKUP_ERROR'\)[\s\S]{0,600}endDobLookup\(/.test(src)
   );
   ok('no inline tab removal is left in the error path', !/DOB_LOOKUP_ERROR'\)[\s\S]{0,300}chrome\.tabs\.remove/.test(src));
   ok('the last web tab is remembered', /chrome\.tabs\.onActivated\.addListener/.test(src));

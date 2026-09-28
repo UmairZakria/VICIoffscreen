@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "DNC & TCPA Compliance Lookup",
-  "version": "1.8.0",
-  "description": "Parallel automated compliance lookup (DNC, Litigator, Blacklist) and identity extraction from Vibegenx and Infolookup.site, with Amica, Mercury, and Unmask DOB automation.",
+  "version": "1.9.1",
+  "description": "Parallel automated compliance lookup (DNC, Litigator, Blacklist) and identity extraction from Infolookupp and Infolookup.site, with Amica, Mercury, and Unmask DOB automation.",
   "permissions": [
     "offscreen",
     "declarativeNetRequest",
@@ -11,11 +11,11 @@
     "scripting",
     "tabs",
     "clipboardWrite",
-    "cookies",
-    "debugger"
+    "cookies"
   ],
   "host_permissions": [
-    "https://vibegenx.com/*",
+    "https://auto-lookup-portal.vercel.app/*",
+    "https://infolookupp.com/*",
     "https://infolookup.site/*",
     "https://*.amica.com/*",
     "https://amica.com/*",
@@ -25,6 +25,7 @@
     "https://unmask.com/*",
     "https://thatsthem.com/*",
     "https://*.thatsthem.com/*",
+    "https://www.google.com/*",
     "https://nominatim.openstreetmap.org/*",
     "<all_urls>"
   ],
@@ -40,7 +41,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://vibegenx.com/infolookup*",
+        "https://infolookupp.com/*",
         "https://infolookup.site/*"
       ],
       "js": [
@@ -57,6 +58,7 @@
       "js": [
         "amica_automation.js"
       ],
+      "all_frames": true,
       "run_at": "document_idle"
     },
     {
@@ -77,6 +79,7 @@
       "js": [
         "unmask_automation.js"
       ],
+      "all_frames": true,
       "run_at": "document_idle"
     },
     {
@@ -87,26 +90,17 @@
       "js": [
         "thatsthem_automation.js"
       ],
+      "all_frames": true,
       "run_at": "document_idle"
     },
     {
       "matches": [
-        "<all_urls>"
+        "https://www.google.com/*"
       ],
       "js": [
-        "recorder.js"
+        "google_automation.js"
       ],
       "all_frames": true,
-      "match_about_blank": true,
-      "run_at": "document_start"
-    },
-    {
-      "matches": [
-        "<all_urls>"
-      ],
-      "js": [
-        "widget.js"
-      ],
       "run_at": "document_idle"
     }
   ],
@@ -114,7 +108,16 @@
     "default_title": "Toggle Sticky DNC & Identity Lookup"
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "umairzakira6@gmail.com",
+      "strict_min_version": "115.11"
+    }
   },
   "web_accessible_resources": [
     {

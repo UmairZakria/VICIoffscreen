@@ -8,21 +8,78 @@
 </head>
 <body>
   <div class="app-shell">
+    <!-- Login / Licensing Modal Overlay (Visible by default until authenticated) -->
+    <div id="login-overlay" class="login-overlay">
+      <div class="login-card">
+        <div class="login-badge-icon">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+          </svg>
+        </div>
+        <h2 class="login-title">Sign In to Auto Lookup</h2>
+        <p class="login-subtitle">Enter your account credentials to access compliance lookups</p>
+
+        <!-- Quota Exhaustion / Error Banner -->
+        <div id="login-alert-box" class="login-alert-box hidden">
+          <span id="login-alert-text">limit reached contact admin for more limit</span>
+        </div>
+
+        <form id="login-form" class="login-form">
+          <div class="login-field">
+            <label for="login-username">Username</label>
+            <input type="text" id="login-username" placeholder="Username" required autocomplete="username" spellcheck="false" />
+          </div>
+
+          <div class="login-field">
+            <label for="login-password">Password</label>
+            <input type="password" id="login-password" placeholder="Password" required autocomplete="current-password" />
+          </div>
+
+          <button type="submit" id="login-submit-btn" class="login-submit-btn">
+            <span id="login-btn-text">Sign In</span>
+            <div id="login-spinner" class="login-spinner hidden"></div>
+          </button>
+
+          <div class="server-config-toggle">
+            <span id="server-url-toggle-btn">Server: <strong id="server-url-label">auto-lookup-portal.vercel.app</strong></span>
+            <div id="server-url-box" class="server-url-box hidden">
+              <input type="text" id="server-url-input" value="https://auto-lookup-portal.vercel.app" placeholder="https://auto-lookup-portal.vercel.app" />
+              <button type="button" id="save-server-url-btn">Save</button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
     <!-- Header -->
     <header class="app-header">
       <div class="brand">
         <div class="status-dot" id="header-dot"></div>
         <div class="brand-text">
-          <span class="brand-title">You Lookup</span>
-          <button id="settings-toggle-btn" class="settings-btn" title="Calibration & Settings" type="button">
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-              <circle cx="12" cy="12" r="3"></circle>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-            </svg>
-          </button>
+          <span class="brand-title">Auto Lookup</span>
         </div>
       </div>
       <div class="header-actions" style="display: flex; gap: 6px; align-items: center; justify-content: center;">
+        <div id="auth-header-pill" class="auth-header-pill hidden" title="Remaining Lookups · Click to refresh">
+          <svg class="quota-bolt-icon" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+          <span id="auth-quota-display" class="auth-quota-display" title="Remaining Lookups">0 left</span>
+          <button id="auth-logout-btn" class="auth-logout-mini-btn" title="Sign Out" type="button">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+              <polyline points="16 17 21 12 16 7"></polyline>
+              <line x1="21" y1="12" x2="9" y2="12"></line>
+            </svg>
+          </button>
+        </div>
+        <button id="settings-toggle-btn" class="icon-btn settings-btn" title="Calibration & Settings" type="button">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
         <button id="popout-btn" class="icon-btn" title="Open in Separate Sticky Window" type="button">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
@@ -111,8 +168,8 @@
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
                     <span>Copy</span>
                   </button>
-                  <button id="person-amica-btn" class="mini-btn vehicle-btn" type="button" title="Discover vehicles on Amica">Amica</button>
-                  <button id="person-mercury-btn" class="mini-btn vehicle-btn" type="button" title="Discover vehicles on Mercury">Mercury</button>
+                  <button id="person-amica-btn" class="mini-btn vehicle-btn" type="button" title="Discover vehicles on Ride 1">Ride 1</button>
+                  <button id="person-mercury-btn" class="mini-btn vehicle-btn" type="button" title="Discover vehicles on Ride 2">Ride 2</button>
                   <button id="person-dob-btn" class="mini-btn dob-btn" type="button" title="Deep research DOB on Unmask">DOB</button>
                 </div>
               </div>
@@ -139,7 +196,7 @@
         <div class="vehicle-progress-box hidden" id="card-vehicle-progress">
           <div class="vehicle-progress-header">
             <div class="vehicle-progress-left">
-              <span class="vehicle-provider-tag" id="vehicle-provider-tag">Amica</span>
+              <span class="vehicle-provider-tag" id="vehicle-provider-tag">Ride 1</span>
               <span class="vehicle-progress-status" id="vehicle-progress-status">Starting lookup...</span>
             </div>
             <button class="vehicle-cancel-btn" id="vehicle-cancel-btn" type="button">✕ Cancel</button>
@@ -216,7 +273,7 @@
     </main>
   </div>
 
-  <!-- Settings & Recording Sidebar Drawer -->
+  <!-- Settings Sidebar Drawer -->
   <aside id="settings-sidebar" class="settings-sidebar closed">
     <div class="sidebar-header">
       <div class="sidebar-title">
@@ -231,122 +288,68 @@
 
     <div class="sidebar-body">
       <div class="sidebar-section-header">
-        <span class="sidebar-section-title">Cursor Macro Calibration</span>
-        <span class="sidebar-section-desc">Record, recreate, or delete the Turnstile click point used for verification.</span>
+        <span class="sidebar-section-title">Info Lookup</span>
+        <span class="sidebar-section-desc">Which records the number is searched on.</span>
       </div>
 
-      <div id="rec-status-banner" class="rec-status-banner">
-        <div class="rec-status-indicator" id="rec-status-dot"></div>
-        <div class="rec-status-text-wrap">
-          <div class="rec-status-main" id="rec-status-title">Ready to Record</div>
-          <div class="rec-status-sub" id="rec-status-sub">Select a target below to record or manage its Turnstile click point.</div>
-          <button id="btn-cancel-recording" class="cancel-rec-btn hidden" type="button">Cancel Active Recording</button>
-        </div>
+      <div class="settings-list">
+        <label class="setting-row">
+          <span class="setting-label">Record 1</span>
+          <input type="checkbox" class="setting-toggle" data-setting="records.record1" />
+          <span class="setting-track"><span class="setting-knob"></span></span>
+        </label>
+        <label class="setting-row">
+          <span class="setting-label">Record 2</span>
+          <input type="checkbox" class="setting-toggle" data-setting="records.record2" />
+          <span class="setting-track"><span class="setting-knob"></span></span>
+        </label>
       </div>
 
-      <!-- Unmask Macro Card -->
-      <div id="card-macro-unmask" class="rec-summary-card">
-        <div class="rec-summary-header">
-          <div class="rec-site-title-wrap">
-            <span class="rec-summary-title">Unmask.com</span>
-            <span id="badge-macro-unmask" class="rec-badge empty">Not Recorded</span>
-          </div>
-          <span class="rec-summary-time" id="time-macro-unmask">--</span>
-        </div>
-
-        <div id="stats-macro-unmask" class="rec-stats-content hidden">
-          <div class="rec-stats-grid">
-            <div class="rec-stat-box">
-              <span class="rec-stat-label">Duration</span>
-              <span class="rec-stat-val" id="duration-macro-unmask">0 ms</span>
-            </div>
-            <div class="rec-stat-box">
-              <span class="rec-stat-label">Waypoints</span>
-              <span class="rec-stat-val" id="points-macro-unmask">0 pts</span>
-            </div>
-            <div class="rec-stat-box">
-              <span class="rec-stat-label">Avg Speed</span>
-              <span class="rec-stat-val" id="speed-macro-unmask">0 px/s</span>
-            </div>
-            <div class="rec-stat-box">
-              <span class="rec-stat-label">First Click</span>
-              <span class="rec-stat-val" id="click-macro-unmask">(0, 0)</span>
-            </div>
-          </div>
-          <div class="rec-target-row">
-            <span class="rec-stat-label">Target:</span>
-            <span class="rec-target-elem" id="elem-macro-unmask">None</span>
-          </div>
-        </div>
-
-        <div id="empty-macro-unmask" class="rec-empty-state">
-          <span>No recorded movement saved.</span>
-        </div>
-
-        <div class="rec-card-actions">
-          <button id="btn-record-unmask" class="rec-action-btn primary-btn" type="button">
-            <span id="label-record-unmask">Record Unmask</span>
-          </button>
-          <button id="btn-delete-unmask" class="rec-action-btn delete-btn hidden" type="button" title="Delete Unmask Recording">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-            <span>Delete</span>
-          </button>
-        </div>
+      <div class="sidebar-section-header">
+        <span class="sidebar-section-title">DOB Sources</span>
+        <span class="sidebar-section-desc">Which platforms the DOB button may ask. A source that is off is never searched, and never a fallback.</span>
       </div>
 
-      <!-- ThatsThem Macro Card -->
-      <div id="card-macro-thatsthem" class="rec-summary-card">
-        <div class="rec-summary-header">
-          <div class="rec-site-title-wrap">
-            <span class="rec-summary-title">ThatsThem.com</span>
-            <span id="badge-macro-thatsthem" class="rec-badge empty">Not Recorded</span>
-          </div>
-          <span class="rec-summary-time" id="time-macro-thatsthem">--</span>
-        </div>
-
-        <div id="stats-macro-thatsthem" class="rec-stats-content hidden">
-          <div class="rec-stats-grid">
-            <div class="rec-stat-box">
-              <span class="rec-stat-label">Duration</span>
-              <span class="rec-stat-val" id="duration-macro-thatsthem">0 ms</span>
-            </div>
-            <div class="rec-stat-box">
-              <span class="rec-stat-label">Waypoints</span>
-              <span class="rec-stat-val" id="points-macro-thatsthem">0 pts</span>
-            </div>
-            <div class="rec-stat-box">
-              <span class="rec-stat-label">Avg Speed</span>
-              <span class="rec-stat-val" id="speed-macro-thatsthem">0 px/s</span>
-            </div>
-            <div class="rec-stat-box">
-              <span class="rec-stat-label">First Click</span>
-              <span class="rec-stat-val" id="click-macro-thatsthem">(0, 0)</span>
-            </div>
-          </div>
-          <div class="rec-target-row">
-            <span class="rec-stat-label">Target:</span>
-            <span class="rec-target-elem" id="elem-macro-thatsthem">None</span>
-          </div>
-        </div>
-
-        <div id="empty-macro-thatsthem" class="rec-empty-state">
-          <span>No recorded movement saved.</span>
-        </div>
-
-        <div class="rec-card-actions">
-          <button id="btn-record-thatsthem" class="rec-action-btn primary-btn" type="button">
-            <span id="label-record-thatsthem">Record ThatsThem</span>
-          </button>
-          <button id="btn-delete-thatsthem" class="rec-action-btn delete-btn hidden" type="button" title="Delete ThatsThem Recording">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-            <span>Delete</span>
-          </button>
-        </div>
+      <div class="settings-list">
+        <label class="setting-row">
+          <span class="setting-label">Unmask</span>
+          <input type="checkbox" class="setting-toggle" data-setting="dob.unmask" />
+          <span class="setting-track"><span class="setting-knob"></span></span>
+        </label>
+        <label class="setting-row">
+          <span class="setting-label">ThatSthem</span>
+          <input type="checkbox" class="setting-toggle" data-setting="dob.thatsthem" />
+          <span class="setting-track"><span class="setting-knob"></span></span>
+        </label>
+        <label class="setting-row">
+          <span class="setting-label">AI</span>
+          <input type="checkbox" class="setting-toggle" data-setting="dob.ai" />
+          <span class="setting-track"><span class="setting-knob"></span></span>
+        </label>
       </div>
-    </div>
+
+      <div class="sidebar-section-header">
+        <span class="sidebar-section-title">DNC Status</span>
+        <span class="sidebar-section-desc">Which records show their DNC / Litigator / Blacklist status.</span>
+      </div>
+
+      <div class="settings-list">
+        <label class="setting-row">
+          <span class="setting-label">Record 1</span>
+          <input type="checkbox" class="setting-toggle" data-setting="dnc.record1" />
+          <span class="setting-track"><span class="setting-knob"></span></span>
+        </label>
+        <label class="setting-row">
+          <span class="setting-label">Record 2</span>
+          <input type="checkbox" class="setting-toggle" data-setting="dnc.record2" />
+          <span class="setting-track"><span class="setting-knob"></span></span>
+        </label>
+      </div>
+
   </aside>
   <div id="sidebar-backdrop" class="sidebar-backdrop hidden"></div>
 
+  <script src="auth_client.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

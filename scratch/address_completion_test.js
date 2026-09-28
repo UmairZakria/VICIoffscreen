@@ -22,7 +22,7 @@ function slice(startNeedle, endNeedle) {
 const stateConst = slice('const STATE_NAME_TO_CODE = {', 'function titleCaseWord(word) {');
 const block = slice('function isPoBox(addrStr) {', 'async function startVehicleLookup(');
 
-// The real Nominatim response captured for the record that vibegenx.com returns as
+// The real Nominatim response captured for the record that infolookupp.com returns as
 // "3724 Kildare Dr" (infolookup.site shows the complete address).
 const REAL_HIT = {
   display_name: '3724, Kildare Drive, Minnetex, Houston, Harris County, Texas, 77047, United States',
@@ -47,6 +47,9 @@ let fetchResponse = null;
 globalThis.fetch = async (url) => {
   fetchCalls.push(String(url));
   if (fetchThrows) throw new Error('network down');
+  // A single canned response, or a function(url, callNumber) for a sequence of them (the rural-road
+  // fallback asks a second, different question).
+  if (typeof fetchResponse === 'function') return fetchResponse(String(url), fetchCalls.length);
   return fetchResponse;
 };
 
@@ -300,6 +303,88 @@ async function runTests() {
   check('streamed record: primary address completed', person2.address.city, 'Houston');
   check('streamed record: history left for the automations', historyEntry2.city || '', '');
   check('streamed record: one request only', fetchCalls.length, 1);
+
+  // --- a rural road: OSM has the road, but not the house numbers along it ------------------------
+  //
+  // The recorded case: "1361 Vz County Road 2403" came back from Nominatim with nothing at all when it
+  // was asked with the house number, so the record stayed street-only. The road on its own is asked
+  // next, and only its city/state/zip are used - the record keeps its own street.
+  reset();
+  fetchCalls = [];
+  fetchResponse = (url) =>
+    url.includes('1361')
+      ? { ok: true, status: 200, json: async () => [] }
+      : {
+          ok: true,
+          status: 200,
+          json: async () => [
+            {
+              display_name: 'Vz County Road 2403, Van Zandt County, Texas, United States',
+              address: { road: 'Vz County Road 2403', county: 'Van Zandt County', state: 'Texas', postcode: '75103' },
+            },
+          ],
+        };
+
+  const rural = { street: '1361 Vz County Road 2403' };
+  const ruralCompleted = await mod.completeAddress(rural, { state: 'TX' });
+  check('the house-numbered query that finds nothing is followed by the road on its own', fetchCalls.length, 2);
+  check('and that second question is the road without its number', fetchCalls[1].includes('Vz+County+Road+2403'), true);
+  check(
+    'the road fills in what the record was missing',
+    ruralCompleted && [ruralCompleted.city, ruralCompleted.state, ruralCompleted.zip],
+    ['', 'TX', '75103']
+  );
+  check('the record keeps its own street', mod.mergeCompletedAddress(rural, ruralCompleted).street, '1361 Vz County Road 2403');
+
+  // A hit on a different road, or in a different state, is still refused: the tolerance only applies
+  // when the house number and the state both agree.
+  reset();
+  fetchCalls = [];
+  fetchResponse = {
+    ok: true,
+    status: 200,
+    json: async () => [{ address: { road: 'Some Other Road', house_number: '1361', state: 'Texas', postcode: '75103' } }],
+  };
+  check('a hit on another road is refused', await mod.completeAddress({ street: '1361 Vz County Road 2403' }, { state: 'TX' }), null);
+
+  reset();
+  fetchCalls = [];
+  fetchResponse = {
+    ok: true,
+    status: 200,
+    json: async () => [{ address: { road: 'Farm to Market Road 859', house_number: '1361', state: 'Ohio', postcode: '45402' } }],
+  };
+  check('a hit in another state is refused', await mod.completeAddress({ street: '1361 Vz County Road 2403' }, { state: 'TX' }), null);
+
+  reset();
+  fetchCalls = [];
+  fetchResponse = {
+    ok: true,
+    status: 200,
+    json: async () => [
+      { address: { road: 'Farm to Market Road 859', house_number: '1361', state: 'Texas', city: 'Grand Saline', postcode: '75103' } },
+    ],
+  };
+  check(
+    'a road OSM carries under another name is still refused (nothing proves it is the same road)',
+    await mod.completeAddress({ street: '1361 Vz County Road 2403' }, { state: 'TX' }),
+    null
+  );
+
+  // The fallback is only for a road whose name is specific enough to stand alone. A plain street name
+  // that found nothing stays unfilled rather than being answered with another city's Oak St.
+  reset();
+  fetchCalls = [];
+  fetchResponse = { ok: true, status: 200, json: async () => [] };
+  check('a plain street that found nothing is not asked again', await mod.completeAddress({ street: '3724 Kildare Dr' }, { state: 'TX' }), null);
+  check('and only one question was asked', fetchCalls.length, 1);
+
+  // A failing API is not asked a second question: only "no results" means the road is worth a look.
+  reset();
+  fetchCalls = [];
+  fetchThrows = true;
+  check('a failing API gives nothing', await mod.completeAddress({ street: '1361 Vz County Road 2403' }, { state: 'TX' }), null);
+  check('and is asked exactly once', fetchCalls.length, 1);
 
   console.log(`\n=== TOTAL: ${passed} passed, ${failed} failed ===\n`);
   process.exit(failed === 0 ? 0 : 1);
