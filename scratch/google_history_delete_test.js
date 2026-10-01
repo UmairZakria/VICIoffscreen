@@ -439,7 +439,9 @@ check(
   true
 );
 ok('the sweep never fails silently', /did not open - the search history was left as it is/.test(src));
-ok('and it reports what it removed', /from Google's history\./.test(src));
+// The wording is de-branded ("from the search history"), so this checks that the run reports what it
+// removed rather than pinning the brand it was removed from.
+ok('and it reports what it removed', /"Removed " \+ removed \+[\s\S]{0,120}history\./.test(src));
 ok('the stale entries of earlier runs are swept too', /stale entry an earlier run left behind/.test(src));
 ok(
   'the run never reaches for CDP or a trusted click',

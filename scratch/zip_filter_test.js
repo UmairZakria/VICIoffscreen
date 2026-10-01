@@ -1,9 +1,9 @@
 // Regression harness for the ZIP filter on the record cards.
 // Run with:  node scratch/zip_filter_test.js
 //
-// Every record card (Record 1, Record 2) carries a small 5 digit ZIP box on its navigation row, next
-// to the record chevrons. Typing a ZIP shows only the people of those records whose addresses include
-// it, and both cards filter together.
+// Every record card (Record 1, Record 2, Record 3) carries a small 5 digit ZIP box on its navigation
+// row, next to the record chevrons. Typing a ZIP shows only the people of those records whose addresses
+// include it, and every card filters together.
 
 const fs = require('fs');
 const path = require('path');
@@ -35,7 +35,7 @@ function check(label, actual, expected) {
 const ZIP_HEADER = '  // ---------------------------------------------------------------------------\n  // ZIP filter on the record cards';
 // The note above each card names the record through the settings labels (Record 1 / Record 2), which
 // live in the settings block at the end of the file. Only the label helpers are needed here.
-const LABEL_HEADER = "  // The two sites are the user's Record 1 and Record 2; their names never reach the UI.";
+const LABEL_HEADER = "  // The three sites are the user's Record 1, Record 2 and Record 3; their names never reach the UI.";
 const LABEL_END = '  // Every group and every switch is filled in from the defaults';
 
 const helpers =
@@ -220,7 +220,13 @@ check(
   /let personsList = filterPersonsByZip\(allPersons, activeZipFilter\(zipFilterFor\(source\)\)\)/.test(src),
   true
 );
-check('the navigation row receives the record source', /const slideNavHtml = recordNavRowHtml\(pIdx, personsList.length, source\)/.test(src), true);
+// The row carries this record's own source; the manual card passes one argument more, because it has no
+// ZIP box of its own.
+check(
+  'the navigation row receives the record source',
+  /recordNavRowHtml\(pIdx, personsList\.length, source[,)]/.test(src),
+  true
+);
 check(
   'the box drives the record-specific filter',
   /input\.addEventListener\("input", \(e\) => \{[\s\S]{0,120}setZipFilter\(source, e\.target\.value\)/.test(src),
@@ -234,7 +240,7 @@ check(
 );
 check(
   'target card repaints when its filter changes',
-  /zipFilterRepaints\.push\(\{[\s\S]{0,160}repaint: \(\) => \{/.test(src),
+  /zipFilterRepaints\.push\(\{[\s\S]{0,160}repaint: \([^)]*\) => \{/.test(src),
   true
 );
 check(

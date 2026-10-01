@@ -5,7 +5,8 @@ let activeLookup = null;
 let searchCounter = 0;
 const workerPorts = {
   'infolookup.site': null,
-  'infolookupp.com': null
+  'infolookupp.com': null,
+  'uspeoplesearch.net': null
 };
 
 // ---------------------------------------------------------------------------
@@ -17,15 +18,22 @@ const workerPorts = {
 // ---------------------------------------------------------------------------
 const AUTOMATION_SETTINGS_KEY = 'automation_settings';
 const AUTOMATION_SETTINGS_DEFAULTS = {
-  records: { record1: true, record2: true },
+  records: { record1: true, record2: true, record3: true },
   dob: { unmask: true, thatsthem: true, ai: true },
-  dnc: { record1: true, record2: true }
+  dnc: { record1: true, record2: true, record3: true }
 };
 
-// The two sites are the user's Record 1 and Record 2; Amica and Mercury are Ride 1 and Ride 2.
-const RECORD_SOURCES = ['infolookup.site', 'infolookupp.com'];
-const RECORD_KEYS = { 'infolookup.site': 'record1', 'infolookupp.com': 'record2' };
-const RIDE_LABELS = { amica: 'Ride 1', mercury: 'Ride 2' };
+// The three sites are the user's Record 1, Record 2 and Record 3; vehicle discovery is the single
+// "Rides" action.
+const RECORD_SOURCES = ['infolookup.site', 'infolookupp.com', 'uspeoplesearch.net'];
+const RECORD_KEYS = {
+  'infolookup.site': 'record1',
+  'infolookupp.com': 'record2',
+  'uspeoplesearch.net': 'record3'
+};
+// Mercury's automation is still wired up here, but it has no UI entry point, so both providers
+// carry the one "Rides" label the panel shows.
+const RIDE_LABELS = { amica: 'Rides', mercury: 'Rides' };
 
 function recordKey(source) {
   return RECORD_KEYS[String(source == null ? '' : source).toLowerCase()] || '';
@@ -34,6 +42,7 @@ function recordKey(source) {
 function recordLabel(source) {
   if (String(source == null ? '' : source).toLowerCase() === 'infolookup.site') return 'Record 1';
   if (String(source == null ? '' : source).toLowerCase() === 'infolookupp.com') return 'Record 2';
+  if (String(source == null ? '' : source).toLowerCase() === 'uspeoplesearch.net') return 'Record 3';
   return 'Record';
 }
 
@@ -115,6 +124,39 @@ chrome.runtime.onStartup.addListener(() => {
 // a parked page each time would defeat keeping it warm.
 ensureOffscreenDocument().catch(() => {});
 
+// The tab the widget's refresh button was pressed on. The whole-extension reload that follows (see
+// restartExtension) invalidates the widget that asked for it, so the tab id is remembered for a moment
+// and the service worker that starts up **on the other side of the reload** puts the widget back. The
+// button therefore reads as "restart the extension and carry on", not "lose the widget and go hunting
+// for the toolbar icon". The flag is read once and removed immediately, so a browser restart hours
+// later can never resurrect a widget on a tab that has moved on.
+const REINJECT_AFTER_RELOAD_KEY = 'widget_reinject_after_reload';
+const REINJECT_MAX_AGE_MS = 60000;
+
+// Where a popped-out panel came from. The widget hides itself rather than removing itself, so closing the
+// window can show the very same panel - with what it was holding - back on the page it was opened from.
+// The record lives in storage because the worker can be torn down between the pop-out and the close.
+const POPOUT_RETURN_KEY = 'widget_popout_return';
+const POPOUT_RETURN_MAX_AGE_MS = 12 * 60 * 60 * 1000;
+
+(async () => {
+  try {
+    const stored = await chrome.storage.local.get(REINJECT_AFTER_RELOAD_KEY);
+    const pending = stored && stored[REINJECT_AFTER_RELOAD_KEY];
+    if (!pending || !pending.tabId) return;
+
+    await chrome.storage.local.remove(REINJECT_AFTER_RELOAD_KEY);
+    if (Date.now() - (pending.at || 0) > REINJECT_MAX_AGE_MS) return;
+
+    await chrome.scripting.executeScript({
+      target: { tabId: pending.tabId },
+      files: ['widget.js']
+    });
+  } catch (e) {
+    // The tab is gone, or it is not a page this extension is allowed to script: nothing to put back.
+  }
+})();
+
 // The widget is deliberately **not** a content script any more: it used to be injected into every
 // page on every site, which put it on pages nobody asked about. It is injected here instead, the
 // first time the toolbar icon is clicked on a tab, and from then on that icon toggles it.
@@ -143,6 +185,104 @@ chrome.action.onClicked.addListener(async (tab) => {
   } catch (injectErr) {
     console.error('Could not inject widget:', injectErr);
   }
+});
+
+// The detached panel: the widget's pop-out opens window.html as its own window - `type: 'popup'`, so it
+// is a window and not another tab - and it is not tied to the page the widget was injected into.
+//
+// The bounds are shared with the popup's own pop-out (`winBounds`, written by window.js as the user moves
+// and resizes it), so the window reopens where it was left. Asking twice brings the open window forward
+// instead of stacking a second copy, and the tab that asked is remembered so the panel can go back to it
+// when the window is closed (see returnWidgetToPage).
+async function openDetachedWindow(returnTabId) {
+  const url = chrome.runtime.getURL('window.html');
+
+  let windowId = null;
+  try {
+    const open = await chrome.windows.getAll({ populate: true, windowTypes: ['popup'] });
+    for (const win of open) {
+      const holdsPanel = (win.tabs || []).some((tab) => String(tab.url || '').startsWith(url));
+      if (holdsPanel && win.id !== undefined) {
+        await chrome.windows.update(win.id, { focused: true, drawAttention: true });
+        windowId = win.id;
+        break;
+      }
+    }
+  } catch (e) {
+    // getAll is only a convenience here: it failing must not stop the window from being opened.
+  }
+
+  if (windowId === null) {
+    let bounds = { width: 420, height: 690, top: 100, left: 100 };
+    try {
+      const stored = await chrome.storage.local.get(['winBounds']);
+      if (stored && stored.winBounds) bounds = Object.assign(bounds, stored.winBounds);
+    } catch (e) {
+      // Default bounds are fine when storage cannot be read.
+    }
+
+    const created = await chrome.windows.create({ url: url, type: 'popup', ...bounds, focused: true });
+    windowId = created ? created.id : null;
+  }
+
+  // Which page the panel should go back to. Written whether the window was created or brought forward, so
+  // a pop-out from a second page takes the return over from the first.
+  if (returnTabId) {
+    const record = { tabId: returnTabId, windowId: windowId, at: Date.now() };
+    try {
+      await chrome.storage.local.set({ [POPOUT_RETURN_KEY]: record });
+    } catch (e) {}
+  }
+
+  return { ok: true, windowId: windowId };
+}
+
+// The popped-out window was closed, so the panel goes back to the page it came from. The widget there was
+// hidden, not removed - so it is shown again, holding everything it had. Only when there is nothing left
+// to show (the page was reloaded, or the panel was closed from the page) is a fresh widget injected.
+async function returnWidgetToPage(windowId) {
+  let record = null;
+  try {
+    const stored = await chrome.storage.local.get(POPOUT_RETURN_KEY);
+    record = stored ? stored[POPOUT_RETURN_KEY] : null;
+  } catch (e) {
+    return;
+  }
+
+  if (!record || !record.tabId) return;
+  // Another popped-out window, not the one this record is about: leave it alone.
+  if (windowId !== undefined && record.windowId !== undefined && windowId !== record.windowId) return;
+  if (Date.now() - (record.at || 0) > POPOUT_RETURN_MAX_AGE_MS) {
+    try {
+      await chrome.storage.local.remove(POPOUT_RETURN_KEY);
+    } catch (e) {}
+    return;
+  }
+
+  try {
+    await chrome.storage.local.remove(POPOUT_RETURN_KEY);
+  } catch (e) {}
+
+  try {
+    await chrome.tabs.sendMessage(record.tabId, { action: 'SHOW_WIDGET' });
+    return;
+  } catch (e) {
+    // Nothing listening: the page moved on, so the panel is put back the way the toolbar icon does it.
+  }
+
+  try {
+    const tab = await chrome.tabs.get(record.tabId);
+    if (!tab || !isWebPageUrl(tab.url)) return;
+    await chrome.scripting.executeScript({ target: { tabId: record.tabId }, files: ['widget.js'] });
+  } catch (e) {
+    // The tab is gone: there is nothing to bring the panel back to.
+  }
+}
+
+// Closing the detached window is what asks for the panel back on the page. Registered at the top level so
+// Chrome wakes the worker for it.
+chrome.windows.onRemoved.addListener((windowId) => {
+  returnWidgetToPage(windowId).catch(() => {});
 });
 
 // Listen for persistent port connections from content scripts inside the background iframes
@@ -175,6 +315,36 @@ const GOOGLE_STORAGE_KEY = 'google_pending_lookup';
 const GOOGLE_RUNNER_FRAME = 'google.com';
 const GOOGLE_HOME_URL = 'https://www.google.com/';
 const GOOGLE_MAX_ADDRESSES = 4;
+// Google's *email* run is a second AI Mode job on the same runner:
+//
+//   "{name} lives at {address} born in {year|Month year} any public available primary email .
+//    gmail hotmail yahoo icloud are prefered"
+//
+// It keeps its own storage key, so the DOB run and the email run can never read each other's session -
+// but they share the one runner frame, so starting either one supersedes the other (the DOB run's own
+// answer is what the email query's month comes from, so they are meant to be run in turn).
+const GOOGLE_EMAIL_STORAGE_KEY = 'google_email_pending_lookup';
+let activeGoogleEmailLookup = null; // { tabId, mode, source, session, startTime }
+// Google's *gender* run is the third AI Mode job on the same runner:
+//
+//   "{name} is male or female?"
+//
+// A question about a name has nothing to narrow down address by address, so it is a single query - and
+// it keeps its own storage key like the other two, so none of the three can read another's session.
+// All three share the one runner frame, so starting any of them supersedes the others.
+const GOOGLE_GENDER_STORAGE_KEY = 'google_gender_pending_lookup';
+let activeGoogleGenderLookup = null; // { tabId, mode, source, session, startTime }
+// Google's *address resolver* is the fourth AI Mode job, and the only one asked about a record the user
+// typed in by hand - the manual card. It asks two questions about that same input, in order:
+//
+//   "{name} lives at {input} what is the full address, email and dob?"
+//   "{name} lives at {input} whats the full address?"
+//
+// (the second is the fallback: a page that answers none of the three things the first asks for usually
+// answers the plain address question). It keeps its own storage key like the others, and shares the one
+// runner frame with them: starting any of the four supersedes the rest.
+const GOOGLE_ADDRESS_STORAGE_KEY = 'google_address_pending_lookup';
+let activeGoogleAddressLookup = null; // { tabId, mode, source, session, startTime }
 // Google runs in the hidden offscreen runner, like the other sites, so no tab ever appears for it.
 // Set this to true to watch it work instead: the run then uses a real tab, brought to the front - and
 // the whole search-history step prints its step-by-step trace to that tab's console (F12). With it
@@ -194,6 +364,9 @@ const AMICA_WARM_FALLBACK_MS = 4000;
 // Fire-and-forget beside the Unmask run, so it needs its own stop: a page that never answers (a
 // consent wall, a script that never loads) must not leave the runner loaded for ever.
 const GOOGLE_RUN_BUDGET_MS = 150000;
+const GOOGLE_EMAIL_RUN_BUDGET_MS = 150000;
+const GOOGLE_GENDER_RUN_BUDGET_MS = 150000;
+const GOOGLE_ADDRESS_RUN_BUDGET_MS = 150000;
 
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'LOOKUP_PHONE') {
@@ -301,6 +474,38 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     cancelDobLookup(sendResponse);
     return true;
   }
+  // The Google AI Mode *email* run: its own button on the card, its own pending session, the same
+  // runner frame as the DOB run.
+  if (request.action === 'START_GOOGLE_EMAIL_LOOKUP') {
+    startGoogleEmailLookupWithSettings(request, sendResponse);
+    return true;
+  }
+
+  // The widget's pop-out. A content script has no access to chrome.windows, so the panel asks here and
+  // the worker opens (or brings forward) the window - see openDetachedWindow.
+  if (request.action === 'OPEN_DETACHED_WINDOW') {
+    const returnTabId = sender && sender.tab && sender.tab.id ? sender.tab.id : null;
+    openDetachedWindow(returnTabId)
+      .then((result) => sendResponse(result))
+      .catch(() => sendResponse({ ok: false }));
+    return true;
+  }
+  // The Google AI Mode *gender* run: the icon beside a person's name, one name-only query.
+  if (request.action === 'START_GOOGLE_GENDER_LOOKUP') {
+    startGoogleGenderLookupWithSettings(request, sendResponse);
+    return true;
+  }
+  // The Google AI Mode *address resolver*: the Search button under a manual card.
+  if (request.action === 'START_GOOGLE_ADDRESS_LOOKUP') {
+    startGoogleAddressLookupWithSettings(request, sendResponse);
+    return true;
+  }
+  // The widget's refresh button: a whole-extension restart. The reply is the worker's last act before
+  // it reloads itself (see restartExtension), so it cannot be answered from anything but this call.
+  if (request.action === 'RESTART_EXTENSION') {
+    restartExtension(sender, sendResponse);
+    return true;
+  }
   if (request.action === 'DOB_LOOKUP_NEXT_ADDRESS') {
     // `force` is the page's last word: it asked for the next step, was told the page was still being
     // replaced, and asked again. Honouring it is what keeps a run from sitting on a page for ever.
@@ -352,6 +557,58 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   if (request.action === 'GOOGLE_LOOKUP_EMPTY') {
+    broadcastDobMessage(request);
+  }
+
+  // The Google AI Mode email run. Its messages name their record just like the DOB ones do, so the
+  // addresses it finds land on the card that asked for them and never on the other one.
+  if (request.action === 'GOOGLE_EMAIL_PROGRESS') {
+    broadcastDobMessage(request);
+  }
+  if (request.action === 'GOOGLE_EMAIL_RESULT') {
+    broadcastDobMessage(request);
+    // The email is on the card: park the runner and drop the pending session.
+    finishGoogleEmailLookup(true);
+  }
+  if (request.action === 'GOOGLE_EMAIL_NEXT_ADDRESS') {
+    nextGoogleEmailAddress(sendResponse);
+    return true;
+  }
+  if (request.action === 'GOOGLE_EMAIL_EMPTY') {
+    broadcastDobMessage(request);
+  }
+
+  // The Google AI Mode gender run: the icon beside a person's name. Its messages carry the record too,
+  // so the answer is drawn on the card whose person was asked about.
+  if (request.action === 'GOOGLE_GENDER_PROGRESS') {
+    broadcastDobMessage(request);
+  }
+  if (request.action === 'GOOGLE_GENDER_RESULT') {
+    broadcastDobMessage(request);
+    finishGoogleGenderLookup(true);
+  }
+  if (request.action === 'GOOGLE_GENDER_NEXT_ADDRESS') {
+    nextGoogleGenderAddress(sendResponse);
+    return true;
+  }
+  if (request.action === 'GOOGLE_GENDER_EMPTY') {
+    broadcastDobMessage(request);
+  }
+
+  // The Google AI Mode address resolver (the manual card's Search button). Its messages name their
+  // record too, so what it resolves is written onto the card that asked.
+  if (request.action === 'GOOGLE_ADDRESS_PROGRESS') {
+    broadcastDobMessage(request);
+  }
+  if (request.action === 'GOOGLE_ADDRESS_RESULT') {
+    broadcastDobMessage(request);
+    finishGoogleAddressLookup(true);
+  }
+  if (request.action === 'GOOGLE_ADDRESS_NEXT_ADDRESS') {
+    nextGoogleAddressQuery(sendResponse);
+    return true;
+  }
+  if (request.action === 'GOOGLE_ADDRESS_EMPTY') {
     broadcastDobMessage(request);
   }
 
@@ -1174,6 +1431,98 @@ function cancelVehicleLookup(sendResponse) {
   if (sendResponse) sendResponse({ success: true });
 }
 
+// Stops every run that is in flight: the phone lookup, the ride runs, the DOB runs and the Google run.
+// Each one hands the user's own tab back the way a normal finish does, so nothing is left mid-flight
+// with a tab open or a spinner turning.
+function stopEveryRun() {
+  // A phone lookup that is still waiting: answer it, then forget it. The widget bumps its own session
+  // id when the button is pressed, which is what makes it ignore anything this run still streams.
+  if (activeLookup) {
+    const run = activeLookup;
+    activeLookup = null;
+    if (run.timeoutId) clearTimeout(run.timeoutId);
+    if (!run.responded && run.sendResponse) {
+      try {
+        run.sendResponse({
+          success: false,
+          error: 'Cancelled by an extension restart.',
+          session: run.session || null
+        });
+      } catch (e) {}
+    }
+  }
+
+  // `prepareNext: false`: the frame is about to be destroyed by the reload, so parking a fresh page in
+  // the old one would be thrown away a moment later.
+  finishVehicleLookup({ clearQuote: true, prepareNext: false });
+  if (activeDobLookup) cancelDobLookup();
+  finishGoogleLookup(true);
+  finishGoogleEmailLookup(true);
+  finishGoogleGenderLookup(true);
+  finishGoogleAddressLookup(true);
+  setAmicaWarm(false);
+}
+
+// The widget's refresh button: a real, whole-extension restart.
+//
+// This is the one thing the widget cannot do for itself, and the reason the message exists at all.
+// `chrome.runtime.reload()` tears down the service worker, the offscreen document with every runner
+// frame inside it, and every extension page (popup, detached window), then loads all of them again
+// from scratch - the service worker starts afresh and boots a new offscreen document, the static
+// declarativeNetRequest rules are re-registered, and the widget is re-injected into the tab that asked
+// (see REINJECT_AFTER_RELOAD_KEY above). A clean slate no amount of re-initialising can match.
+//
+// The reply is sent **before** the reload, because the reload destroys this worker: the widget is told
+// "reloading" and stops spinning instead of waiting for a worker that is already gone.
+async function restartExtension(sender, sendResponse) {
+  const callerTabId = sender && sender.tab && sender.tab.id ? sender.tab.id : null;
+
+  // 1. Every run in flight, so the reload cannot happen underneath a run that has a tab open.
+  stopEveryRun();
+
+  // 2. The state those runs wrote. A killed run must not be picked up by the next page load.
+  try {
+    await chrome.storage.local.remove([
+      'amica_pending_quote',
+      'mercury_pending_quote',
+      'unmask_pending_lookup',
+      THATSTHEM_STORAGE_KEY,
+      GOOGLE_STORAGE_KEY,
+      GOOGLE_EMAIL_STORAGE_KEY,
+      GOOGLE_GENDER_STORAGE_KEY,
+      GOOGLE_ADDRESS_STORAGE_KEY
+    ]);
+  } catch (e) {}
+
+  // 3. Remember where to put the widget back, on the other side of the reload.
+  if (callerTabId) {
+    try {
+      await chrome.storage.local.set({
+        [REINJECT_AFTER_RELOAD_KEY]: { tabId: callerTabId, at: Date.now() }
+      });
+    } catch (e) {}
+  }
+
+  // 4. Answer first - this is the last message this worker will ever send - then reload.
+  if (sendResponse) {
+    sendResponse({ success: true, reload: true, tabId: callerTabId });
+  }
+
+  // 5. Every open widget takes itself out of its page. The reload invalidates all of them at once, and
+  //    a widget whose context is gone is an inert box whose buttons do nothing - so they are removed
+  //    rather than left behind. The tab that asked gets a fresh one from step 6 as soon as the new
+  //    worker starts; any other tab gets one the next time the toolbar icon is used there.
+  chrome.tabs.query({}, (tabs) => {
+    tabs.forEach((t) => {
+      if (t.id) chrome.tabs.sendMessage(t.id, { action: 'EXTENSION_RELOADING' }).catch(() => {});
+    });
+  });
+
+  setTimeout(() => {
+    chrome.runtime.reload();
+  }, 600);
+}
+
 function broadcastVehicleMessage(msg) {
   chrome.tabs.query({}, (tabs) => {
     tabs.forEach((t) => {
@@ -1821,7 +2170,7 @@ function finishGoogleLookup(silent, keepTab) {
   if (silent || !run || !run.session) return;
   broadcastDobMessage({
     action: 'GOOGLE_LOOKUP_EMPTY',
-    message: 'Google AI Mode did not name a birth month for any known address.',
+    message: 'AI did not name a birth month for any known address.',
     record: run.session.record || ''
   });
 }
@@ -1856,9 +2205,17 @@ async function openGoogleDebugTab(url) {
 // The AI Mode page asks what to ask next once an address has produced nothing. The address list
 // lives here, so this is where it is advanced - and where the run is ended when there is nothing
 // left to ask.
-function nextGoogleAddress(sendResponse) {
-  const run = activeGoogleLookup;
-  const session = run && run.session;
+async function nextGoogleAddress(sendResponse) {
+  let session = (activeGoogleLookup && activeGoogleLookup.session) || null;
+
+  // Recovered from storage when the worker was restarted between two addresses - see
+  // googlePendingSession. Otherwise an address that never answers would end the whole run.
+  if (!session) {
+    session = await googlePendingSession(GOOGLE_STORAGE_KEY);
+    if (session) {
+      activeGoogleLookup = { mode: 'offscreen', tabId: null, source: GOOGLE_RUNNER_FRAME, session };
+    }
+  }
 
   if (!session) {
     if (sendResponse) sendResponse({ exhausted: true });
@@ -1886,6 +2243,11 @@ async function startGoogleDobLookup(person, record) {
     // A press on either record card supersedes the previous Google run. The tab is kept (not
     // closed) because the next run navigates the same one.
     finishGoogleLookup(true, true);
+    // The Google runner is a single frame, and the DOB run needs the same search box the email run
+    // uses: whichever was asked for last is the one that runs.
+    finishGoogleEmailLookup(true);
+    finishGoogleGenderLookup(true);
+    finishGoogleAddressLookup(true);
 
     const queries = buildGoogleQueries(person);
     if (queries.length === 0) return;
@@ -1930,6 +2292,561 @@ async function startGoogleDobLookup(person, record) {
   } catch (e) {
     console.warn('[Background] Could not start the Google AI search:', e.message);
   }
+}
+
+// ------------------------------------------------------------------ Google AI Mode (email run)
+
+const MONTH_NAMES = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
+// The birth month a DOB string names, as a full month name - "February 1950", "Feb 1950",
+// "02/14/1950", "1950-02-14" - or "" when it names none ("1950", "1950 (year only)").
+//
+// The email query carries it when a previous search found one: "born in February 1950" places the
+// person far better than the bare year, and the AI's answer is asked to name the primary address's
+// owner, so a wrong candidate costs the whole run.
+function birthMonthName(dob) {
+  const text = String(dob || '').trim();
+  if (!text) return '';
+
+  // A month written by name, full or abbreviated.
+  for (const name of MONTH_NAMES) {
+    const prefix = name.slice(0, 3).toLowerCase();
+    if (new RegExp('\\b' + prefix + '[a-z]*\\b', 'i').test(text)) return name;
+  }
+
+  // A numeric date, whichever way round it is written.
+  const mdy = text.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})\b/);
+  if (mdy) {
+    const month = parseInt(mdy[1], 10);
+    if (month >= 1 && month <= 12) return MONTH_NAMES[month - 1];
+  }
+
+  const ymd = text.match(/\b(\d{4})[\/\-.](\d{1,2})[\/\-.](\d{1,2})\b/);
+  if (ymd) {
+    const month = parseInt(ymd[2], 10);
+    if (month >= 1 && month <= 12) return MONTH_NAMES[month - 1];
+  }
+
+  return '';
+}
+
+// The birth year the Google queries are disambiguated with: the record's own age or explicit birth year
+// where it names one ("72 yrs (1954)"), and otherwise the year out of the DOB the card already holds -
+// the DOB run's answer is on the card before Email is usually pressed, and it names the same person.
+//
+// A card that is being typed in by hand has neither until one of those runs has answered, and the
+// question is still worth asking without one. Requiring the year is what made a manual card's Email
+// button report "no address with a city and ZIP" while its address sat right there on the card.
+function birthYearForQuery(person, knownDob) {
+  const { targetYear } = parseTargetAgeAndYear(person);
+  if (targetYear) return String(targetYear);
+
+  const fromDob = String(knownDob == null ? '' : knownDob).match(/\b(1[89]\d{2}|20[0-2]\d)\b/);
+  return fromDob ? fromDob[1] : '';
+}
+
+// What the email run actually asks Google, one query per known address, primary address first:
+//
+//   "{name} lives at {address} born in {year} any public available primary email .
+//    gmail hotmail yahoo icloud are prefered"
+//
+// `knownDob` is whatever the card already holds - the Google row first, then Unmask's, then
+// ThatSthem's - and its month is used where it names one. The birth year comes from the record's age
+// ("71 yrs (1955)"), or from that same DOB when the record names no age; a card being typed in by hand
+// has neither, and the question is asked without it rather than not at all. Nothing else is added: the
+// last part of the query is the instruction that makes the answer come back as the one primary
+// address's owner rather than a list of lookalikes.
+function buildGoogleEmailQueries(person, knownDob) {
+  if (!person) return [];
+
+  const name = String(person.name || '').trim();
+  if (!name) return [];
+
+  const targetYear = birthYearForQuery(person, knownDob);
+  const month = birthMonthName(knownDob);
+  const bornIn = [month, targetYear].filter(Boolean).join(' ');
+  const bornClause = bornIn ? ` born in ${bornIn}` : '';
+
+  // normalizeAddressList puts the primary address first and drops entries with no city or ZIP -
+  // exactly the ones the AI cannot place.
+  const addresses = [];
+  for (const addr of normalizeAddressList(person)) {
+    const cityState = [addr.city, addr.state].filter(Boolean).join(', ');
+    const tail = [cityState, addr.zip].filter(Boolean).join(' ');
+    const line = [addr.street, tail]
+      .filter(Boolean)
+      .join(', ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    if (line && addresses.indexOf(line) < 0) addresses.push(line);
+    if (addresses.length >= GOOGLE_MAX_ADDRESSES) break;
+  }
+
+  return addresses.map(
+    (address) =>
+      `${name} lives at ${address}${bornClause} any public available primary email . gmail hotmail yahoo icloud are prefered`
+  );
+}
+
+// The email run is asked for by a button on the card. Google AI Mode is the one switch that governs
+// it (Settings -> DOB Sources -> AI): the run is a Google AI Mode query, and a user who turned AI Mode
+// off means no Google AI calls at all, whatever they are for.
+async function startGoogleEmailLookupWithSettings(request, sendResponse) {
+  const settings = await getAutomationSettings();
+  const sources = dobSourcesFromSettings(settings);
+  const record = request && request.record ? String(request.record) : '';
+
+  if (!sources.ai) {
+    const message = 'AI is switched off in Settings - turn it on to use it for emails.';
+    broadcastDobMessage({ action: 'GOOGLE_EMAIL_EMPTY', message, record });
+    if (sendResponse) sendResponse({ success: false, error: message });
+    return;
+  }
+
+  await startGoogleEmailLookup(request, sendResponse);
+}
+
+// Stops the Google email run. The runner frame is parked again; the visible debug tab (only ever there
+// with GOOGLE_VISIBLE) is left open, because every Google run reuses it. `silent` is used when a new
+// run is replacing this one, or when the page simply never answered - the card is not told anything it
+// did not ask for.
+function finishGoogleEmailLookup(silent) {
+  const run = activeGoogleEmailLookup;
+  activeGoogleEmailLookup = null;
+
+  chrome.storage.local.remove(GOOGLE_EMAIL_STORAGE_KEY).catch(() => {});
+  if (!GOOGLE_VISIBLE) {
+    chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: GOOGLE_RUNNER_FRAME }).catch(() => {});
+  }
+
+  if (silent || !run || !run.session) return;
+  broadcastDobMessage({
+    action: 'GOOGLE_EMAIL_EMPTY',
+    message: 'AI found no public email address for any known address.',
+    record: run.session.record || ''
+  });
+}
+
+// The session a Google run is walking, recovered from storage when the run in flight is gone.
+//
+// Every message wakes the service worker, but an idle worker is still torn down between two of them.
+// Without this recovery the run ended after the *first* address - which is exactly the address an
+// unanswered question needs to fall through from. The in-memory run is preferred where it exists,
+// because it carries the mode (the hidden offscreen frame, or the visible debug tab).
+async function googlePendingSession(storageKey) {
+  try {
+    const stored = await chrome.storage.local.get([storageKey]);
+    return (stored && stored[storageKey]) || null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// The AI Mode page asks what to ask next once an address has produced nothing. The address list lives
+// here, exactly as it does for the DOB run, and the answer is navigated to a new page load either way.
+async function nextGoogleEmailAddress(sendResponse) {
+  let session = (activeGoogleEmailLookup && activeGoogleEmailLookup.session) || null;
+
+  if (!session) {
+    session = await googlePendingSession(GOOGLE_EMAIL_STORAGE_KEY);
+    if (session) {
+      activeGoogleEmailLookup = { mode: 'offscreen', tabId: null, source: GOOGLE_RUNNER_FRAME, session };
+    }
+  }
+
+  if (!session) {
+    if (sendResponse) sendResponse({ exhausted: true });
+    return;
+  }
+
+  session.queryIndex += 1;
+  if (session.queryIndex >= session.queries.length) {
+    finishGoogleEmailLookup(false);
+    if (sendResponse) sendResponse({ exhausted: true });
+    return;
+  }
+
+  chrome.storage.local.set({ [GOOGLE_EMAIL_STORAGE_KEY]: session }).catch(() => {});
+  if (sendResponse) {
+    sendResponse({ nextQuery: session.queries[session.queryIndex], index: session.queryIndex });
+  }
+}
+
+// The email run itself. It shares the one Google runner frame with the DOB run, so starting it
+// supersedes a DOB run in flight - and `startGoogleDobLookup` supersedes this one in turn. One Google
+// page, one job: two AI Mode runs in one frame would fight over the same search box, and the sweep
+// that takes the query back out of Google's history needs the box to itself.
+async function startGoogleEmailLookup(request, sendResponse) {
+  try {
+    const person = request ? request.person : null;
+    const record = request && request.record ? String(request.record) : '';
+    const knownDob = request ? request.dob || '' : '';
+
+    finishGoogleEmailLookup(true);
+    finishGoogleGenderLookup(true);
+    finishGoogleAddressLookup(true);
+    finishGoogleLookup(true, true);
+
+    // Street-only records (infolookupp.com) carry no city or ZIP, and the AI cannot place an address
+    // without them - so they are completed first, the same way the Unmask leg of a DOB run does it.
+    // Without this the email run had a single usable address to ask, which is what left the record's
+    // other street addresses unasked.
+    if (person) {
+      try {
+        await completePersonAddresses(person);
+      } catch (e) {
+        console.warn('[Background] Could not complete email address:', e.message);
+      }
+    }
+
+    const queries = buildGoogleEmailQueries(person, knownDob);
+    if (queries.length === 0) {
+      // The two reasons a card can have no question worth asking, told apart: a card being typed in has
+      // no name until the user types one, and that is not the address's fault - reporting it as if it
+      // were sent the user looking at an address that was right there on the card.
+      const message = String((person && person.name) || '').trim()
+        ? 'This record has no address with a city and ZIP to ask Google about.'
+        : 'This card has no name to ask Google about yet - type one in first.';
+      broadcastDobMessage({ action: 'GOOGLE_EMAIL_EMPTY', message, record });
+      if (sendResponse) sendResponse({ success: false, error: message });
+      return;
+    }
+
+    const session = {
+      // The record card this run belongs to - echoed on every message it produces.
+      record,
+      targetName: person && person.name ? person.name : '',
+      // The month is only carried on the session so a diagnosis of a run is possible from storage.
+      knownDob: String(knownDob || ''),
+      queries,
+      queryIndex: 0,
+      status: 'searching',
+      startedAt: Date.now()
+    };
+
+    // Written before the runner loads: the content script reads it exactly once on load.
+    await chrome.storage.local.set({ [GOOGLE_EMAIL_STORAGE_KEY]: session });
+
+    const run = { mode: 'offscreen', tabId: null, source: GOOGLE_RUNNER_FRAME, session };
+
+    if (GOOGLE_VISIBLE) {
+      // Watch it work: a real tab, in front, so the query, the AI Mode switch and the answer - and the
+      // step-by-step history trace in that tab's console - can all be seen.
+      const tab = await openGoogleDebugTab(GOOGLE_HOME_URL);
+      run.mode = 'tab';
+      run.tabId = tab.id;
+    } else if (!(await startDobInOffscreen(GOOGLE_RUNNER_FRAME, GOOGLE_HOME_URL)).ok) {
+      const tab = await chrome.tabs.create({ url: GOOGLE_HOME_URL, active: false });
+      run.mode = 'tab';
+      run.tabId = tab.id;
+    }
+
+    activeGoogleEmailLookup = run;
+
+    // A run that never answers is over: the page has nothing left to show, so the runner is parked.
+    setTimeout(() => {
+      if (activeGoogleEmailLookup && activeGoogleEmailLookup.session === session) {
+        finishGoogleEmailLookup(false);
+      }
+    }, GOOGLE_EMAIL_RUN_BUDGET_MS);
+
+    if (sendResponse) sendResponse({ success: true, queries: queries.length });
+  } catch (e) {
+    console.warn('[Background] Could not start the Google email search:', e.message);
+    if (sendResponse) sendResponse({ success: false, error: e.message || 'Failed to start' });
+  }
+}
+
+// ------------------------------------------------------------------ Google AI Mode (gender run)
+
+// What the gender run asks Google, which is the whole question - the name, and nothing else:
+//
+//   "{name} is male or female?"
+//
+// There is deliberately no address or year in it: they would turn a question about a person into a
+// question about a record, and the answer's own wording ("John is traditionally a male given name") is
+// exactly what this run reads.
+function buildGoogleGenderQueries(person) {
+  const name = person ? String(person.name || '').trim() : '';
+  if (!name) return [];
+  return [`${name} is male or female?`];
+}
+
+// Stops the gender run. The runner frame is parked again; the visible debug tab (only ever there with
+// GOOGLE_VISIBLE) is left open because every Google run reuses it. `silent` is used when a new run is
+// replacing this one, or when the page simply never answered.
+function finishGoogleGenderLookup(silent) {
+  const run = activeGoogleGenderLookup;
+  activeGoogleGenderLookup = null;
+
+  chrome.storage.local.remove(GOOGLE_GENDER_STORAGE_KEY).catch(() => {});
+  if (!GOOGLE_VISIBLE) {
+    chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: GOOGLE_RUNNER_FRAME }).catch(() => {});
+  }
+
+  if (silent || !run || !run.session) return;
+  broadcastDobMessage({
+    action: 'GOOGLE_GENDER_EMPTY',
+    message: 'AI could not tell whether this person is male or female.',
+    record: run.session.record || ''
+  });
+}
+
+// The page asks what to ask next when a question produced nothing. There is only ever one query here,
+// so this is where a run that found no gender ends - with the card told, rather than left spinning.
+//
+// The session is read from the run in flight, and - when the worker was restarted between the page load
+// and this message - from the pending session it left behind (see googlePendingSession).
+async function nextGoogleGenderAddress(sendResponse) {
+  let session = (activeGoogleGenderLookup && activeGoogleGenderLookup.session) || null;
+  if (!session) session = await googlePendingSession(GOOGLE_GENDER_STORAGE_KEY);
+
+  if (session && (session.queryIndex || 0) + 1 < session.queries.length) {
+    session.queryIndex = (session.queryIndex || 0) + 1;
+    if (!activeGoogleGenderLookup) {
+      activeGoogleGenderLookup = { mode: 'offscreen', tabId: null, source: GOOGLE_RUNNER_FRAME, session };
+    }
+    chrome.storage.local.set({ [GOOGLE_GENDER_STORAGE_KEY]: session }).catch(() => {});
+    if (sendResponse) {
+      sendResponse({ nextQuery: session.queries[session.queryIndex], index: session.queryIndex });
+    }
+    return;
+  }
+
+  finishGoogleGenderLookup(false);
+  if (sendResponse) sendResponse({ exhausted: true });
+}
+
+// The gender run itself, started by the icon beside a person's name. It shares the one Google runner
+// frame with the birth-month run and the email run, so starting it supersedes both - one Google page,
+// one job.
+async function startGoogleGenderLookup(request, sendResponse) {
+  try {
+    const person = request ? request.person : null;
+    const record = request && request.record ? String(request.record) : '';
+
+    finishGoogleGenderLookup(true);
+    finishGoogleEmailLookup(true);
+    finishGoogleAddressLookup(true);
+    finishGoogleLookup(true, true);
+
+    const queries = buildGoogleGenderQueries(person);
+    if (queries.length === 0) {
+      const message = 'This card has no name to ask about.';
+      broadcastDobMessage({ action: 'GOOGLE_GENDER_EMPTY', message, record });
+      if (sendResponse) sendResponse({ success: false, error: message });
+      return;
+    }
+
+    const session = {
+      // The record card this run belongs to - echoed on every message it produces.
+      record,
+      targetName: person.name || '',
+      queries,
+      queryIndex: 0,
+      status: 'searching',
+      startedAt: Date.now()
+    };
+
+    // Written before the runner loads: the content script reads it exactly once on load.
+    await chrome.storage.local.set({ [GOOGLE_GENDER_STORAGE_KEY]: session });
+
+    const run = { mode: 'offscreen', tabId: null, source: GOOGLE_RUNNER_FRAME, session };
+
+    if (GOOGLE_VISIBLE) {
+      // Watch it work: a real tab, in front, with the whole history sweep traced in its console.
+      const tab = await openGoogleDebugTab(GOOGLE_HOME_URL);
+      run.mode = 'tab';
+      run.tabId = tab.id;
+    } else if (!(await startDobInOffscreen(GOOGLE_RUNNER_FRAME, GOOGLE_HOME_URL)).ok) {
+      const tab = await chrome.tabs.create({ url: GOOGLE_HOME_URL, active: false });
+      run.mode = 'tab';
+      run.tabId = tab.id;
+    }
+
+    activeGoogleGenderLookup = run;
+
+    // A run that never answers is over: the page has nothing left to show, so the runner is parked.
+    setTimeout(() => {
+      if (activeGoogleGenderLookup && activeGoogleGenderLookup.session === session) {
+        finishGoogleGenderLookup(false);
+      }
+    }, GOOGLE_GENDER_RUN_BUDGET_MS);
+
+    if (sendResponse) sendResponse({ success: true, queries: queries.length });
+  } catch (e) {
+    console.warn('[Background] Could not start the Google gender search:', e.message);
+    if (sendResponse) sendResponse({ success: false, error: e.message || 'Failed to start' });
+  }
+}
+
+// The gender run is governed by the same Settings switch as the other two Google jobs (DOB Sources ->
+// AI): a user who turned AI Mode off means no Google AI calls at all, whatever they are for.
+async function startGoogleGenderLookupWithSettings(request, sendResponse) {
+  const settings = await getAutomationSettings();
+  const sources = dobSourcesFromSettings(settings);
+  const record = request && request.record ? String(request.record) : '';
+
+  if (!sources.ai) {
+    const message = 'AI is switched off in Settings - turn it on to use it here.';
+    broadcastDobMessage({ action: 'GOOGLE_GENDER_EMPTY', message, record });
+    if (sendResponse) sendResponse({ success: false, error: message });
+    return;
+  }
+
+  await startGoogleGenderLookup(request, sendResponse);
+}
+
+// ------------------------------------------------------------------ Google AI Mode (address resolver)
+
+// What the manual card asks Google. Two questions about the same input, in the order the card uses
+// them: the first wants everything at once, the second is the plain address question that a page
+// answering nothing to the first will usually answer.
+//
+// The input is whatever the user typed into the card's address field - a ZIP, a city and state, a
+// street, or all of it. Nothing is parsed or completed here: the whole point of the run is that the AI
+// turns it into a full address.
+function buildGoogleAddressQueries(person) {
+  const name = person ? String(person.name || '').trim() : '';
+  const place = person
+    ? String(
+        person.addressInput ||
+          (person.address && (person.address.full || person.address.street || person.address.zip || person.address.city)) ||
+          ''
+      ).trim()
+    : '';
+
+  if (!name || !place) return [];
+
+  return [
+    `${name} lives at ${place} what is the full address, email and dob?`,
+    `${name} lives at ${place} whats the full address?`
+  ];
+}
+
+// Stops the resolver. The runner frame is parked again; the visible debug tab is left open because
+// every Google run reuses it. `silent` is used when a new run is replacing this one.
+function finishGoogleAddressLookup(silent) {
+  const run = activeGoogleAddressLookup;
+  activeGoogleAddressLookup = null;
+
+  chrome.storage.local.remove(GOOGLE_ADDRESS_STORAGE_KEY).catch(() => {});
+  if (!GOOGLE_VISIBLE) {
+    chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: GOOGLE_RUNNER_FRAME }).catch(() => {});
+  }
+
+  if (silent || !run || !run.session) return;
+  broadcastDobMessage({
+    action: 'GOOGLE_ADDRESS_EMPTY',
+    message: 'AI could not resolve a full address from what was typed in.',
+    record: run.session.record || ''
+  });
+}
+
+// The page asks for the next question when the one it just read produced nothing: that is query two.
+// The session is read from the run in flight, and - when the worker was restarted between the page load
+// and this message - from the pending session it left behind.
+async function nextGoogleAddressQuery(sendResponse) {
+  let session = (activeGoogleAddressLookup && activeGoogleAddressLookup.session) || null;
+  if (!session) session = await googlePendingSession(GOOGLE_ADDRESS_STORAGE_KEY);
+
+  if (session && (session.queryIndex || 0) + 1 < session.queries.length) {
+    session.queryIndex = (session.queryIndex || 0) + 1;
+    if (!activeGoogleAddressLookup) {
+      activeGoogleAddressLookup = { mode: 'offscreen', tabId: null, source: GOOGLE_RUNNER_FRAME, session };
+    }
+    chrome.storage.local.set({ [GOOGLE_ADDRESS_STORAGE_KEY]: session }).catch(() => {});
+    if (sendResponse) {
+      sendResponse({ nextQuery: session.queries[session.queryIndex], index: session.queryIndex });
+    }
+    return;
+  }
+
+  finishGoogleAddressLookup(false);
+  if (sendResponse) sendResponse({ exhausted: true });
+}
+
+// The resolver itself, started by the Search button under a manual card. It shares the one Google
+// runner frame with the other three AI jobs, so starting it supersedes them - one Google page, one job.
+async function startGoogleAddressLookup(request, sendResponse) {
+  try {
+    const person = request ? request.person : null;
+    const record = request && request.record ? String(request.record) : '';
+
+    finishGoogleAddressLookup(true);
+    finishGoogleGenderLookup(true);
+    finishGoogleEmailLookup(true);
+    finishGoogleLookup(true, true);
+
+    const queries = buildGoogleAddressQueries(person);
+    if (queries.length === 0) {
+      const message = 'Type a name and something of the address, then press Search again.';
+      broadcastDobMessage({ action: 'GOOGLE_ADDRESS_EMPTY', message, record });
+      if (sendResponse) sendResponse({ success: false, error: message });
+      return;
+    }
+
+    const session = {
+      // The record card this run belongs to - echoed on every message it produces.
+      record,
+      targetName: person.name || '',
+      queries,
+      queryIndex: 0,
+      status: 'searching',
+      startedAt: Date.now()
+    };
+
+    // Written before the runner loads: the content script reads it exactly once on load.
+    await chrome.storage.local.set({ [GOOGLE_ADDRESS_STORAGE_KEY]: session });
+
+    const run = { mode: 'offscreen', tabId: null, source: GOOGLE_RUNNER_FRAME, session };
+
+    if (GOOGLE_VISIBLE) {
+      // Watch it work: a real tab, in front, with the whole history sweep traced in its console.
+      const tab = await openGoogleDebugTab(GOOGLE_HOME_URL);
+      run.mode = 'tab';
+      run.tabId = tab.id;
+    } else if (!(await startDobInOffscreen(GOOGLE_RUNNER_FRAME, GOOGLE_HOME_URL)).ok) {
+      const tab = await chrome.tabs.create({ url: GOOGLE_HOME_URL, active: false });
+      run.mode = 'tab';
+      run.tabId = tab.id;
+    }
+
+    activeGoogleAddressLookup = run;
+
+    // A run that never answers is over: the page has nothing left to show, so the runner is parked.
+    setTimeout(() => {
+      if (activeGoogleAddressLookup && activeGoogleAddressLookup.session === session) {
+        finishGoogleAddressLookup(false);
+      }
+    }, GOOGLE_ADDRESS_RUN_BUDGET_MS);
+
+    if (sendResponse) sendResponse({ success: true, queries: queries.length });
+  } catch (e) {
+    console.warn('[Background] Could not start the Google address search:', e.message);
+    if (sendResponse) sendResponse({ success: false, error: e.message || 'Failed to start' });
+  }
+}
+
+// The resolver obeys the same Settings switch as the other three Google jobs (DOB Sources -> AI): a
+// user who turned AI Mode off means no Google AI calls at all, whatever they are for.
+async function startGoogleAddressLookupWithSettings(request, sendResponse) {
+  const settings = await getAutomationSettings();
+  const sources = dobSourcesFromSettings(settings);
+  const record = request && request.record ? String(request.record) : '';
+
+  if (!sources.ai) {
+    const message = 'AI is switched off in Settings - turn it on to use it here.';
+    broadcastDobMessage({ action: 'GOOGLE_ADDRESS_EMPTY', message, record });
+    if (sendResponse) sendResponse({ success: false, error: message });
+    return;
+  }
+
+  await startGoogleAddressLookup(request, sendResponse);
 }
 
 // A press on the DOB button runs only the platforms the Settings panel left switched on. The choice
@@ -2573,6 +3490,12 @@ function finishDobLookup() {
 
 function cancelDobLookup(sendResponse) {
   endDobLookup(activeDobLookup && activeDobLookup.session, 0);
+  // The card's Cancel button is one button for the whole DOB flow, and the Google email run draws in
+  // that same progress box - so it is stopped here too rather than left in the runner. So are the gender
+  // run and the manual card's address resolver, which use the same box.
+  finishGoogleEmailLookup(true);
+  finishGoogleGenderLookup(true);
+  finishGoogleAddressLookup(true);
   if (sendResponse) sendResponse({ success: true });
 }
 

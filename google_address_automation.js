@@ -1,14 +1,19 @@
-// Content script for the Google AI Mode birth-month lookup.
+// Content script for the Google AI Mode address resolver.
 //
 // Runs on https://www.google.com/* - in a background tab, or in the extension's hidden offscreen
-// runner. It is a *parallel* source for the DOB search: while Unmask and ThatSthem are being
-// walked, this asks Google AI Mode
+// runner. It is the fourth AI Mode job, and the only one that is asked about a *record the user typed
+// in by hand*: the manual card on a record offers a name field and an address field, and this run turns
+// whatever was typed there into the things a lookup needs. It asks, in order:
 //
-//   "{name} lives at {address} born in {year} in which month ? no rough guess accurate"
+//   "{name} lives at {however much of the address the user knows} what is the full address, email and dob?"
+//   "{name} lives at {that same input} whats the full address?"
 //
-// for the record's primary address first and then, one at a time, for its other addresses. What it
-// finds is reported as GOOGLE_DOB_RESULT and drawn as its own row next to the Unmask / ThatSthem
-// dates, so the two can be compared.
+// The second query is the fallback: the first one asks for three things at once and a page that answers
+// none of them usually answers the plain address question. Whatever is read out (the fuller name, the
+// street, city, state and ZIP, an email if the answer states one, and the birth date if it names one) is
+// reported as GOOGLE_ADDRESS_RESULT, and the card replaces what the user typed with it - so the DOB run,
+// the ride runs and the email run afterwards all work off a proper name, a complete address, and the
+// year the answer gave instead of asking blind.
 //
 // The page is opened at google.com, the query is typed into the search box and submitted with
 // Enter, and the results page is then switched into AI Mode (the "AI Mode" control, which is the
@@ -25,10 +30,10 @@
 (function () {
   "use strict";
 
-  if (window.__googleAiAutomationLoaded) return;
-  window.__googleAiAutomationLoaded = true;
+  if (window.__googleAddressAutomationLoaded) return;
+  window.__googleAddressAutomationLoaded = true;
 
-  var STORAGE_KEY = "google_pending_lookup";
+  var STORAGE_KEY = "google_address_pending_lookup";
   // Every wait in this file is a deadline sampled on this tick, so it is also the floor on how long
   // any one step appears to take: a gesture that the page acts on in 100 ms still waits for the next
   // tick before it is noticed. It is kept small for exactly that reason - the tick body is a handful
@@ -80,15 +85,27 @@
   // slow trip can never cost the run its result.
   var CLEANUP_GIVE_UP_AFTER_MS = 90000;
 
-  var FULL_MONTHS = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-  ];
+  // The pieces an answer's address is built from. A street line starts with the house number and
+  // carries one of these words; a ZIP is five digits; a state is one of the codes in the list below -
+  // checked against the list on purpose, so that "St NW" does not lose its last word to a two-letter
+  // "state".
+  var STREET_WORD_RE =
+    /\b(?:street|st|avenue|ave|road|rd|drive|dr|lane|ln|court|ct|circle|cir|boulevard|blvd|way|place|pl|terrace|ter|trail|trl|parkway|pkwy|highway|hwy|route|rt|loop|path|pike|square|sq|run|walk|bend|cove|point|ridge|spur|creek|crossing|xing|expressway|freeway|fwy|alley|nw|ne|sw|se|n|s|e|w)\b\.?/i;
+  var US_STATE_CODES =
+    "|AL|AK|AZ|AR|CA|CO|CT|DE|DC|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|";
 
-  // Long names first, so "January 1949" is read as January rather than as an abbreviation.
-  var MONTH_RE =
-    "(January|February|March|April|May|June|July|August|September|October|November|December" +
-    "|Sept|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)";
+  function isUsState(code) {
+    return US_STATE_CODES.indexOf("|" + String(code || "").toUpperCase() + "|") >= 0;
+  }
+
+  // The words an answer leads a birth date in with, the months a date can be written with, and the two
+  // shapes a date itself takes. The month names are case-sensitive on purpose: "born in March 1958" is a
+  // date, "the year may be 1958" is prose that happens to contain the same three letters.
+  var BIRTH_LEAD_RE = /\b(?:birth\s*year|birth\s*date|date\s*of\s*birth|year\s*of\s*birth|born|dob)\b/i;
+  var MONTH_WORD_RE =
+    /\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:t|tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\b/;
+  var STATED_DATE_RE = /\b\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{4}\b/;
+  var BIRTH_YEAR_RE = /\b(1[89]\d{2}|20[0-2]\d)\b/;
 
   function isVisible(el) {
     if (!el || !el.getBoundingClientRect) return false;
@@ -123,7 +140,7 @@
   function sendProgress(step, total, message) {
     try {
       chrome.runtime.sendMessage({
-        action: "GOOGLE_LOOKUP_PROGRESS",
+        action: "GOOGLE_ADDRESS_PROGRESS",
         step: step,
         totalSteps: total,
         message: message,
@@ -135,9 +152,16 @@
   function sendResult(found, query) {
     try {
       chrome.runtime.sendMessage({
-        action: "GOOGLE_DOB_RESULT",
-        dob: found.dob,
-        year: found.year,
+        action: "GOOGLE_ADDRESS_RESULT",
+        name: found.name || "",
+        street: found.address ? found.address.street || "" : "",
+        city: found.address ? found.address.city || "" : "",
+        state: found.address ? found.address.state || "" : "",
+        zip: found.address ? found.address.zip || "" : "",
+        addressFull: found.address ? found.address.full || "" : "",
+        email: found.email || "",
+        dob: found.dob || "",
+        dobNote: found.dobNote || "",
         note: found.note || "",
         source: "google.ai",
         query: query,
@@ -354,133 +378,286 @@
 
   // -------------------------------------------------------------------------- reading the answer
 
-  function monthIndex(name) {
-    var key = String(name || "").toLowerCase().replace(/\.$/, "").slice(0, 3);
-    for (var i = 0; i < FULL_MONTHS.length; i++) {
-      if (FULL_MONTHS[i].toLowerCase().slice(0, 3) === key) return i;
-    }
-    return -1;
-  }
-
-  // Every date the answer states, in any of the shapes it uses:
+  // The answers this run reads come in two shapes, and both are read line by line (the answer column
+  // renders the facts as their own lines):
   //
-  //   "October 8, 1951"   a full date
-  //   "October 1951"      month and year
-  //   "Oct. 8, 1951"
+  //   "The public record information found for Franklin C. Peugh (also matching Frank Cecil Peugh) at
+  //    the ZIP code 75115 is detailed below:"
+  //   "Full Address: 130 Meadowbrook Dr, Desoto, TX 75115 (located in the Mantlebrook neighborhood)."
+  //   "Email Address: fp@yahoo.com."
   //
-  // The day is optional and is kept when it is there. Month-then-year alone was the miss behind a
-  // whole date being reported as a bare year: "born on October 8, 1951" has a day between the month
-  // and the year, so it did not match at all, and the reader fell through to the year-only pattern.
-  function collectDates(text) {
-    var out = [];
-    var re = new RegExp(
-      "\\b" + MONTH_RE + "\\.?\\s+(?:(\\d{1,2})(?:st|nd|rd|th)?\\s*,?\\s+)?(\\d{4})\\b",
-      "gi"
-    );
-    var m;
-    while ((m = re.exec(text)) !== null) {
-      var idx = monthIndex(m[1]);
-      if (idx < 0) continue;
-      out.push({
-        month: FULL_MONTHS[idx],
-        day: m[2] ? parseInt(m[2], 10) : 0,
-        year: parseInt(m[3], 10),
-        index: m.index
-      });
-    }
-    return out;
+  //   "Jeffrey V. Green's full current address in the 44718 zip code is:"
+  //   "2700 Orchard Park St NW"
+  //   "Canton, OH 44718"
+  //
+  // So the name is read out of the lead sentence, the address out of a "Full Address:" row when there
+  // is one and out of the lines that follow the lead-in when there is not, and the email out of its own
+  // row. Everything is optional: a run that finds a street and nothing else still reports the street,
+  // because that is what the lookup after it can work with.
+
+  // Drops the asides an answer likes to add - "(located in the Mantlebrook neighborhood)" - and the
+  // punctuation around a value.
+  function stripAside(line) {
+    return String(line == null ? "" : line)
+      .replace(/\([^)]*\)/g, " ")
+      .replace(/\s+/g, " ")
+      .replace(/^[\s,;.]+|[\s,;.]+$/g, "")
+      .trim();
   }
 
-  // "October 8, 1951" when the answer states the day, "October 1951" when it only states the month.
-  function dateLabel(date) {
-    return date.day ? date.month + " " + date.day + ", " + date.year : date.month + " " + date.year;
+  // A line that reads like a street address: it starts with the house number and carries a street word.
+  function looksLikeStreet(line) {
+    var value = stripAside(line);
+    if (!/^\d{1,6}\s+\S/.test(value)) return false;
+    return STREET_WORD_RE.test(value);
   }
 
-  // A month+year inside a sentence about a birth is the answer; one that merely appears somewhere
-  // on the page is a last resort.
-  function scoreCandidate(candidate, text) {
-    var before = text.slice(Math.max(0, candidate.index - 80), candidate.index).toLowerCase();
-    if (/born|birth/.test(before)) return 3;
-    if (/\bage\b|\bdob\b/.test(before)) return 2;
-    return 1;
-  }
+  // "Desoto, TX 75115" -> its parts. A bare five-digit line is read as the ZIP alone.
+  function readCityStateZip(line) {
+    var value = stripAside(line);
+    if (!value) return null;
 
-  // The best birth month in the answer. The record's own birth year is the anchor: a date within
-  // two years of it is preferred, because the record's age is what says this is the right person.
-  function extractDob(text, expectedYear) {
-    if (!text) return null;
-
-    var dates = collectDates(text).map(function (d) {
-      d.score = scoreCandidate(d, text);
-      return d;
-    });
-
-    // The record's own birth year is the anchor and it is a *requirement*, not a preference. The
-    // answer text names relatives and cited records as well, so a date that contradicts the record
-    // belongs to somebody else - reporting it would be worse than reporting nothing.
-    if (expectedYear) {
-      dates = dates.filter(function (d) {
-        return Math.abs(d.year - expectedYear) <= 2;
-      });
-    }
-
-    if (dates.length > 0) {
-      dates.sort(function (a, b) {
-        if (b.score !== a.score) return b.score - a.score;
-        if (expectedYear) {
-          var da = Math.abs(a.year - expectedYear);
-          var db = Math.abs(b.year - expectedYear);
-          if (da !== db) return da - db;
-        }
-        return a.index - b.index;
-      });
-
-      var best = dates[0];
-      // No note on the row: the difference between the answer's year and the record's is not
-      // reported. A date outside the window was refused above, so whatever reaches here is already
-      // this record's person - the row just shows the date the answer gave.
+    var withState = value.match(/\b([A-Z]{2})\s+(\d{5})(?:-\d{4})?\b/);
+    if (withState && isUsState(withState[1])) {
       return {
-        dob: dateLabel(best),
-        year: best.year,
-        day: best.day,
-        score: best.score,
-        note: ""
+        city: value.slice(0, withState.index).replace(/[,\s]+$/, "").trim(),
+        state: withState[1],
+        zip: withState[2]
       };
     }
 
-    // The answer may name the month on its own - "His exact birth month is October." - which is the
-    // literal answer to the question. The record's own year completes it, and the row says so rather
-    // than passing it off as a date the answer stated.
-    var monthOnly = text.match(
-      /\bbirth\s+month\b[^.\n]{0,30}?\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i
-    );
-    if (monthOnly) {
-      var mi = monthIndex(monthOnly[1]);
-      if (mi >= 0) {
-        var monthName = FULL_MONTHS[mi];
-        return {
-          dob: expectedYear ? monthName + " " + expectedYear : monthName,
-          year: expectedYear || null,
-          day: 0,
-          score: 3,
-          note: "month only"
-        };
-      }
-    }
-
-    // No month stated at all. A birth year on its own is still worth showing - the Unmask and
-    // ThatSthem rows mark year-only values the same way.
-    var ym = text.match(/\bborn[^.\n]{0,40}?\b(19\d{2}|20[0-1]\d)\b/i);
-    if (ym) {
-      var year = parseInt(ym[1], 10);
-      if (!expectedYear || Math.abs(year - expectedYear) <= 2) {
-        return { dob: String(year), year: year, day: 0, score: 2, note: "year only" };
-      }
+    var zipOnly = value.match(/\b(\d{5})(?:-\d{4})?\b/);
+    if (zipOnly && value.replace(/[^A-Za-z]/g, "").length <= 2) {
+      return { city: "", state: "", zip: zipOnly[1] };
     }
 
     return null;
   }
 
+  // "130 Meadowbrook Dr, Desoto, TX 75115" -> street, city, state and ZIP, read from the end so that a
+  // street with commas in it survives.
+  function structureAddress(value) {
+    var full = String(value == null ? "" : value).replace(/\s+/g, " ").replace(/^[\s,]+|[\s,]+$/g, "");
+    if (!full) return null;
+
+    var rest = full;
+    var zip = "";
+    var state = "";
+
+    var zipMatch = rest.match(/\b(\d{5})(?:-\d{4})?\b\s*$/);
+    if (zipMatch) {
+      zip = zipMatch[1];
+      rest = rest.slice(0, zipMatch.index).replace(/[,\s]+$/, "");
+    }
+
+    var stateMatch = rest.match(/\b([A-Za-z]{2})\s*$/);
+    if (stateMatch && isUsState(stateMatch[1])) {
+      state = stateMatch[1].toUpperCase();
+      rest = rest.slice(0, stateMatch.index).replace(/[,\s]+$/, "");
+    }
+
+    var street = "";
+    var city = "";
+    if (state || zip) {
+      var commaAt = rest.lastIndexOf(",");
+      if (commaAt >= 0) {
+        street = rest.slice(0, commaAt).trim();
+        city = rest.slice(commaAt + 1).trim();
+      } else {
+        city = rest;
+      }
+    } else {
+      street = rest;
+    }
+
+    return { street: street, city: city, state: state, zip: zip, full: full };
+  }
+  // The name the answer writes the person under. It is in the lead sentence: possessively
+  // ("Jeffrey V. Green's full current address ...") or after "found for" / "records for" ("The public
+  // record information found for Franklin C. Peugh (also matching ...)"). Nothing else is guessed at -
+  // a lead sentence this reader cannot place yields no name, and the user's own stands.
+  function readAnswerName(lines) {
+    var first = String((lines && lines[0]) || "").trim();
+    if (!first) return "";
+
+    var possessive = first.match(/^([A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){0,3})['\u2019]s\b/);
+    if (possessive) return possessive[1].trim();
+
+    var foundFor = first.match(/\bfor\s+([A-Z][A-Za-z.'-]*(?:\s+[A-Z][A-Za-z.'-]*){0,3})\b/);
+    if (foundFor) return foundFor[1].trim();
+
+    return "";
+  }
+
+  // Whether the name the answer used is the person the user typed. The answer generally writes a fuller
+  // form than the user did ("Frank Peugh" -> "Franklin C. Peugh", "Jeff Green" -> "Jeffrey V. Green"),
+  // so a shared word - or one word starting the other - is what counts. A name that shares nothing is
+  // refused: replacing the user's name with a stranger's would make every later lookup about the wrong
+  // person.
+  function samePersonName(candidate, expected) {
+    function words(value) {
+      return String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z\s'-]/g, " ")
+        .split(/\s+/)
+        .filter(Boolean);
+    }
+
+    var want = words(expected);
+    if (!want.length) return true;
+
+    var got = words(candidate);
+    if (!got.length) return false;
+
+    for (var i = 0; i < want.length; i++) {
+      for (var j = 0; j < got.length; j++) {
+        if (want[i] === got[j]) return true;
+        if (want[i].length >= 3 && got[j].length >= 3) {
+          if (got[j].indexOf(want[i]) === 0 || want[i].indexOf(got[j]) === 0) return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  // The address written into a sentence, when it is: "The full address for Jeffrey V. Green in Canton, OH
+  // is 2700 Orchard Park St NW, Canton, OH 44718." The address itself still begins with a house number,
+  // so it is found wherever in the line that number sits, and the sentence's full stop ends it - the rest
+  // of the sentence is prose, not part of the address.
+  function readInlineAddress(line) {
+    var text = stripAside(String(line || ""));
+    var start = text.search(/\b\d{1,6}\s+[A-Za-z]/);
+    if (start < 0) return "";
+
+    var candidate = text.slice(start);
+    var stop = candidate.search(/\.(?=\s|$)/);
+    if (stop >= 0) candidate = candidate.slice(0, stop);
+    candidate = candidate.replace(/[,\s]+$/, "").trim();
+
+    return candidate && looksLikeStreet(candidate) ? candidate : "";
+  }
+
+  // The full address the answer states.
+  function readAnswerAddress(lines) {
+    var i;
+
+    // 1. A labelled row: "Full Address: 130 Meadowbrook Dr, Desoto, TX 75115 (located in ...)".
+    for (i = 0; i < lines.length; i++) {
+      var labelled = String(lines[i]).match(/\bfull\s+(?:current\s+)?address\b[^:]{0,40}:\s*(.+)$/i);
+      if (!labelled) continue;
+      var value = stripAside(labelled[1]);
+      if (value) return structureAddress(value);
+    }
+
+    // 2. A lead-in ending in a colon, with the address on the line (or two) under it.
+    for (i = 0; i < lines.length - 1; i++) {
+      if (!/:\s*$/.test(String(lines[i]).trim())) continue;
+      if (!looksLikeStreet(lines[i + 1])) continue;
+      var tail = readCityStateZip(lines[i + 2]) ? lines[i + 2] : "";
+      return structureAddress([stripAside(lines[i + 1]), stripAside(tail)].filter(Boolean).join(", "));
+    }
+
+    // 3. A street line, wherever in the line the address begins: on a line of its own, or written into a
+    //    sentence ("...in Canton, OH is 2700 Orchard Park St NW, Canton, OH 44718."). The asides are
+    //    skipped ("He also previously lived nearby at 2646 Orchard Park St NW ..."): the current address
+    //    is the one the answer states plainly.
+    for (i = 0; i < lines.length; i++) {
+      if (/previously|former|also lived|used to live|prior address|previous address/i.test(lines[i])) continue;
+
+      var whole = stripAside(lines[i]);
+      var street = readInlineAddress(whole) || (looksLikeStreet(whole) ? whole : "");
+      if (!street) continue;
+
+      var carriesCity = readCityStateZip(street) ? true : false;
+      var next = readCityStateZip(lines[i + 1]) ? stripAside(lines[i + 1]) : "";
+
+      if (carriesCity) return structureAddress(street);
+      return structureAddress([street, next].filter(Boolean).join(", "));
+    }
+
+    return null;
+  }
+
+  // The email the answer states, when it states one.
+  function readAnswerEmail(lines, text) {
+    for (var i = 0; i < lines.length; i++) {
+      var labelled = String(lines[i]).match(/\be-?mail\s+address\b[^:]{0,30}:\s*(.+)$/i);
+      if (!labelled) continue;
+      var found = stripAside(labelled[1]).match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+      if (found) return found[0].toLowerCase();
+    }
+
+    var any = String(text || "").match(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/);
+    return any ? any[0].toLowerCase() : "";
+  }
+
+  // The birth date the answer names, in the answer's own words: "1958 or early 1959" out of "given the
+  // current year is 2026, his birth year is 1958 or early 1959", "March 1958" out of "born in March
+  // 1958", or a stated date of birth exactly as it is written ("09/16/1963").
+  //
+  // The hedge around the year is kept, because it is the AI saying how sure it is and that belongs on the
+  // card beside the year; `note` says how much of a date was actually named, in the same words the DOB
+  // run uses for its weaker rows ("year only", "month/day unknown"), and "" for a whole date.
+  function readAnswerBirthDate(lines) {
+    for (var i = 0; i < lines.length; i++) {
+      var line = stripAside(lines[i]);
+      if (!BIRTH_LEAD_RE.test(line)) continue;
+
+      var stated = line.match(STATED_DATE_RE);
+      if (stated) return { value: stated[0], note: "" };
+
+      var tail = line.slice(line.search(BIRTH_LEAD_RE));
+      var year = tail.match(BIRTH_YEAR_RE);
+      if (!year) continue;
+
+      // The month has to sit between the lead-in and the year ("born in March 1958") - a month named
+      // elsewhere in the line ("records from March 2020 list his birth year as 1958") is not the date.
+      var month = (tail.slice(0, year.index).match(MONTH_WORD_RE) || [])[0] || "";
+      var after = tail.slice(year.index + year[0].length);
+      var hedge = (
+        after.match(/^\s*(?:-|\u2013|\u2014)?\s*(?:or|to)\s+(?:early\s+|late\s+|mid-?)?(?:1[89]\d{2}|20[0-2]\d)/i) ||
+        [""]
+      )[0];
+
+      var value = ((month ? month + " " : "") + year[0] + hedge).replace(/\s+/g, " ").trim();
+      return { value: value, note: month ? "month/day unknown" : "year only" };
+    }
+
+    return null;
+  }
+
+  // Everything this run was asked for, in one object - or null when the answer held none of it.
+  function extractAddressRecord(text, expectedName) {
+    if (!text) return null;
+
+    var lines = String(text)
+      .split(/\n+/)
+      .map(function (line) {
+        return line.replace(/\s+/g, " ").trim();
+      })
+      .filter(Boolean);
+    if (!lines.length) return null;
+
+    var name = readAnswerName(lines);
+    if (name && !samePersonName(name, expectedName)) name = "";
+
+    var address = readAnswerAddress(lines);
+    var email = readAnswerEmail(lines, text);
+    var birthDate = readAnswerBirthDate(lines);
+
+    if (!name && !address && !email && !birthDate) return null;
+
+    return {
+      name: name || "",
+      address: address,
+      email: email || "",
+      // The date the answer named, if it named one, and how much of a date that was.
+      dob: birthDate ? birthDate.value : "",
+      dobNote: birthDate ? birthDate.note : "",
+      // A street with no city or ZIP is still worth reporting: the run that follows completes it.
+      note: address && address.street && !address.zip ? "no ZIP in the answer" : ""
+    };
+  }
   // ------------------------------------------------------------- removing the search-history entry
   //
   // Google remembers the query the run typed and offers that string straight back in the box's
@@ -544,17 +721,26 @@
     return !!left && left === right;
   }
 
-  // The exact shape of every query this extension types:
+  // The exact shape of the queries this extension types - this run's own two, and the other three AI
+  // runs' (which are swept up as well, because all four are ours and a sweep that only knew its own
+  // would leave the others' entries behind):
+  //
+  //   "{name} lives at {input} what is the full address, email and dob?"
+  //   "{name} lives at {input} whats the full address?"
+  //   "{name} is male or female?"
+  //   "{name} lives at {address} born in {year|Month year} any public available primary email .
+  //    gmail hotmail yahoo icloud are prefered"
   //   "{name} lives at {address} born in {year} in which month ? no rough guess accurate"
+  //
   // It is anchored at the end on purpose: a row that merely *mentions* those words (a user's own
   // longer search, or a variant of one) is not one of ours and is left alone. Nothing a person types
   // by hand ends like this, so a row that matches can only have come from an earlier run - which is
   // why those stale entries are swept up as well.
-  var DOB_QUERY_RE =
-    /\blives? at\b[\s\S]{0,160}\bborn in\s+(?:19|20)\d{2}\s+in which month\s*\?\s*no rough guess accurate$/i;
+  var OWN_QUERY_RE =
+    /(?:\blives? at\b[\s\S]{0,200}\bborn in\b[\s\S]{0,200}(?:no rough guess accurate|are prefered)|\bis\s+male\s+or\s+female\b[^?]{0,4}\?|\blives? at\b[\s\S]{0,200}\bwhats?\s+(?:is\s+)?the\s+full\s+(?:current\s+)?address\b[\s\S]{0,60}\?)\s*$/i;
 
   function isOwnQueryText(text) {
-    return !!text && DOB_QUERY_RE.test(text);
+    return !!text && OWN_QUERY_RE.test(text);
   }
 
   // The string a suggestion stands for: `data-entityname` is Google's own copy of it, the option
@@ -1014,7 +1200,7 @@
 
   // ---------------------------------------------------------------------------------- the run
 
-  // This address did not produce a birth month. The background owns the list of addresses, so it is
+  // This question did not produce a usable answer. The background owns the run, so it is
   // asked for the next one; when there is none left it reports the empty result itself.
   function requestNextAddress(state, reason) {
     state.reported = true;
@@ -1022,7 +1208,7 @@
     sendProgress(2, 3, reason);
     try {
       chrome.runtime.sendMessage(
-        { action: "GOOGLE_DOB_NEXT_ADDRESS", record: sessionRecord(), reason: reason },
+        { action: "GOOGLE_ADDRESS_NEXT_ADDRESS", record: sessionRecord(), reason: reason },
         function (res) {
           if (chrome.runtime.lastError) return;
           if (!res || res.exhausted || !res.nextQuery) return;
@@ -1049,11 +1235,10 @@
       reloads: 0,
       startedAt: Date.now(),
       result: {
-        dob: found.dob,
-        year: found.year,
-        note: found.note || "",
-        day: found.day || 0,
-        score: found.score || 0
+        name: found.name || "",
+        address: found.address || null,
+        email: found.email || "",
+        note: found.note || ""
       }
     };
 
@@ -1228,7 +1413,7 @@
 
     var query = currentQuery(session);
     if (!query) return;
-    var expectedYear = session.targetYear || null;
+    var expectedName = session.targetName || "";
 
     var state = {
       startedAt: Date.now(),
@@ -1257,7 +1442,7 @@
       stableAt: 0
     };
 
-    sendProgress(1, 3, "Asking AI about " + (session.targetName || "this person") + "...");
+    sendProgress(1, 3, "Asking AI for " + (session.targetName || "this person") + "'s full address...");
     traceHistory("run start on " + String(window.location.href) + " - the query is: " + query);
     state.interval = setInterval(tick, TICK_MS);
     tick();
@@ -1324,8 +1509,8 @@
         return;
       }
 
-      // 3. AI Mode is open: wait for the answer paragraph to arrive, then read the birth month out of
-      // it. Nothing is read until a paragraph is actually there - and only that paragraph is read.
+      // 3. AI Mode is open: wait for the answer to arrive, then read the name and the full address out
+      // of it. Nothing is read until a paragraph is actually there.
       var waited = Date.now() - state.startedAt;
       var text = answerText();
 
@@ -1350,7 +1535,7 @@
       var settled = stableFor >= ANSWER_STABLE_MS || waited >= ANSWER_MAX_MS;
       if (!settled || waited < ANSWER_MIN_MS) return;
 
-      var found = extractDob(text, expectedYear);
+      var found = extractAddressRecord(text, expectedName);
       if (found) {
         // The search that produced this is now in Google's history, and Google needs a moment to record
         // it: the run goes back to google.com, refreshes until the entry shows up, deletes it, and only
@@ -1367,11 +1552,11 @@
         return;
       }
 
-      // The paragraph is complete and holds no birth month that agrees with the record, so this
-      // address gave nothing.
+      // The answer is complete and states no name, no address and no email this run can use - which is
+      // the case the second query exists for.
       requestNextAddress(
         state,
-        "AI's answer did not name a birth month for this address."
+        "AI's answer held no address for this person."
       );
     }
   }

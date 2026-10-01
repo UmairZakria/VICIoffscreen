@@ -12,10 +12,7 @@
     <div id="login-overlay" class="login-overlay">
       <div class="login-card">
         <div class="login-badge-icon">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-          </svg>
+          <img src="logo.png" alt="Auto Lookup" />
         </div>
         <h2 class="login-title">Sign In to Auto Lookup</h2>
         <p class="login-subtitle">Enter your account credentials to access compliance lookups</p>
@@ -163,14 +160,17 @@
             <div class="person-meta">
               <div class="name-row">
                 <h2 id="person-name" class="person-name">-</h2>
+                <button id="person-gender-btn" class="gender-btn" type="button" title="Check gender with AI" aria-label="Check gender with AI">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="13" r="4.5"/><path d="M10 17.5V22"/><path d="M7.5 19.8h5"/><path d="M13.2 9.8 19 4"/><path d="M14 4h5v5"/></svg>
+                </button>
                 <div class="person-actions">
                   <button id="copy-name-btn" class="mini-copy-btn" title="Copy Name" type="button">
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"></rect><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"></path></svg>
                     <span>Copy</span>
                   </button>
-                  <button id="person-amica-btn" class="mini-btn vehicle-btn" type="button" title="Discover vehicles on Ride 1">Ride 1</button>
-                  <button id="person-mercury-btn" class="mini-btn vehicle-btn" type="button" title="Discover vehicles on Ride 2">Ride 2</button>
+                  <button id="person-amica-btn" class="mini-btn vehicle-btn" type="button" title="Discover vehicles on this record">Rides</button>
                   <button id="person-dob-btn" class="mini-btn dob-btn" type="button" title="Deep research DOB on Unmask">DOB</button>
+                  <button id="person-email-btn" class="mini-btn dob-btn" type="button" title="Find the public primary email with AI">Email</button>
                 </div>
               </div>
               <div class="age-dob-row">
@@ -196,7 +196,7 @@
         <div class="vehicle-progress-box hidden" id="card-vehicle-progress">
           <div class="vehicle-progress-header">
             <div class="vehicle-progress-left">
-              <span class="vehicle-provider-tag" id="vehicle-provider-tag">Ride 1</span>
+              <span class="vehicle-provider-tag" id="vehicle-provider-tag">Rides</span>
               <span class="vehicle-progress-status" id="vehicle-progress-status">Starting lookup...</span>
             </div>
             <button class="vehicle-cancel-btn" id="vehicle-cancel-btn" type="button">✕ Cancel</button>
@@ -303,6 +303,11 @@
           <input type="checkbox" class="setting-toggle" data-setting="records.record2" />
           <span class="setting-track"><span class="setting-knob"></span></span>
         </label>
+        <label class="setting-row">
+          <span class="setting-label">Record 3</span>
+          <input type="checkbox" class="setting-toggle" data-setting="records.record3" />
+          <span class="setting-track"><span class="setting-knob"></span></span>
+        </label>
       </div>
 
       <div class="sidebar-section-header">
@@ -342,6 +347,11 @@
         <label class="setting-row">
           <span class="setting-label">Record 2</span>
           <input type="checkbox" class="setting-toggle" data-setting="dnc.record2" />
+          <span class="setting-track"><span class="setting-knob"></span></span>
+        </label>
+        <label class="setting-row">
+          <span class="setting-label">Record 3</span>
+          <input type="checkbox" class="setting-toggle" data-setting="dnc.record3" />
           <span class="setting-track"><span class="setting-knob"></span></span>
         </label>
       </div>

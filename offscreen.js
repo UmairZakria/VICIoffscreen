@@ -11,6 +11,9 @@
 const RUNNERS = {
   'infolookup.site': { frameId: 'frame-infolookup', url: 'https://infolookup.site/' },
   'infolookupp.com': { frameId: 'frame-infolookupp', url: 'https://infolookupp.com/' },
+  // Record 3. Its own page: the same phone box shape as the other two lookup sites, but its own
+  // answer format (a TCPA row per check, and the owners under `.cx-info`).
+  'uspeoplesearch.net': { frameId: 'frame-uspeoplesearch', url: 'https://www.uspeoplesearch.net/' },
   'amica.com': { frameId: 'frame-amica', url: 'https://www.amica.com/' },
   'unmask.com': { frameId: 'frame-unmask', url: 'https://unmask.com/' },
   'thatsthem.com': { frameId: 'frame-thatsthem', url: 'https://thatsthem.com/' },

@@ -32,11 +32,13 @@ function ok(name, condition) {
 const SETTING_KEYS = [
   'records.record1',
   'records.record2',
+  'records.record3',
   'dob.unmask',
   'dob.thatsthem',
   'dob.ai',
   'dnc.record1',
-  'dnc.record2'
+  'dnc.record2',
+  'dnc.record3'
 ];
 
 // ---- source slicing ---------------------------------------------------------
@@ -248,7 +250,7 @@ const flip = (panel, key) => byKey(panel, key)._input.flip();
   const written = p4.writes[0].automation_settings;
   ok('written under automation_settings', !!written);
   check('the flipped switch is off', written.dob.ai, false);
-  check('the other switches are untouched', JSON.stringify(written.records), JSON.stringify({ record1: true, record2: true }));
+  check('the other switches are untouched', JSON.stringify(written.records), JSON.stringify({ record1: true, record2: true, record3: true }));
   ok('the flipped row is painted as off', byKey(p4, 'dob.ai')._classes.has('off'));
   flip(p4, 'dob.ai');
   check('flipping back is on again', p4.writes[1].automation_settings.dob.ai, true);
@@ -281,34 +283,43 @@ const flip = (panel, key) => byKey(panel, key)._input.flip();
   check('widget writes the same key', w.writes[0].automation_settings.dnc.record2, false);
 
   // ---- 8. Every panel offers exactly these switches ------------------------
-  ['popup.html', 'window.html', 'widget.js'].forEach((file) => {
+  // The detached window is not a surface of its own any more: window.html loads widget.js, so the panel
+  // in that window is the same panel - and its switches are widget.js's.
+  ['popup.html', 'widget.js'].forEach((file) => {
     check(`${file} offers every switch`, settingKeysInMarkup(file).join(','), SETTING_KEYS.join(','));
   });
+  ok(
+    'the detached window is the panel itself',
+    readSource('window.html').includes('src="widget.js"')
+  );
 
   // ---- 9. The source names stay out of the UI ------------------------------
-  ['popup.html', 'window.html', 'widget.js'].forEach((file) => {
+  ['popup.html', 'widget.js'].forEach((file) => {
     const src = readSource(file);
     ok(`${file} says Record 1`, src.includes('>Record 1<'));
     ok(`${file} says Record 2`, src.includes('>Record 2<'));
     ok(`${file} has no lookup domain in markup`, !src.includes('>infolookup.site<') && !src.includes('>infolookupp.com<'));
   });
-  ['popup.html', 'window.html'].forEach((file) => {
+  ['popup.html'].forEach((file) => {
     const src = readSource(file);
-    ok(`${file} says Ride 1`, src.includes('>Ride 1<'));
-    ok(`${file} says Ride 2`, src.includes('>Ride 2<'));
+    ok(`${file} says Rides`, src.includes('>Rides<'));
+    ok(`${file} has no second ride action`, !src.includes('person-mercury-btn'));
     ok(`${file} names no provider`, !src.includes('>Amica<') && !src.includes('>Mercury<'));
   });
   const widgetSrc = readSource('widget.js');
-  ok('widget rides are labelled, not named', widgetSrc.includes('${rideLabel("amica")}') && !widgetSrc.includes('>Amica</button>'));
+  ok(
+    'widget rides are labelled, not named',
+    widgetSrc.includes('${rideLabel("amica")}') && !widgetSrc.includes('mercury-action-btn')
+  );
 
   // ---- 10. The background reads the same settings --------------------------
   const bg = backgroundFactory()({});
   const defaults = bg.normalizeAutomationSettings(null);
-  check('both records are searched by default', bg.enabledRecordSources(defaults).join(','), 'infolookup.site,infolookupp.com');
+  check('every record is searched by default', bg.enabledRecordSources(defaults).join(','), 'infolookup.site,infolookupp.com,uspeoplesearch.net');
   check(
     'a record switched off is not searched',
     bg.enabledRecordSources({ records: { record2: false } }).join(','),
-    'infolookup.site'
+    'infolookup.site,uspeoplesearch.net'
   );
   check('a record switched off reads as off', bg.settingValue({ records: { record2: false } }, 'records.record2'), false);
   check('a missing record reads as on', bg.settingValue({ records: {} }, 'records.record2'), true);
@@ -319,7 +330,7 @@ const flip = (panel, key) => byKey(panel, key)._input.flip();
   );
   check('record keys map to settings keys', bg.recordKey('infolookup.site') + ',' + bg.recordKey('infolookupp.com'), 'record1,record2');
   check('records are labelled, not named', bg.recordLabel('infolookup.site') + '/' + bg.recordLabel('infolookupp.com'), 'Record 1/Record 2');
-  check('rides are labelled, not named', bg.rideLabel('amica') + '/' + bg.rideLabel('mercury'), 'Ride 1/Ride 2');
+  check('rides are labelled, not named', bg.rideLabel('amica') + '/' + bg.rideLabel('mercury'), 'Rides/Rides');
 
   // ---- 11. The background really gates on them -----------------------------
   const bgSrc = readSource('background.js');
@@ -338,7 +349,8 @@ const flip = (panel, key) => byKey(panel, key)._input.flip();
   ok('no recorder messages are handled', !/MOUSE_RECORDING|START_MOUSE_RECORDING|recorded_macro/.test(allSrc));
 
   // ---- 13. Every element id the panel asks for exists in its markup --------
-  ['popup.js', 'window.js'].forEach((file) => {
+  // window.js is no longer a surface: the detached window runs widget.js, whose ids are checked below.
+  ['popup.js'].forEach((file) => {
     const html = file.replace('.js', '.html');
     const ids = idsInMarkup(html);
     const wanted = ['settings-toggle-btn', 'settings-sidebar', 'close-sidebar-btn', 'sidebar-backdrop'];
@@ -349,6 +361,95 @@ const flip = (panel, key) => byKey(panel, key)._input.flip();
     'widget ids all exist in its markup',
     ['settings-toggle-btn', 'settings-sidebar', 'close-sidebar-btn'].filter((id) => !widgetIds.has(id)).join(', '),
     ''
+  );
+
+  // ---- 12. The sign-in panel keeps the contract its code reads -------------------
+  // The panel is markup and sign-in is JavaScript; what joins them is the ids. A redesign that drops one
+  // of them breaks sign-in silently, which is exactly what this guards.
+  const signInSrc = readSource('widget.js');
+  const signInIds = [
+    'widget-auth-view',
+    'widget-auth-alert',
+    'widget-auth-alert-text',
+    'widget-auth-form',
+    'widget-auth-username',
+    'widget-auth-password',
+    'widget-auth-submit',
+    'widget-auth-btn-text',
+    'widget-auth-spinner'
+  ];
+  check(
+    'the sign-in panel carries every id the sign-in code reads',
+    signInIds.filter((id) => !widgetIds.has(id)).join(', '),
+    ''
+  );
+  ok(
+    'the panel is drawn over the shared backdrop image',
+    /authBackdrop = chrome\.runtime\.getURL\("bg\.jpg"\)/.test(signInSrc) && /url\('\$\{authBackdrop\}'\)/.test(signInSrc)
+  );
+  ok(
+    'and the manifest lets a page load that image',
+    JSON.parse(manifest).web_accessible_resources.some((entry) => (entry.resources || []).indexOf('bg.jpg') >= 0)
+  );
+  ok(
+    'the password can be revealed and hidden again',
+    signInSrc.includes('widget-auth-eye') && /widgetAuthPassword\.type = revealed \? "password" : "text"/.test(signInSrc)
+  );
+  ok(
+    'the header goes dark with the panel while signed out',
+    /container\.classList\.add\("signed-out"\)/.test(signInSrc) && /container\.classList\.remove\("signed-out"\)/.test(signInSrc)
+  );
+
+  // ---- 13. The header's pop-out opens the panel as its own window -----------------
+  // The minimize button is gone; the panel's last control moves it into its own window. A content script
+  // cannot create one, so the widget has to ask the worker - and the worker has to answer it.
+  ok('the minimize button and its state are gone', !signInSrc.includes('id="min-btn"') && !signInSrc.includes('minimized'));
+  ok(
+    'the widget offers the pop-out instead',
+    signInSrc.includes('id="popout-btn"') && /action: "OPEN_DETACHED_WINDOW"/.test(signInSrc)
+  );
+  const workerSrc = readSource('background.js');
+  ok('the worker answers that request', /request\.action === 'OPEN_DETACHED_WINDOW'/.test(workerSrc));
+  ok(
+    'and opens the panel as a window, not a tab',
+    /chrome\.windows\.create\(\{ url: url, type: 'popup'/.test(workerSrc) && workerSrc.includes("getURL('window.html')")
+  );
+  ok(
+    'an open panel is brought forward instead of duplicated',
+    /chrome\.windows\.update\(win\.id, \{ focused: true/.test(workerSrc)
+  );
+  ok('it reopens where it was left', /winBounds/.test(workerSrc));
+  ok(
+    'and it gives the panel back to the page it came from',
+    /chrome\.windows\.onRemoved\.addListener/.test(workerSrc) &&
+      /sendMessage\(record\.tabId, \{ action: 'SHOW_WIDGET' \}\)/.test(workerSrc)
+  );
+  ok(
+    'the widget hides rather than removes itself when it pops out',
+    /OPEN_DETACHED_WINDOW" \}, \(res\) => \{[\s\S]{0,140}container\.classList\.add\("hidden"\)/.test(signInSrc) &&
+      !/OPEN_DETACHED_WINDOW" \}, \(res\) => \{[\s\S]{0,140}host\.remove\(\)/.test(signInSrc)
+  );
+
+  // ---- 14. Auto mode runs the lookup where the panel is ----------------------
+  // Auto mode watches the page for a dialer number. Only the in-page copy can do that, so it announces what
+  // it finds (the worker relays that to extension views) - and whichever panel is on screen runs the lookup:
+  // the page's own copy when it is showing, the window's when the page's has stood aside.
+  ok(
+    'the page announces every number it detects',
+    /action: "PAGE_PHONE_DETECTED"/.test(signInSrc)
+  );
+  ok(
+    'the copy on screen is the one that searches',
+    /if \(searchBtn && !container\.classList\.contains\("hidden"\)\) searchBtn\.click\(\);/.test(signInSrc)
+  );
+  ok(
+    'a panel in its own window takes the announcement and searches',
+    /msg\.action === "PAGE_PHONE_DETECTED" && IS_OWN_WINDOW && currentLookupMode === "auto"/.test(signInSrc) &&
+      /runDetectedPhoneLookup\(msg\.phone\);/.test(signInSrc)
+  );
+  ok(
+    'and the same number is never looked up twice',
+    /function runDetectedPhoneLookup\(rawPhone\) \{[\s\S]{0,260}digits === lastAutoLookedUpPhone[\s\S]{0,60}return;/.test(signInSrc)
   );
 
   console.log(`\n=== TOTAL: ${passed} passed, ${failures.length} failed ===\n`);

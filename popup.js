@@ -25,8 +25,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const copyNameBtn = document.getElementById('copy-name-btn');
   const copyAddrBtn = document.getElementById('copy-addr-btn');
   const personAmicaBtn = document.getElementById('person-amica-btn');
-  const personMercuryBtn = document.getElementById('person-mercury-btn');
   const personDobBtn = document.getElementById('person-dob-btn');
+  const personEmailBtn = document.getElementById('person-email-btn');
+  const personGenderBtn = document.getElementById('person-gender-btn');
   const dobResultsBox = document.getElementById('card-dob-results');
   const dobResultsCountLabel = document.getElementById('dob-results-count-label');
   const dobBadgesContainer = document.getElementById('dob-badges-container');
@@ -413,17 +414,24 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  if (personMercuryBtn) {
-    personMercuryBtn.addEventListener('click', () => {
-      const p = activePersonsList[currentPersonIndex] || currentData?.person;
-      if (p) startVehicleLookup('mercury', p);
-    });
-  }
-
   if (personDobBtn) {
     personDobBtn.addEventListener('click', () => {
       const p = activePersonsList[currentPersonIndex] || currentData?.person;
       if (p) startDobLookup(p);
+    });
+  }
+
+  if (personEmailBtn) {
+    personEmailBtn.addEventListener('click', () => {
+      const p = activePersonsList[currentPersonIndex] || currentData?.person;
+      if (p) startGoogleEmailLookup(p);
+    });
+  }
+
+  if (personGenderBtn) {
+    personGenderBtn.addEventListener('click', () => {
+      const p = activePersonsList[currentPersonIndex] || currentData?.person;
+      if (p) startGoogleGenderLookup(p);
     });
   }
 
@@ -734,7 +742,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function showVehicleProgress(provider, pct, message, isWarning = false) {
     if (!vehicleProgressBox) return;
     vehicleProgressBox.classList.remove('hidden');
-    if (vehicleProviderTag) vehicleProviderTag.textContent = provider === 'DOB' ? 'DOB' : rideLabel(provider);
+    if (vehicleProviderTag) vehicleProviderTag.textContent = provider === 'DOB' ? 'DOB' : provider === 'EMAIL' ? 'EMAIL' : provider === 'GENDER' ? 'GENDER' : rideLabel(provider);
     if (vehicleProgressStatus) vehicleProgressStatus.textContent = message || 'Processing...';
     if (vehicleProgressFill) {
       vehicleProgressFill.style.width = `${Math.min(100, Math.max(8, pct))}%`;
@@ -921,6 +929,76 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   let activeDobLookupPerson = null;
+  // The Google AI Mode email run remembers which person asked for it, so what it finds is written onto
+  // that person rather than into the display only.
+  let activeEmailLookupPerson = null;
+  // ...and the gender run's: the person whose name the chip belongs to.
+  let activeGenderLookupPerson = null;
+
+  // The email run: the month already on the card goes with the request, so the query asks
+  // "born in February 1950" when a previous search found one.
+  function startGoogleEmailLookup(person) {
+    activeEmailLookupPerson = person;
+    const knownDob = person.dob3 || person.dob2 || person.dob1 || person.dob || '';
+    showVehicleProgress('EMAIL', 10, `Asking AI for ${person.name || 'person'}'s email address...`);
+
+    chrome.runtime.sendMessage({
+      action: 'START_GOOGLE_EMAIL_LOOKUP',
+      person,
+      dob: knownDob
+    }, (res) => {
+      if (res && !res.success) {
+        showVehicleProgress('EMAIL', 100, `Error: ${res.error || 'Failed to start'}`, true);
+      }
+    });
+  }
+
+  // The gender chip beside the name is both the button and the answer: both symbols until it has been
+  // asked, then the symbol the AI named, recoloured, with the wording in its tooltip.
+  function genderIconSvg(gender) {
+    if (gender === 'Female') {
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="9" r="5"/><path d="M12 14v7"/><path d="M9 18h6"/></svg>';
+    }
+    if (gender === 'Male') {
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="14" r="5"/><path d="M13.6 10.4 20 4"/><path d="M14.5 4H20v5.5"/></svg>';
+    }
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="13" r="4.5"/><path d="M10 17.5V22"/><path d="M7.5 19.8h5"/><path d="M13.2 9.8 19 4"/><path d="M14 4h5v5"/></svg>';
+  }
+
+  function genderTitleText(gender, note) {
+    if (gender !== 'Male' && gender !== 'Female') return 'Check gender with AI';
+    return `${gender} — from the AI answer${note ? ` (${note})` : ''}`;
+  }
+
+  function renderGenderBadge(gender, note) {
+    if (!personGenderBtn) return;
+    const value = gender === 'Male' || gender === 'Female' ? gender : '';
+    personGenderBtn.classList.toggle('is-female', value === 'Female');
+    personGenderBtn.classList.toggle('is-male', value === 'Male');
+    personGenderBtn.classList.remove('running');
+    const title = genderTitleText(value, note);
+    personGenderBtn.setAttribute('title', title);
+    personGenderBtn.setAttribute('aria-label', title);
+    personGenderBtn.innerHTML = genderIconSvg(value);
+  }
+
+  // The gender run: one name-only question, so there is nothing to carry into it and nothing to add to
+  // the card but the chip's own colour.
+  function startGoogleGenderLookup(person) {
+    activeGenderLookupPerson = person;
+    if (personGenderBtn) personGenderBtn.classList.add('running');
+    showVehicleProgress('GENDER', 15, `Asking AI if ${person.name || 'person'} is male or female...`);
+
+    chrome.runtime.sendMessage({
+      action: 'START_GOOGLE_GENDER_LOOKUP',
+      person
+    }, (res) => {
+      if (res && !res.success) {
+        renderGenderBadge('', '');
+        showVehicleProgress('GENDER', 100, `Error: ${res.error || 'Failed to start'}`, true);
+      }
+    });
+  }
 
   function startDobLookup(person) {
     activeDobLookupPerson = person;
@@ -1047,6 +1125,67 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 3000);
       }
       if (currentData) displayResults(currentData);
+    } else if (msg.action === 'GOOGLE_EMAIL_PROGRESS') {
+      const pct = Math.round((msg.step / msg.totalSteps) * 100);
+      showVehicleProgress('EMAIL', pct, msg.message);
+    } else if (msg.action === 'GOOGLE_EMAIL_RESULT') {
+      // Merged into the addresses the card already holds, and written onto the person so a re-render
+      // keeps it - the same way the Unmask / ThatSthem addresses arrive.
+      const found = Array.isArray(msg.emails) ? msg.emails.filter(Boolean) : [];
+      const person = activeEmailLookupPerson;
+      if (person && found.length > 0) {
+        const merged = Array.isArray(person.emails) ? person.emails.slice() : [];
+        found.forEach((email) => {
+          if (merged.indexOf(email) < 0) merged.push(email);
+        });
+        person.emails = merged;
+        renderDiscoveredEmails(merged);
+      }
+      showVehicleProgress(
+        'EMAIL',
+        100,
+        found.length > 0 ? `Email discovered: ${found[0]}` : 'No public email address was named for this address.',
+        found.length === 0
+      );
+      setTimeout(() => {
+        hideVehicleProgress();
+      }, 4000);
+      if (currentData) displayResults(currentData);
+    } else if (msg.action === 'GOOGLE_EMAIL_EMPTY') {
+      showVehicleProgress('EMAIL', 100, msg.message || 'AI found no email address', true);
+      setTimeout(() => {
+        hideVehicleProgress();
+      }, 4000);
+    } else if (msg.action === 'GOOGLE_GENDER_PROGRESS') {
+      const pct = Math.round((msg.step / msg.totalSteps) * 100);
+      showVehicleProgress('GENDER', pct, msg.message);
+    } else if (msg.action === 'GOOGLE_GENDER_RESULT') {
+      const gender = msg.gender === 'Male' || msg.gender === 'Female' ? msg.gender : '';
+      const person = activeGenderLookupPerson;
+      if (person && gender) {
+        person.gender = gender;
+        person.genderNote = msg.note || '';
+        person.genderSource = msg.source || 'google.ai';
+      }
+      renderGenderBadge(gender, msg.note || '');
+      showVehicleProgress(
+        'GENDER',
+        100,
+        gender
+          ? `${person && person.name ? person.name + ' — ' : ''}${gender}${msg.note ? ` (${msg.note})` : ''}`
+          : 'AI did not say whether this person is male or female.',
+        !gender
+      );
+      setTimeout(() => {
+        hideVehicleProgress();
+      }, 4000);
+      if (currentData) displayResults(currentData);
+    } else if (msg.action === 'GOOGLE_GENDER_EMPTY') {
+      renderGenderBadge('', '');
+      showVehicleProgress('GENDER', 100, msg.message || 'AI could not tell whether this person is male or female.', true);
+      setTimeout(() => {
+        hideVehicleProgress();
+      }, 4000);
     } else if (msg.action === 'DOB_LOOKUP_EMPTY') {
       showVehicleProgress('DOB', 100, msg.message || 'No DOB found on Unmask', true);
       setTimeout(() => {
@@ -1070,16 +1209,24 @@ document.addEventListener('DOMContentLoaded', () => {
   // ---------------------------------------------------------------------------
   const AUTOMATION_SETTINGS_KEY = 'automation_settings';
   const AUTOMATION_SETTINGS_DEFAULTS = {
-    records: { record1: true, record2: true },
+    records: { record1: true, record2: true, record3: true },
     dob: { unmask: true, thatsthem: true, ai: true },
-    dnc: { record1: true, record2: true }
+    dnc: { record1: true, record2: true, record3: true }
   };
 
-  // The two sites are the user's Record 1 and Record 2; their names never reach the UI. Amica and
-  // Mercury are Ride 1 and Ride 2 the same way.
-  const RECORD_LABELS = { 'infolookup.site': 'Record 1', 'infolookupp.com': 'Record 2' };
-  const RECORD_KEYS = { 'infolookup.site': 'record1', 'infolookupp.com': 'record2' };
-  const RIDE_LABELS = { amica: 'Ride 1', mercury: 'Ride 2' };
+  // The two sites are the user's Record 1 and Record 2; their names never reach the UI. Vehicle
+  // discovery is the one "Rides" action, and Mercury's automation has no UI entry point.
+  const RECORD_LABELS = {
+    'infolookup.site': 'Record 1',
+    'infolookupp.com': 'Record 2',
+    'uspeoplesearch.net': 'Record 3'
+  };
+  const RECORD_KEYS = {
+    'infolookup.site': 'record1',
+    'infolookupp.com': 'record2',
+    'uspeoplesearch.net': 'record3'
+  };
+  const RIDE_LABELS = { amica: 'Rides', mercury: 'Rides' };
 
   function recordLabel(source) {
     return RECORD_LABELS[String(source == null ? '' : source).toLowerCase()] || 'Record';

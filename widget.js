@@ -1,6 +1,6 @@
 // Injected Sticky Draggable Widget on Web Pages
 // Minimalist Black & White Theme (White Main BG, Black Buttons & Text)
-// Parallel Dual-Source (infolookup.site & infolookupp.com) with deduplication & progressive streaming
+// Parallel Dual-Source (infolookup.site & infolookupp.com), one card per record, progressive streaming
 
 (function () {
   // Only run in the top-level browsing context, never in iframes
@@ -14,6 +14,21 @@
   }
   window.__dnc_widget_injected = true;
 
+  // Which build this file is. The widget is injected on demand, and afterwards the toolbar icon only
+  // *toggles* the copy that is already on the page - and the browser serves extension files from its own
+  // cache until the extension is reloaded. A page can therefore be running older code while the file on
+  // disk is newer; this stamp is what tells the two apart. It is logged once, here, and shown at the
+  // bottom of the Settings drawer.
+  const WIDGET_BUILD = "1.9.13 auto lookup in the window";
+  console.log(`[DNC widget] build "${WIDGET_BUILD}" injected`);
+
+  // A widget left behind by a previous copy of the extension can still be sitting in the page: its
+  // context died with the extension reload (or the update), so it is inert and its buttons do nothing.
+  // It is replaced rather than duplicated - this is what makes the refresh button's restart come back
+  // to one live widget instead of stacking a new one on top of the dead one.
+  const staleHost = document.getElementById("dnc-compliance-widget-host");
+  if (staleHost) staleHost.remove();
+
   // Create Host Element & Shadow Root for 100% CSS Isolation
   const host = document.createElement("div");
   host.id = "dnc-compliance-widget-host";
@@ -22,14 +37,29 @@
   const shadow = host.attachShadow({ mode: "open" });
 
   const fontRegular = chrome.runtime.getURL("Poppins/Poppins-Regular.ttf");
+  const fontLight = chrome.runtime.getURL("Poppins/Poppins-Light.ttf");
   const fontMedium = chrome.runtime.getURL("Poppins/Poppins-Medium.ttf");
   const fontSemiBold = chrome.runtime.getURL("Poppins/Poppins-SemiBold.ttf");
   const fontBold = chrome.runtime.getURL("Poppins/Poppins-Bold.ttf");
 
+  // The sign-in panel's backdrop. It has to be a web-accessible resource for a page to load it (see
+  // manifest.json), which is why bg.jpg is listed there beside the logo.
+  const authBackdrop = chrome.runtime.getURL("bg.jpg");
+
   // Stylesheet
   const style = document.createElement("style");
   style.textContent = `
-    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@200;300;400;500;600;700&display=swap');
+
+    /* The weights the widget draws with. 300 is the light one the sign-in panel is set in: without a
+       face registered for it, asking for 300 falls back to the nearest declared weight (400), which is
+       why "light" text used to come out looking exactly like regular text. */
+    @font-face {
+      font-family: 'Poppins';
+      font-weight: 300;
+      font-style: normal;
+      src: url('${fontLight}') format('truetype');
+    }
 
     @font-face {
       font-family: 'Poppins';
@@ -82,8 +112,41 @@
       user-select: text;
     }
 
-    .widget-container.minimized .widget-body {
-      display: none !important;
+    /* The panel as the whole of its own window: it fills the window instead of floating over a page, the
+       header is not a drag handle there (the window itself is what moves), and the pop-out button has
+       nothing left to do.
+    
+       It stays fixed on purpose. The panel's host is appended to <html> rather than <body> - which is
+       invisible while it floats, because a fixed element is positioned against the viewport - so making it
+       static here would lay it out after the full-height body and the page's own overflow would hide it. */
+    .widget-container.window-mode {
+      position: fixed !important;
+      top: 0 !important;
+      left: 0 !important;
+      right: auto !important;
+      bottom: auto !important;
+      width: 100% !important;
+      height: 100vh !important;
+      border: none !important;
+      border-radius: 0 !important;
+      box-shadow: none !important;
+    }
+
+    .widget-container.window-mode .widget-header {
+      cursor: default;
+    }
+
+    .widget-container.window-mode .widget-header:active {
+      cursor: default;
+    }
+
+    .widget-container.window-mode .popout-btn {
+      display: none;
+    }
+
+    .widget-container.window-mode .widget-body {
+      max-height: none;
+      flex: 1;
     }
 
     /* Header / Drag Handle */
@@ -108,18 +171,52 @@
       gap: 7px;
     }
 
-    .drag-grip {
+    /* Refresh: tears the background workers down and builds them again */
+    .refresh-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      padding: 0;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 5px;
       color: #a1a1aa;
-      font-size: 13px;
-      line-height: 1;
-      letter-spacing: -1px;
-      cursor: grab;
+      cursor: pointer;
+      flex: none;
+    }
+
+    .refresh-btn:hover {
+      background: #f4f4f6;
+      border-color: #e4e4e7;
+      color: #09090b;
+    }
+
+    .refresh-btn:disabled {
+      cursor: default;
+      opacity: 0.9;
+    }
+
+    .refresh-btn.spinning {
+      color: #09090b;
+    }
+
+    .refresh-btn.spinning svg {
+      animation: refresh-spin 0.7s linear infinite;
+    }
+
+    @keyframes refresh-spin {
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     .brand-title {
       font-size: 13px;
-      font-weight: 600;
-      letter-spacing: -0.01em;
+      font-weight: 300;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
       color: #09090b;
       line-height: 1;
     }
@@ -246,6 +343,262 @@
     .widget-body::-webkit-scrollbar-thumb {
       background: #e4e4e7;
       border-radius: 3px;
+    }
+
+    /* ---------------------------------------------------------------- the sign-in panel
+       The first thing a signed-out user sees, and the one screen in the widget that is not part of the
+       white card: the photograph behind a dark scrim, with the form sitting on it. The scrim is what
+       keeps the text readable whatever the photo does behind it, and the panel runs full width inside
+       the body's padding so the image has no white frame around it. */
+    .widget-auth-view {
+      margin: -15px;
+      padding: 20px 16px 22px;
+      background-image:
+        linear-gradient(180deg, rgba(9, 9, 11, 0.58) 0%, rgba(9, 9, 11, 0.8) 52%, rgba(9, 9, 11, 0.95) 100%),
+        url('${authBackdrop}');
+      background-size: cover, cover;
+      background-position: center, center 28%;
+      background-repeat: no-repeat, no-repeat;
+      color: #fafafa;
+    }
+
+    /* Every text element in the panel names the family itself. Headings, paragraphs, labels and form
+       controls do not inherit a font from the card, which is exactly why a panel that relied on
+       inheritance showed the browser's default face instead of Poppins. */
+    .widget-auth-view,
+    .widget-auth-view h2,
+    .widget-auth-view p,
+    .widget-auth-view label,
+    .widget-auth-view span,
+    .widget-auth-view button,
+    .widget-auth-view input {
+      font-family: 'Poppins', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+
+    .auth-brand {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .auth-brand img {
+      width: 28px;
+      height: 28px;
+      object-fit: contain;
+      filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.55));
+    }
+
+    /* The wordmark: light and tracked, so it reads as a mark rather than as a label. */
+    .auth-brand span {
+      font-size: 13px;
+      font-weight: 300;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: rgba(250, 250, 250, 0.92);
+    }
+
+    .auth-hero h2 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 300;
+      line-height: 1.32;
+      letter-spacing: 0.005em;
+      text-align: center;
+      color: #fafafa;
+    }
+
+    .auth-hero p {
+      margin: 7px 0 20px;
+      font-size: 11.5px;
+      font-weight: 300;
+      line-height: 1.7;
+      letter-spacing: 0.015em;
+      color: rgba(250, 250, 250, 0.68);
+      text-align: center;
+    }
+
+    .auth-field {
+      margin-bottom: 10px;
+    }
+
+    .auth-label {
+      display: block;
+      font-size: 11px;
+      font-weight: 400;
+      color: rgba(250, 250, 250, 0.68);
+      margin-bottom: 6px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    /* The field itself: a translucent pane over the photo, which lights up when it has the caret. */
+    .auth-input-wrap {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(255, 255, 255, 0.09);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 12px;
+      padding: 0 11px;
+      transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+    }
+
+    .auth-input-wrap:focus-within {
+      background: rgba(255, 255, 255, 0.14);
+      border-color: rgba(255, 255, 255, 0.42);
+      box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1);
+    }
+
+    .auth-input-wrap > svg {
+      width: 14px;
+      height: 14px;
+      flex-shrink: 0;
+      color: rgba(250, 250, 250, 0.55);
+    }
+
+    .auth-input-wrap input {
+      flex: 1;
+      min-width: 0;
+      background: transparent;
+      border: none;
+      outline: none;
+      color: #fafafa;
+      font-family: inherit;
+      font-size: 12.5px;
+      font-weight: 300;
+      letter-spacing: 0.015em;
+      padding: 10px 0;
+    }
+
+    .auth-input-wrap input::placeholder {
+      color: rgba(250, 250, 250, 0.42);
+    }
+
+    /* Chrome's own autofill styling would paint these fields white; keep them part of the panel. */
+    .auth-input-wrap input:-webkit-autofill,
+    .auth-input-wrap input:-webkit-autofill:hover,
+    .auth-input-wrap input:-webkit-autofill:focus {
+      -webkit-text-fill-color: #fafafa;
+      transition: background-color 9999s ease-in-out 0s;
+    }
+
+    .auth-eye {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: none;
+      border: none;
+      padding: 2px;
+      cursor: pointer;
+      color: rgba(250, 250, 250, 0.55);
+      transition: color 0.15s;
+    }
+
+    .auth-eye:hover {
+      color: #fafafa;
+    }
+
+    .auth-eye svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .auth-submit {
+      width: 100%;
+      margin-top: 6px;
+      padding: 11px 14px;
+      border: none;
+      border-radius: 12px;
+      background: #fafafa;
+      color: #09090b;
+      font-family: inherit;
+      font-size: 12.5px;
+      font-weight: 400;
+      letter-spacing: 0.03em;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      transition: transform 0.12s, box-shadow 0.15s, opacity 0.15s;
+    }
+
+    .auth-submit:hover {
+      box-shadow: 0 10px 22px rgba(0, 0, 0, 0.38);
+      transform: translateY(-1px);
+    }
+
+    .auth-submit:active {
+      transform: translateY(0);
+    }
+
+    .auth-submit:disabled {
+      opacity: 0.7;
+      cursor: default;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .auth-spinner {
+      width: 12px;
+      height: 12px;
+      border: 2px solid rgba(9, 9, 11, 0.22);
+      border-top-color: #09090b;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    /* The sign-in answer (a wrong password, a used-up quota) - the same red, on glass. */
+    .auth-alert {
+      background: rgba(248, 113, 113, 0.14);
+      border: 1px solid rgba(248, 113, 113, 0.42);
+      color: #fecaca;
+      padding: 9px 11px;
+      border-radius: 10px;
+      font-size: 11.5px;
+      font-weight: 500;
+      line-height: 1.45;
+      margin-bottom: 12px;
+      text-align: center;
+    }
+
+    .auth-foot {
+      margin-top: 16px;
+      font-size: 10px;
+      font-weight: 300;
+      line-height: 1.75;
+      letter-spacing: 0.02em;
+      color: rgba(250, 250, 250, 0.5);
+      text-align: center;
+    }
+
+    .auth-foot b {
+      color: rgba(250, 250, 250, 0.78);
+      font-weight: 600;
+    }
+
+    /* While signed out the panel above is a photograph, so the header is part of it rather than a white
+       bar on top of it. The controls are already transparent, so only their ink has to change. */
+    .widget-container.signed-out .widget-header {
+      background: #09090b;
+      border-bottom-color: rgba(255, 255, 255, 0.08);
+    }
+
+    .widget-container.signed-out .brand-title {
+      color: #fafafa;
+    }
+
+    .widget-container.signed-out .refresh-btn,
+    .widget-container.signed-out .control-btn {
+      color: rgba(250, 250, 250, 0.62);
+    }
+
+    .widget-container.signed-out .refresh-btn:hover,
+    .widget-container.signed-out .control-btn:hover {
+      color: #fafafa;
+      background: rgba(255, 255, 255, 0.1);
     }
 
     /* Mode Toggle (Manual / Auto) */
@@ -624,6 +977,155 @@
       background: #2563eb;
       color: #ffffff;
       border-color: #2563eb;
+    }
+
+    /* The gender chip beside the name. It is square because it holds an icon rather than a word, and
+       the icon *is* the answer: unknown shows both symbols, and the answer recolours it (pink for
+       female, blue for male) so the card reads at a glance without another row. */
+    .gender-btn {
+      background: #f4f4f5;
+      color: #52525b;
+      border: 1px solid #e4e4e7;
+      border-radius: 5px;
+      padding: 2px 5px;
+      line-height: 0;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      transition: all 0.15s;
+    }
+
+    .gender-btn svg {
+      width: 11px;
+      height: 11px;
+    }
+
+    .gender-btn:hover {
+      background: #09090b;
+      color: #ffffff;
+      border-color: #09090b;
+    }
+
+    .gender-btn.is-female {
+      background: #fdf2f8;
+      color: #be185d;
+      border-color: #fbcfe8;
+    }
+
+    .gender-btn.is-female:hover {
+      background: #be185d;
+      color: #ffffff;
+      border-color: #be185d;
+    }
+
+    .gender-btn.is-male {
+      background: #eff6ff;
+      color: #1d4ed8;
+      border-color: #bfdbfe;
+    }
+
+    .gender-btn.is-male:hover {
+      background: #1d4ed8;
+      color: #ffffff;
+      border-color: #1d4ed8;
+    }
+
+    .gender-btn.running {
+      opacity: 0.55;
+      pointer-events: none;
+    }
+
+    /* The manual card. A record that named nobody still has the same card - name, address and every
+       action - it just asks the user for the two things the record could not provide. Same materials
+       as the rest of the card: hairlines, quiet greys, one dark action. */
+    .manual-add-btn {
+      width: 20px;
+      height: 20px;
+      border-radius: 5px;
+      border: 1px solid #e4e4e7;
+      background: #ffffff;
+      color: #3f3f46;
+      font-size: 14px;
+      font-weight: 500;
+      line-height: 1;
+      padding: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .manual-add-btn:hover {
+      background: #09090b;
+      color: #ffffff;
+      border-color: #09090b;
+    }
+
+    /* The fields *are* the card's own lines - the name, the street, the city - so they carry that
+       typography, with no box and no border. An empty placeholder then reads as one of the record cards
+       rather than as a form. The underline stays transparent until a field has the caret, so the layout
+       never shifts a pixel. */
+    .manual-name-input,
+    .manual-street-input,
+    .manual-city-input {
+      font-family: 'Poppins', sans-serif;
+      color: #09090b;
+      background: transparent;
+      border: none;
+      border-bottom: 1px solid transparent;
+      border-radius: 0;
+      padding: 0;
+      margin: 0;
+      width: 100%;
+      box-sizing: border-box;
+      display: block;
+    }
+
+    /* The name line carries a found person's name type: 14px / 600. */
+    .manual-name-input {
+      max-width: 230px;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    /* The street line carries the street line's type: 12.5px / 600. */
+    .manual-street-input {
+      font-size: 12.5px;
+      font-weight: 600;
+    }
+
+    /* ...and the city line the muted line under it: 11.5px / 400 in the card's grey. */
+    .manual-city-input {
+      font-size: 11.5px;
+      font-weight: 400;
+      color: #52525b;
+    }
+
+    .manual-name-input:focus,
+    .manual-street-input:focus,
+    .manual-city-input:focus {
+      outline: none;
+      border-bottom-color: #d4d4d8;
+    }
+
+    .manual-name-input::placeholder,
+    .manual-street-input::placeholder,
+    .manual-city-input::placeholder {
+      color: #a1a1aa;
+      font-weight: 400;
+    }
+
+
+    .manual-search-btn svg {
+      width: 11px;
+      height: 11px;
+      flex-shrink: 0;
+    }
+
+    .manual-search-btn.running {
+      opacity: 0.6;
+      pointer-events: none;
     }
 
     .age-dob-row {
@@ -1230,6 +1732,17 @@
       flex: 1;
     }
 
+    /* Which build is running. The widget is injected on demand and the toolbar icon afterwards only
+       toggles the copy that is already on the page, so a page can be running code older than the file on
+       disk. This footer is how the two are told apart (the console prints the same stamp on injection). */
+    .sidebar-build-stamp {
+      padding: 7px 16px 9px;
+      border-top: 1px solid #f1f3f5;
+      font-size: 10px;
+      color: #a1a1aa;
+      letter-spacing: 0.2px;
+    }
+
     .sidebar-section-header {
       display: flex;
       flex-direction: column;
@@ -1336,10 +1849,23 @@
   // HTML Structure
   const container = document.createElement("div");
   container.className = "widget-container";
+
+  // The panel runs in two places: injected into a page, and as the whole of the extension's own detached
+  // window (`window.html` loads this same file, so there is one panel to maintain). An extension URL is
+  // what tells them apart - the worker only ever injects into http(s) pages - and in the window the panel
+  // fills it instead of floating over it.
+  const IS_OWN_WINDOW = window.location.protocol === "chrome-extension:";
+  if (IS_OWN_WINDOW) container.classList.add("window-mode");
   container.innerHTML = `
     <div class="widget-header" id="widget-header">
       <div class="header-left">
-        <span class="drag-grip" title="Drag widget">⋮⋮</span>
+        <button id="refresh-btn" class="refresh-btn" title="Refresh - restart the background workers and clear this lookup" type="button" aria-label="Refresh">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"></polyline>
+            <polyline points="1 20 1 14 7 14"></polyline>
+            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+          </svg>
+        </button>
         <span class="brand-title">Auto Lookup</span>
       </div>
       <div class="header-controls">
@@ -1362,8 +1888,12 @@
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
           </svg>
         </button>
-        <button id="min-btn" class="control-btn" title="Minimize" type="button">
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+        <button id="popout-btn" class="control-btn popout-btn" title="Open in a separate window" aria-label="Open in a separate window" type="button">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+            <polyline points="15 3 21 3 21 9"></polyline>
+            <line x1="10" y1="14" x2="21" y2="3"></line>
+          </svg>
         </button>
         <button id="close-btn" class="control-btn close-btn" title="Close" type="button">
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
@@ -1372,35 +1902,67 @@
     </div>
 
     <div class="widget-body" id="widget-body">
-      <!-- In-Widget Sign In Form (shown when not logged in) -->
-      <div id="widget-auth-view" class="widget-auth-view" style="padding: 14px 16px 18px;">
-        <div style="width: 36px; height: 36px; margin: 0 auto 8px; background: #09090b; color: #fff; border-radius: 10px; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 10px rgba(0,0,0,0.15);">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-          </svg>
+      <!-- In-Widget Sign In (shown when not logged in) -->
+      <div id="widget-auth-view" class="widget-auth-view">
+        <div class="auth-brand">
+          <img src="${chrome.runtime.getURL("logo.png")}" alt="Auto Lookup" />
+          <span>Auto Lookup</span>
         </div>
-        <div style="font-size: 13.5px; font-weight: 700; color: #09090b; text-align: center; margin-bottom: 2px;">Sign In to Auto Lookup</div>
-        <div style="font-size: 11px; color: #71717a; text-align: center; margin-bottom: 12px;">Enter your credentials to use compliance lookups</div>
 
-        <div id="widget-auth-alert" class="hidden" style="background: #fef2f2; border: 1px solid #fecaca; color: #b91c1c; padding: 8px 10px; border-radius: 8px; font-size: 11.5px; font-weight: 600; text-align: center; margin-bottom: 10px; line-height: 1.4;">
+        <div class="auth-hero">
+          <h2>Welcome back</h2>
+          <p>Sign in to run compliance lookups</p>
+        </div>
+
+        <div id="widget-auth-alert" class="auth-alert hidden">
           <span id="widget-auth-alert-text">limit reached contact admin for more limit</span>
         </div>
 
-        <form id="widget-auth-form" style="display: flex; flex-direction: column; gap: 8px;">
-          <div>
-            <label style="display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; color: #52525b; margin-bottom: 3px; letter-spacing: 0.03em;">Username</label>
-            <input type="text" id="widget-auth-username" placeholder="Username" required style="width: 100%; box-sizing: border-box; padding: 7px 9px; font-size: 12px; border: 1px solid #d4d4d8; border-radius: 7px; background: #fafafa; outline: none; font-family: inherit;" />
+        <form id="widget-auth-form" autocomplete="on">
+          <div class="auth-field">
+            <label class="auth-label" for="widget-auth-username">Username</label>
+            <div class="auth-input-wrap">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                <circle cx="12" cy="7" r="4"></circle>
+              </svg>
+              <input type="text" id="widget-auth-username" placeholder="Enter your username" required autocomplete="username" spellcheck="false" />
+            </div>
           </div>
-          <div>
-            <label style="display: block; font-size: 10px; font-weight: 600; text-transform: uppercase; color: #52525b; margin-bottom: 3px; letter-spacing: 0.03em;">Password</label>
-            <input type="password" id="widget-auth-password" placeholder="Password" required style="width: 100%; box-sizing: border-box; padding: 7px 9px; font-size: 12px; border: 1px solid #d4d4d8; border-radius: 7px; background: #fafafa; outline: none; font-family: inherit;" />
+
+          <div class="auth-field">
+            <label class="auth-label" for="widget-auth-password">Password</label>
+            <div class="auth-input-wrap">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="11" width="18" height="11" rx="2.2"></rect>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+              </svg>
+              <input type="password" id="widget-auth-password" placeholder="Enter your password" required autocomplete="current-password" spellcheck="false" />
+              <button type="button" id="widget-auth-eye" class="auth-eye" title="Show password" aria-label="Show password">
+                <svg id="widget-auth-eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7Z"></path>
+                  <circle cx="12" cy="12" r="3"></circle>
+                </svg>
+                <svg id="widget-auth-eye-shut" class="hidden" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M3 3l18 18"></path>
+                  <path d="M10.6 5.2A10.9 10.9 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3.6 4.2"></path>
+                  <path d="M6.5 6.6A17.4 17.4 0 0 0 2 12s3.6 7 10 7a10.7 10.7 0 0 0 4.4-.9"></path>
+                  <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"></path>
+                </svg>
+              </button>
+            </div>
           </div>
-          <button type="submit" id="widget-auth-submit" style="margin-top: 4px; width: 100%; padding: 8px 12px; background: #09090b; color: #fff; border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px; font-family: inherit;">
+
+          <button type="submit" id="widget-auth-submit" class="auth-submit">
             <span id="widget-auth-btn-text">Sign In</span>
-            <span id="widget-auth-spinner" class="hidden" style="display: inline-block; width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.8s linear infinite;"></span>
+            <span id="widget-auth-spinner" class="auth-spinner hidden"></span>
           </button>
         </form>
+
+        <div class="auth-foot">
+          Each lookup is counted against your account.<br />
+          <b>Need more lookups?</b> Ask your admin.
+        </div>
       </div>
 
       <!-- Main Search Views (hidden until authenticated) -->
@@ -1476,6 +2038,11 @@
             <input type="checkbox" class="setting-toggle" data-setting="records.record2" />
             <span class="setting-track"><span class="setting-knob"></span></span>
           </label>
+          <label class="setting-row">
+            <span class="setting-label">Record 3</span>
+            <input type="checkbox" class="setting-toggle" data-setting="records.record3" />
+            <span class="setting-track"><span class="setting-knob"></span></span>
+          </label>
         </div>
 
         <div class="sidebar-section-header">
@@ -1517,8 +2084,17 @@
             <input type="checkbox" class="setting-toggle" data-setting="dnc.record2" />
             <span class="setting-track"><span class="setting-knob"></span></span>
           </label>
+          <label class="setting-row">
+            <span class="setting-label">Record 3</span>
+            <input type="checkbox" class="setting-toggle" data-setting="dnc.record3" />
+            <span class="setting-track"><span class="setting-knob"></span></span>
+          </label>
         </div>
 
+      <!-- Which copy of widget.js is on this page. The widget is injected on demand and the toolbar icon
+           afterwards only toggles the copy already there, so a page can be running older code than the
+           file on disk - this footer is how the two are told apart. Filled in by initWidgetSettingsSidebar. -->
+      <div id="widget-build-stamp" class="sidebar-build-stamp"></div>
     </aside>
   `;
 
@@ -1527,8 +2103,9 @@
 
   // DOM Elements
   const header = shadow.getElementById("widget-header");
-  const minBtn = shadow.getElementById("min-btn");
+  const popoutBtn = shadow.getElementById("popout-btn");
   const closeBtn = shadow.getElementById("close-btn");
+  const refreshBtn = shadow.getElementById("refresh-btn");
   const phoneInput = shadow.getElementById("phone-input");
   const searchBtn = shadow.getElementById("search-btn");
   const statusContainer = shadow.getElementById("status-container");
@@ -1537,7 +2114,6 @@
   const errorText = shadow.getElementById("error-text");
   const resultsContainer = shadow.getElementById("results-container");
   const sourceStatusText = shadow.getElementById("source-status-text");
-  const verifiedPill = shadow.getElementById("verified-pill");
   const recordsList = shadow.getElementById("records-list");
   const copyAllBtn = shadow.getElementById("copy-all-btn");
   const copyAllLabel = shadow.getElementById("copy-all-label");
@@ -1566,10 +2142,28 @@
   const authQuotaDisplay = shadow.getElementById("auth-quota-display");
   const authLogoutBtn = shadow.getElementById("auth-logout-btn");
 
+  // The password field's reveal control: the eye shows what has been typed, the struck-through eye puts
+  // it back. It only changes the input's type - nothing is read or sent by it.
+  const widgetAuthEye = shadow.getElementById("widget-auth-eye");
+  const widgetAuthEyeOpen = shadow.getElementById("widget-auth-eye-open");
+  const widgetAuthEyeShut = shadow.getElementById("widget-auth-eye-shut");
+  if (widgetAuthEye && widgetAuthPassword) {
+    widgetAuthEye.addEventListener("click", () => {
+      const revealed = widgetAuthPassword.type === "text";
+      widgetAuthPassword.type = revealed ? "password" : "text";
+      widgetAuthEye.setAttribute("title", revealed ? "Show password" : "Hide password");
+      widgetAuthEye.setAttribute("aria-label", revealed ? "Show password" : "Hide password");
+      if (widgetAuthEyeOpen) widgetAuthEyeOpen.classList.toggle("hidden", !revealed);
+      if (widgetAuthEyeShut) widgetAuthEyeShut.classList.toggle("hidden", revealed);
+    });
+  }
+
   let widgetUser = null;
   let widgetToken = null;
 
   function showWidgetLogin(alertMessage) {
+    // The header goes dark with the panel: while signed out the sign-in photograph is the whole widget.
+    container.classList.add("signed-out");
     if (widgetAuthView) widgetAuthView.classList.remove("hidden");
     if (widgetMainView) widgetMainView.classList.add("hidden");
     if (authHeaderPill) authHeaderPill.classList.add("hidden");
@@ -1583,6 +2177,7 @@
 
   function showWidgetMain(user) {
     widgetUser = user;
+    container.classList.remove("signed-out");
     if (widgetAuthView) widgetAuthView.classList.add("hidden");
     if (widgetMainView) widgetMainView.classList.remove("hidden");
     if (authHeaderPill) authHeaderPill.classList.remove("hidden");
@@ -1843,6 +2438,25 @@
     return "";
   }
 
+  // A phone the page detected, looked up from here. When the panel lives in its own window there is no page
+  // to watch: the in-page copy is the one that can see the dialer, and it announces every number it finds.
+  // This is what turns that announcement into a lookup, exactly as that copy would have run it. A number
+  // that was already looked up is left alone.
+  function runDetectedPhoneLookup(rawPhone) {
+    const digits = String(rawPhone == null ? "" : rawPhone).replace(/\D/g, "");
+    if (digits.length !== 10 || !phoneInput) return;
+    if (digits === lastAutoLookedUpPhone) return;
+    lastAutoLookedUpPhone = digits;
+
+    phoneInput.value = `(${digits.slice(0, 3)}) ${digits.slice(3, 6)}-${digits.slice(6, 10)}`;
+
+    if (autoFeedbackBar) autoFeedbackBar.classList.remove("waiting");
+    if (autoSpinner) autoSpinner.classList.remove("hidden");
+    if (autoFeedbackText) autoFeedbackText.textContent = `Auto-detected: ${digits} · Looking up...`;
+
+    if (searchBtn) searchBtn.click();
+  }
+
   function startAutoLookup() {
     stopAutoLookup();
     lastAutoLookedUpPhone = "";
@@ -1902,8 +2516,11 @@
               })
               .catch(() => {});
 
-            // Automatically execute search
-            if (searchBtn) searchBtn.click();
+            // Automatically execute search - but only from the copy that is on screen. A panel that has
+            // been popped out (hidden) has nothing to paint into, and the window runs that lookup instead;
+            // a panel hidden from the toolbar has nothing to show either. Either way, this is what keeps a
+            // detected number to one lookup rather than two.
+            if (searchBtn && !container.classList.contains("hidden")) searchBtn.click();
           }
         } else {
           if (!lastAutoLookedUpPhone) {
@@ -2031,17 +2648,123 @@
     }
   });
 
-  // Minimize Toggle
-  minBtn.addEventListener("click", () => {
-    const isMin = container.classList.toggle("minimized");
-    minBtn.textContent = isMin ? "□" : "_";
-    minBtn.title = isMin ? "Expand" : "Minimize";
-  });
+  // Pop-Out: the panel moves into its own window. A content script cannot open one, so the worker does it
+  // and answers once the window is up - and only then does this copy stand aside, which is what keeps a
+  // failure to open from leaving the user with nothing.
+  //
+  // It is hidden rather than removed: closing that window shows this very panel again, holding what it had
+  // (background.js owns that), and the toolbar icon brings it back sooner.
+  if (popoutBtn) {
+    popoutBtn.addEventListener("click", () => {
+      chrome.runtime.sendMessage({ action: "OPEN_DETACHED_WINDOW" }, (res) => {
+        if (!res || !res.ok) return;
+        container.classList.add("hidden");
+      });
+    });
+  }
 
   // Close Button
   closeBtn.addEventListener("click", () => {
+    // In the detached window there is no page to hide the panel from: closing it closes the window.
+    if (IS_OWN_WINDOW) {
+      window.close();
+      return;
+    }
     container.classList.add("hidden");
   });
+
+  // Refresh Button - restarts the whole extension (RESTART_EXTENSION in background.js).
+  //
+  // This is where the six-dot drag grip used to be. Dragging still works from the rest of the header,
+  // and this spot now does the one thing the widget cannot do for itself: it asks the background to
+  // reload the entire extension, front and back - the service worker, the offscreen document with every
+  // runner frame inside it, the popup and the detached window - in one go. The tab this was pressed on
+  // gets its widget back afterwards: background.js remembers the tab id and injects the widget into it
+  // again as soon as the new service worker starts.
+  let isRestarting = false;
+
+  // The background answers *before* it reloads itself, so this is only a safety net for a worker that
+  // is wedged, missing, or from an older copy of the extension. The icon must never spin for ever.
+  const RESTART_ACK_TIMEOUT_MS = 8000;
+
+  function stopRestartSpinner() {
+    if (refreshBtn) {
+      refreshBtn.classList.remove("spinning");
+      refreshBtn.disabled = false;
+    }
+    isRestarting = false;
+  }
+
+  function restartExtension() {
+    if (isRestarting || !refreshBtn) return;
+    isRestarting = true;
+    refreshBtn.classList.add("spinning");
+    refreshBtn.disabled = true;
+
+    // The restart cancels the runs that drew these, so their progress is cleared; the records the user
+    // has already read stay on screen. None of this may be allowed to keep the icon spinning, hence
+    // the guard: the restart itself is what matters, not the cosmetics around it.
+    try {
+      ["dob", "email", "gender", "address", "amica", "mercury"].forEach((provider) => {
+        hideVehicleProgress(provider);
+        activeResults.forEach((r) => hideVehicleProgress(provider, r.source));
+        lookupRecordByProvider[provider] = "";
+      });
+      hideError();
+      setLoading(false);
+      // A newer session id is what makes this widget ignore anything a cancelled run still streams in.
+      currentSearchSession++;
+      showStatus("Restarting the extension...");
+    } catch (e) {
+      // Cosmetic only.
+    }
+
+    const watchdog = setTimeout(() => {
+      stopRestartSpinner();
+      hideStatus();
+      showError(
+        "The extension did not answer the restart. Reload it from chrome://extensions, then reload this page.",
+      );
+    }, RESTART_ACK_TIMEOUT_MS);
+
+    try {
+      chrome.runtime.sendMessage({ action: "RESTART_EXTENSION" }, (res) => {
+        const failed = chrome.runtime.lastError || !res || !res.success;
+        clearTimeout(watchdog);
+        stopRestartSpinner();
+
+        if (failed) {
+          hideStatus();
+          showError(
+            (res && res.error) ||
+              "Could not restart the extension. Reload it from chrome://extensions.",
+          );
+          return;
+        }
+
+        // The extension is reloading now; the widget that comes back is a fresh one. Say so instead of
+        // claiming a state this copy is about to lose.
+        showStatus("Extension restarted - this page is coming back with it...");
+        setTimeout(hideStatus, 5000);
+      });
+    } catch (e) {
+      // This page still holds the widget of an older extension context (a reload or an update already
+      // invalidated it), so no message can reach a worker from here at all.
+      clearTimeout(watchdog);
+      stopRestartSpinner();
+      hideStatus();
+      showError(
+        "This page holds an older copy of the widget. Reload the page, then press refresh again.",
+      );
+    }
+  }
+
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      restartExtension();
+    });
+  }
 
   // Phone input formatting
   phoneInput.addEventListener("input", (e) => {
@@ -2092,7 +2815,6 @@
     recordsList.innerHTML = "";
     // A new search starts unfiltered, so a ZIP left over from the last one cannot hide records.
     setZipFilter("");
-    if (verifiedPill) verifiedPill.classList.add("hidden");
     setLoading(true);
 
     try {
@@ -2197,12 +2919,33 @@
       const isHidden = container.classList.contains("hidden");
       if (isHidden) {
         container.classList.remove("hidden");
-        container.classList.remove("minimized");
-        minBtn.textContent = "_";
         phoneInput.focus();
       } else {
         container.classList.add("hidden");
       }
+    }
+
+    // The page's panel is the one that can see the dialer, and it announces every number it detects. When
+    // this panel is the one in its own window there is no page here to watch, so that announcement is what
+    // runs the lookup - in auto mode, the mode the announcement is about.
+    if (msg.action === "PAGE_PHONE_DETECTED" && IS_OWN_WINDOW && currentLookupMode === "auto") {
+      runDetectedPhoneLookup(msg.phone);
+    }
+
+    // The detached window was closed, so the panel that stood aside comes back. Not a toggle: showing a
+    // panel that is already visible must not hide it.
+    if (msg.action === "SHOW_WIDGET") {
+      container.classList.remove("hidden");
+      if (phoneInput) phoneInput.focus();
+    }
+
+    // The extension is reloading (the refresh button): this widget's context is about to be invalidated,
+    // which would leave it on the page as a dead box, so it takes itself out. The injection flag is
+    // cleared with it, so the toolbar icon can bring a fresh widget back even if the reload never
+    // actually happens.
+    if (msg.action === "EXTENSION_RELOADING") {
+      window.__dnc_widget_injected = false;
+      host.remove();
     }
   });
 
@@ -2216,52 +2959,11 @@
 
     hideError();
 
-    // Check if this result is identical to an already displayed result
-    if (activeResults.length > 0) {
-      const isDuplicate = activeResults.some((r) =>
-        areResultsEqual(r.data, data),
-      );
-      if (isDuplicate) {
-        // Same result found on both sites! Show only once at the bottom
-        activeResults.push({ source, data, isDuplicate: true });
-        if (sourceStatusText) {
-          sourceStatusText.textContent = `Verified Match Across Both Sites (${activeResults.map((r) => r.source).join(" & ")})`;
-        }
-        if (verifiedPill) {
-          verifiedPill.textContent = "✓ Verified Match";
-          verifiedPill.classList.remove("hidden");
-        }
-
-        // Update existing card header tag to show both sources
-        const firstHeaderTag = shadow.querySelector(".record-header-tag span");
-        if (firstHeaderTag) {
-          firstHeaderTag.textContent = `Compliance · ${activeResults.map((r) => r.source).join(" & ")} (Verified)`;
-        }
-
-        // If the first result didn't have person details, but the secondary duplicate has person details, upgrade it
-        const existingRecord = activeResults[0];
-        const existingPerson = getEffectivePerson(existingRecord.data);
-        const newPerson = getEffectivePerson(data);
-        if (!existingPerson && newPerson) {
-          existingRecord.data.person = newPerson;
-          existingRecord.data.persons = data.persons || [newPerson];
-          recordsList.innerHTML = "";
-          renderResultCard(existingRecord.source, existingRecord.data, 1);
-          const updatedHeader = shadow.querySelector(".record-header-tag span");
-          if (updatedHeader) {
-            updatedHeader.textContent = `Compliance · ${activeResults.map((r) => r.source).join(" & ")} (Verified)`;
-          }
-        }
-
-        hideStatus();
-        setLoading(false);
-        updateRawSummary();
-        return;
-      }
-    }
-
-    // New unique result: Add to list
-    activeResults.push({ source, data, isDuplicate: false });
+    // Every record that is switched on gets its own card - even when the two answers are identical.
+    // Identical records used to be folded into one card labelled "… & … (Verified)", which hid the
+    // second record behind the first one. The cards are exactly what the Settings switches
+    // (Record 1 / Record 2) decide between, so each record has to stand on its own.
+    activeResults.push({ source, data });
 
     // Render the card
     renderResultCard(source, data, activeResults.length);
@@ -2280,7 +2982,8 @@
       }
     } else {
       if (sourceStatusText) {
-        sourceStatusText.textContent = `Multiple Records Found (${activeResults.map((r) => r.source).join(" & ")})`;
+        // Label the records (Record 1 / Record 2); the source behind a label is not the user's to know.
+        sourceStatusText.textContent = `Multiple Records Found (${activeResults.map((r) => recordLabel(r.source)).join(" & ")})`;
       }
       hideStatus();
       setLoading(false);
@@ -2294,110 +2997,8 @@
     updateRawSummary();
   }
 
-  function normalizeCompliance(val) {
-    const s = (val || "").toLowerCase().trim();
-    if (!s || s === "-" || s === "--" || s.includes("load")) return "unknown";
-    if (
-      s === "clean" ||
-      s.includes("clean") ||
-      s.includes("not listed") ||
-      s.includes("no record") ||
-      s === "pass" ||
-      s === "no"
-    ) {
-      return "clean";
-    }
-    const hasFed = s.includes("federal") || s.includes("national");
-    const hasState = s.includes("state");
-    if (hasFed && hasState) return "fed_state_dnc";
-    if (hasFed) return "fed_dnc";
-    if (hasState) return "state_dnc";
-    if (s.includes("listed") || s.includes("flagged") || s === "yes") {
-      return "flagged";
-    }
-    return s.replace(/[^a-z0-9]/g, "");
-  }
-
-  function getEffectivePerson(d) {
-    if (!d) return null;
-    const p = d.person || (d.persons && d.persons.length > 0 ? d.persons[0] : null);
-    if (!p) return null;
-    const name = (p.name || "").trim();
-    const street = (p.address?.street || p.address?.full || "").trim();
-    if (!name && !street) return null;
-    if (/^(unknown|no result|no owner|search result|null|undefined|-)$/i.test(name)) return null;
-    return p;
-  }
-
-  function arePersonsEqual(p1, p2) {
-    if (!p1 && !p2) return true;
-    if (!p1 || !p2) return true; // One site has person details, one doesn't -> same person context
-
-    const normName = (str) =>
-      (str || "")
-        .toLowerCase()
-        .replace(/[^a-z\s]/g, " ")
-        .trim()
-        .split(/\s+/)
-        .filter(Boolean);
-    const parts1 = normName(p1.name);
-    const parts2 = normName(p2.name);
-
-    if (parts1.length > 0 && parts2.length > 0) {
-      const first1 = parts1[0];
-      const first2 = parts2[0];
-      const last1 = parts1[parts1.length - 1];
-      const last2 = parts2[parts2.length - 1];
-
-      const firstMatch =
-        first1 === first2 || first1.startsWith(first2) || first2.startsWith(first1);
-      const lastMatch = last1 === last2;
-
-      if (!firstMatch || !lastMatch) {
-        return false; // Conflicting names -> show twice
-      }
-    }
-
-    const addr1 = (p1.address?.street || p1.address?.full || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, "");
-    const addr2 = (p2.address?.street || p2.address?.full || "")
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, "");
-
-    if (
-      addr1 &&
-      addr2 &&
-      addr1 !== addr2 &&
-      !addr1.includes(addr2) &&
-      !addr2.includes(addr1)
-    ) {
-      return false; // Conflicting addresses -> show twice
-    }
-
-    return true;
-  }
-
-  // Deduplication comparator: show only once if same, twice if different
-  function areResultsEqual(d1, d2) {
-    if (!d1 || !d2) return false;
-
-    // 1. Compliance comparison: DNC, Litigator, Blacklist must be semantically identical
-    const compSame =
-      normalizeCompliance(d1.dnc) === normalizeCompliance(d2.dnc) &&
-      normalizeCompliance(d1.litigator) === normalizeCompliance(d2.litigator) &&
-      normalizeCompliance(d1.blacklist) === normalizeCompliance(d2.blacklist);
-
-    if (!compSame) return false; // Different compliance -> show twice!
-
-    // 2. Person comparison
-    const p1 = getEffectivePerson(d1);
-    const p2 = getEffectivePerson(d2);
-
-    return arePersonsEqual(p1, p2);
-  }
+  // (The record comparison helpers that used to decide whether two records were "the same" - and
+  // therefore whether one card or two should be drawn - are gone: every record draws its own card.)
 
   // ---------------------------------------------------------------------------
   // Record addresses
@@ -2527,6 +3128,9 @@
 
   function personMatchesZipFilter(person, filter) {
     if (!filter) return true;
+    // A manual card has no address yet - that is what its Search button is for - so the ZIP filter
+    // never hides it: the card the user is filling in must not vanish while they type.
+    if (person && person.manual) return true;
     return addressListForPerson(person).some((address) => addressMatchesZip(address, filter));
   }
 
@@ -2550,14 +3154,16 @@
       }
       if (String(entry.source || "") !== key) continue; // not this record's card
       try {
+        // A new filter: the card moves to a person the filter found (see the repaint it registers).
         entry.repaint();
       } catch (e) {}
     }
   }
 
-  // The navigation row of a record card: record chevrons on the left, ZIP box on the right. The box
-  // carries the value for *this* record only.
-  function recordNavRowHtml(index, total, recordSource) {
+  // The record card's navigation row: the record chevrons, and the ZIP box that filters *this* record
+  // only. `hideZip` is what the manual card asks for - it takes the ZIP in its own address field (that is
+  // what the AI resolver is for), so the filter box would be a second, competing one.
+  function recordNavRowHtml(index, total, recordSource, hideZip) {
     const filterValue = zipFilterFor(recordSource);
     return `
         <div class="person-slide-header">
@@ -2570,10 +3176,11 @@
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"></polyline></svg>
             </button>
           </div>
+          ${hideZip ? "" : `
           <div class="zip-filter-box">
             <input class="zip-filter-input" type="text" inputmode="numeric" autocomplete="off" maxlength="5" placeholder="ZIP code" title="Show only the people whose address is in this ZIP" aria-label="Filter this record by ZIP code" value="${escapeHtml(filterValue)}" />
             <button class="zip-filter-clear${filterValue ? "" : " hidden"}" type="button" title="Clear the ZIP filter" aria-label="Clear the ZIP filter">✕</button>
-          </div>
+          </div>`}
         </div>
       `;
   }
@@ -2616,7 +3223,7 @@
   // remembered is the record's *name*, not the element: a card is rebuilt whenever a search runs,
   // so a held element would go stale, while the name keeps resolving.
   // ---------------------------------------------------------------------------
-  const lookupRecordByProvider = Object.create(null); // amica | mercury | dob -> record source
+  const lookupRecordByProvider = Object.create(null); // amica | mercury | dob | email -> record source
 
   function lookupRecord(provider) {
     return lookupRecordByProvider[String(provider == null ? "" : provider).toLowerCase()] || "";
@@ -2639,6 +3246,100 @@
     if (!recordSource) return shadow ? shadow.getElementById(id) : null;
     const card = recordCard(recordSource);
     return card ? card.querySelector("#" + id) : null;
+  }
+
+  // ------------------------------------------------------------------ the manual card on a record
+  //
+  // A record that named nobody - or a record the user wants to ask about somebody it does not have -
+  // gets the same card as everyone else, with two fields instead of a name and an address. Everything
+  // else on it (Copy, the gender chip, Rides, DOB, Email, the progress and result boxes) is the card's
+  // own markup, so those actions work on a typed-in person exactly as they work on a found one.
+
+  // A person who is being typed in. The shape is the one every action already expects, so nothing else
+  // in the card has to know the difference.
+  function manualPerson() {
+    return {
+      manual: true,
+      name: "",
+      addressInput: "",
+      address: { street: "", city: "", state: "", zip: "", full: "" },
+      allAddresses: [],
+      addressIndex: 0,
+      emails: []
+    };
+  }
+
+  // Turns whatever the user typed into the address field into the parts a lookup needs. The field takes
+  // anything - a ZIP on its own, a city and state, a street, or the whole address - and Amica, the DOB
+  // run and the AI runs all want a city and a ZIP, so what can be recognised is split out here and the
+  // raw text is kept as `addressInput` for the AI resolver to work from.
+  function applyManualAddressInput(person, raw) {
+    if (!person) return;
+
+    const text = String(raw == null ? "" : raw).replace(/\s+/g, " ").trim();
+    person.addressInput = text;
+
+    const zipMatch = text.match(/\b(\d{5})(?:-\d{4})?\b/);
+    const stateMatch = text.match(/\b([A-Za-z]{2})\s+\d{5}(?:-\d{4})?\b/);
+    const zip = zipMatch ? zipMatch[1] : "";
+    const state = stateMatch ? stateMatch[1].toUpperCase() : "";
+
+    let street = "";
+    let city = "";
+
+    const parts = text.split(",").map((part) => part.trim()).filter(Boolean);
+    if (parts.length >= 2) {
+      street = parts[0];
+      const tail = parts[parts.length - 1].replace(/\b[A-Za-z]{2}\b/, " ").replace(/\d{5}(?:-\d{4})?/, " ");
+      city = tail.replace(/\s+/g, " ").trim();
+
+      // "1215 W Pleasant Run Rd, # TX75, DeSoto, TX 75115" - a unit between the street and the city
+      // leaves the state and ZIP alone on the last part with no city beside them, and the city is then
+      // the part before it. A bare two-letter code there is the state, not a city, and is left alone:
+      // "…, DeSoto, TX, 75115" must not end up with a city called TX.
+      if (!city && parts.length >= 3) {
+        const before = parts[parts.length - 2];
+        if (!/^[A-Za-z]{2}$/.test(before)) city = before;
+      }
+    } else if (text) {
+      // One field: whatever it looks like it is.
+      if (/^\d{5}(?:-\d{4})?$/.test(text)) {
+        street = "";
+        city = "";
+      } else if (state) {
+        city = text.replace(/\b[A-Za-z]{2}\s+\d{5}(?:-\d{4})?.*$/, "").replace(/[,\s]+$/, "").trim();
+        street = "";
+      } else if (/^\d+\s+\S/.test(text)) {
+        street = text;
+      } else {
+        city = text;
+      }
+    }
+
+    person.address = { street: street, city: city, state: state, zip: zip, full: text };
+    person.allAddresses = text ? [{ street: street, city: city, state: state, zip: zip, full: text }] : [];
+  }
+
+  // Repaints a record's card from the data it holds. A card registers itself for repaint (the ZIP
+  // filter uses the same registry), so a message that arrives for a card that is already on screen
+  // redraws it in place instead of waiting for the next search.
+  //
+  // `keepPerson` belongs to the resolver: its answer is for the card that asked for it, so that card
+  // stays on the person it is showing. A ZIP filter change is the opposite - it is about the people the
+  // lookup found, so the card moves to one of those.
+  function repaintRecord(recordSource, keepPerson) {
+    const wanted = String(recordSource == null ? "" : recordSource);
+    for (let i = zipFilterRepaints.length - 1; i >= 0; i--) {
+      const entry = zipFilterRepaints[i];
+      if (!entry || !entry.element || !entry.element.isConnected) {
+        zipFilterRepaints.splice(i, 1);
+        continue;
+      }
+      if (String(entry.source || "") !== wanted) continue;
+      try {
+        entry.repaint(keepPerson);
+      } catch (e) {}
+    }
   }
 
   // Render individual card block in order
@@ -2714,31 +3415,47 @@
         p.address?.full ||
         streetDisplay;
 
-      const slideNavHtml = recordNavRowHtml(pIdx, personsList.length, source);
+      // The manual card has no ZIP box, and with a single card there are no chevrons either - so the
+      // header row is only rendered when there is something in it.
+      const slideNavHtml = p.manual
+        ? (personsList.length > 1 ? recordNavRowHtml(pIdx, personsList.length, source, true) : "")
+        : recordNavRowHtml(pIdx, personsList.length, source);
 
-      personCardContainer.innerHTML = `
-        <div class="card person-card">
-          <div class="record-header-tag">
-            <span>${recordLabel(source)}</span>
-          </div>
-          ${slideNavHtml}
-          <div class="person-header-row">
-            <div class="person-meta">
-              <div class="name-wrapper">
-                <span class="person-name">${name}</span>
-                <div class="person-actions">
-                  <button class="mini-btn copy-name-action" data-copy="${escapeHtml(name)}" type="button">Copy</button>
-                  <button class="mini-btn vehicle-btn amica-action-btn" type="button" title="Discover vehicles on Ride 1">${rideLabel("amica")}</button>
-                  <button class="mini-btn vehicle-btn mercury-action-btn" type="button" title="Discover vehicles on Ride 2">${rideLabel("mercury")}</button>
-                  <button class="mini-btn dob-btn dob-action-btn" type="button" title="Deep research DOB on Unmask">DOB</button>
-                </div>
-              </div>
-              <div class="age-dob-row">
-                <span class="age-badge">${age}</span>
+      // A manual card asks for the two things the record could not give: the name, and whatever the user
+      // knows of the address. Everything else on the card is the card's own markup, which is what makes
+      // the actions under it work on a typed-in person exactly as they do on a found one.
+      const nameFieldHtml = p.manual
+        ? `<input class="manual-name-input" type="text" autocomplete="off" spellcheck="false" placeholder="e.g., John Smith" aria-label="Name" value="${escapeHtml(p.name || "")}" />`
+        : `<span class="person-name">${escapeHtml(name)}</span>`;
+
+      // The manual card's address is the card's own two lines - the street, then the city, state and ZIP -
+      // so what is typed in is shown in the same shape a found address is. Both lines are fields, and the
+      // pair is put back into one string for the splitter whenever either of them changes.
+      const manualStreet = (p.address && p.address.street) || "";
+      const manualCity = (p.address && p.address.city) || "";
+      const manualState = (p.address && p.address.state) || "";
+      const manualZip = (p.address && p.address.zip) || "";
+      const manualCityLine = (
+        [manualCity, manualState].filter(Boolean).join(", ") + (manualZip ? " " + manualZip : "")
+      ).trim();
+
+      const addressBlockHtml = p.manual
+        ? `
+          <div class="address-box">
+            <div class="address-title-row">
+              <span class="sub-label">Primary address</span>
+              <div class="address-title-actions">
+                <button class="mini-btn manual-search-btn" type="button" title="Ask AI for the full address, email and DOB">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                  Search
+                </button>
               </div>
             </div>
+            <input class="manual-street-input" type="text" autocomplete="off" spellcheck="false" placeholder="e.g., 4821 Maple Grove Ln" aria-label="Street address" value="${escapeHtml(manualStreet)}" />
+            <input class="manual-city-input" type="text" autocomplete="off" spellcheck="false" placeholder="e.g., Dayton, Ohio 45402" aria-label="City, state and ZIP" value="${escapeHtml(manualCityLine)}" />
           </div>
-
+        `
+        : `
           <div class="address-box">
             <div class="address-title-row">
               <span class="sub-label">${escapeHtml(addressLabelForIndex(addrIdx, addrTotal))}</span>
@@ -2750,6 +3467,39 @@
             <div class="street-line">${escapeHtml(streetDisplay)}</div>
             ${cityDisplay ? `<div class="city-line">${escapeHtml(cityDisplay)}</div>` : ""}
           </div>
+        `;
+
+      // The Copy button copies the name that is on the card. For a manual card that is whatever has been
+      // typed so far - nothing at all until then, so there is nothing to copy - and never the
+      // "Unknown Name" fallback, which the card only uses for a found person whose name came back empty.
+      const copyNameValue = p.manual ? p.name || "" : name;
+
+      personCardContainer.innerHTML = `
+        <div class="card person-card">
+          <div class="record-header-tag">
+            <span>${recordLabel(source)}</span>
+            <button class="manual-add-btn" type="button" title="Add a person to this record" aria-label="Add a person to this record">+</button>
+          </div>
+          ${slideNavHtml}
+          <div class="person-header-row">
+            <div class="person-meta">
+              <div class="name-wrapper">
+                ${nameFieldHtml}
+                ${genderBadgeHtml(p.gender, p.genderNote)}
+                <div class="person-actions">
+                  <button class="mini-btn copy-name-action" data-copy="${escapeHtml(copyNameValue)}" type="button">Copy</button>
+                  <button class="mini-btn vehicle-btn amica-action-btn" type="button" title="Discover vehicles on this record">${rideLabel("amica")}</button>
+                  <button class="mini-btn dob-btn dob-action-btn" type="button" title="Deep research DOB on Unmask">DOB</button>
+                  <button class="mini-btn dob-btn email-action-btn" type="button" title="Find the public primary email with AI">Email</button>
+                </div>
+              </div>
+              <div class="age-dob-row">
+                <span class="age-badge">${age}</span>
+              </div>
+            </div>
+          </div>
+
+          ${addressBlockHtml}
 
           <!-- Vehicle Progress Section -->
           <div class="vehicle-progress-box hidden" id="card-vehicle-progress">
@@ -2846,10 +3596,79 @@
         });
       }
 
+      // The manual card: what the user types *is* the person. The name field writes straight onto it,
+      // the address field is split into the parts a lookup needs, and Search hands both to the AI
+      // resolver. Nothing repaints while typing - the caret has to stay where it is.
+      const nameInput = personCardContainer.querySelector(".manual-name-input");
+      const streetInput = personCardContainer.querySelector(".manual-street-input");
+      const cityInput = personCardContainer.querySelector(".manual-city-input");
+      const searchBtn = personCardContainer.querySelector(".manual-search-btn");
+      const addBtn = personCardContainer.querySelector(".manual-add-btn");
+
+      if (nameInput) {
+        nameInput.addEventListener("input", (e) => {
+          e.stopPropagation();
+          p.name = e.target.value;
+          const copyName = personCardContainer.querySelector(".copy-name-action");
+          if (copyName) copyName.setAttribute("data-copy", p.name);
+        });
+        nameInput.addEventListener("click", (e) => e.stopPropagation());
+        nameInput.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            const focus = personCardContainer.querySelector(".manual-search-btn");
+            if (focus) focus.focus();
+          }
+        });
+      }
+
+      // The two address lines are one address: whatever is typed in either is put back together in the
+      // order the card shows it and handed to the same splitter the single field used to feed, so the
+      // parts the runs need (street, city, state, ZIP) are split out exactly as before.
+      const syncManualAddress = () => {
+        const combined = [
+          streetInput ? streetInput.value.trim() : "",
+          cityInput ? cityInput.value.trim() : ""
+        ]
+          .filter(Boolean)
+          .join(", ");
+        applyManualAddressInput(p, combined);
+      };
+
+      [streetInput, cityInput].forEach((input) => {
+        if (!input) return;
+        input.addEventListener("input", (e) => {
+          e.stopPropagation();
+          syncManualAddress();
+        });
+        input.addEventListener("click", (e) => e.stopPropagation());
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            startGoogleAddressAutomation(p, source);
+          }
+        });
+      });
+
+      if (searchBtn) {
+        searchBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          startGoogleAddressAutomation(p, source);
+        });
+      }
+
+      if (addBtn) {
+        addBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          addManualPerson();
+        });
+      }
+
       // Bind vehicle lookup buttons
       const amicaBtn = personCardContainer.querySelector(".amica-action-btn");
-      const mercuryBtn = personCardContainer.querySelector(".mercury-action-btn");
       const dobBtn = personCardContainer.querySelector(".dob-action-btn");
+      const emailBtn = personCardContainer.querySelector(".email-action-btn");
+      const genderBtn = personCardContainer.querySelector(".gender-action-btn");
       const cancelBtn = personCardContainer.querySelector("#vehicle-cancel-btn");
 
       if (amicaBtn) {
@@ -2859,10 +3678,17 @@
         });
       }
 
-      if (mercuryBtn) {
-        mercuryBtn.addEventListener("click", (e) => {
+      if (genderBtn) {
+        genderBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          startVehicleAutomation("mercury", p, source);
+          startGoogleGenderAutomation(p, source);
+        });
+      }
+
+      if (emailBtn) {
+        emailBtn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          startGoogleEmailAutomation(p, source);
         });
       }
 
@@ -2961,10 +3787,46 @@
       }
     }
 
+    // Adds an empty card the user fills in themselves - what the + on the card's header is for. It goes
+    // in *front* of the people the lookup found - on the record's own list and on the card's - and the
+    // card jumps to it, so what was just asked for is what is on screen: 1 / 7, not 7 / 7. The repaint,
+    // the chevrons and the ZIP filter then treat it like any other person on that record.
+    //
+    // `allPersons` *is* `data.persons` for a record that named somebody (see renderResultCard), and
+    // pushing to both listed the card twice - once as the last person and once behind it, which is why
+    // the count ran one higher than the number of cards. Whoever holds the list is asked to hold it once.
+    function addManualPerson() {
+      const person = manualPerson();
+      allPersons.unshift(person);
+      if (allPersons !== data.persons) {
+        if (Array.isArray(data.persons)) data.persons.unshift(person);
+        else if (data.person) data.persons = [person, data.person];
+        else data.persons = [person];
+      }
+
+      personsList = filterPersonsByZip(allPersons, activeZipFilter(zipFilterFor(source)));
+      const found = personsList.indexOf(person);
+      currentPersonIdx = found >= 0 ? found : 0;
+
+      renderPersonSection();
+      if (!personCardContainer.parentNode) cardWrapper.appendChild(personCardContainer);
+    }
+
     // Rebuilds the card for the current filter - either the filtered person or, when nothing of
     // this record is in that ZIP, a note that says how many people are hidden.
     function renderPersonSection() {
       const wasTyping = isZipInputFocused();
+
+      // A record that named nobody gets the manual card rather than an empty space: a name field, an
+      // address field and the AI resolver under them. It is created once for the card and then lives on
+      // the record's list, so the user's typing survives every repaint.
+      if (allPersons.length === 0) {
+        const person = manualPerson();
+        allPersons.push(person);
+        personsList = [person];
+        currentPersonIdx = 0;
+      }
+
       const person = personsList[currentPersonIdx];
 
       if (!person) {
@@ -2978,12 +3840,14 @@
       if (wasTyping) focusZipInput();
     }
 
-    // The card is only worth showing when there is a person behind it, or when the note has to
-    // explain that the ZIP filter hid everyone.
+    // The card is only worth showing when there is a person behind it, when the note has to explain
+    // that the ZIP filter hid everyone, or when the record named nobody - in which case the manual card
+    // is what the user types into.
     function shouldShowPersonSection() {
       const first = personsList[0];
       if (first && (first.name || first.address)) return true;
-      return allPersons.length > 0 && personsList.length === 0;
+      if (allPersons.length === 0) return true;
+      return personsList.length === 0;
     }
 
     if (shouldShowPersonSection()) {
@@ -2996,9 +3860,18 @@
     zipFilterRepaints.push({
       source: source,
       element: cardWrapper,
-      repaint: () => {
+      repaint: (keepPerson) => {
         personsList = filterPersonsByZip(allPersons, activeZipFilter(zipFilterFor(source)));
-        currentPersonIdx = 0;
+
+        // Where the card lands. A resolver answer (keepPerson) belongs to the card that asked, and the
+        // person it is showing is still in the list, so it stays put. A new ZIP filter is about the
+        // people the lookup found: the manual card sits in front of them and is never filtered itself,
+        // so landing on it would hide the very people the filter was asked for.
+        if (!keepPerson) {
+          const firstFound = personsList.findIndex((entry) => entry && !entry.manual);
+          currentPersonIdx = firstFound >= 0 ? firstFound : 0;
+        }
+
         if (!shouldShowPersonSection()) return;
         renderPersonSection();
         if (!personCardContainer.parentNode) cardWrapper.appendChild(personCardContainer);
@@ -3066,11 +3939,10 @@
 
   function updateRawSummary() {
     let summary = "";
-    const uniqueRecords = activeResults.filter((r) => !r.isDuplicate);
-
-    uniqueRecords.forEach((r, idx) => {
+    // One block per record card, so the copied text keeps Record 1 and Record 2 apart.
+    activeResults.forEach((r, idx) => {
       const { source, data } = r;
-      if (uniqueRecords.length > 1) {
+      if (activeResults.length > 1) {
         summary += `--- ${recordLabel(source)} ---\n`;
       }
       const persons =
@@ -3392,7 +4264,7 @@
 
     if (!box) return;
     box.classList.remove("hidden");
-    if (tag) tag.textContent = provider === "DOB" ? "DOB" : rideLabel(provider);
+    if (tag) tag.textContent = provider === "DOB" ? "DOB" : provider === "EMAIL" ? "EMAIL" : provider === "GENDER" ? "GENDER" : provider === "ADDRESS" ? "AI" : rideLabel(provider);
     if (status) status.textContent = message || "Processing...";
     if (fill) {
       fill.style.width = `${Math.min(100, Math.max(8, pct))}%`;
@@ -3543,6 +4415,183 @@
     box.classList.remove("hidden");
   }
 
+  // ---------------------------------------------------------------- the gender chip on a person card
+  //
+  // The icon beside the name is both the button and the answer: a question mark made of both symbols
+  // until it has been asked, then the symbol the AI named - coloured, with the wording in its tooltip
+  // (and, when the answer only came from the way the first name is usually given, that is said too, so
+  // a guess about the name is never passed off as a statement about the person).
+
+  function genderIconSvg(gender) {
+    if (gender === "Female") {
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="9" r="5"/><path d="M12 14v7"/><path d="M9 18h6"/></svg>`;
+    }
+    if (gender === "Male") {
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="14" r="5"/><path d="M13.6 10.4 20 4"/><path d="M14.5 4H20v5.5"/></svg>`;
+    }
+    // Not asked yet: the two symbols together, which is what the button is about.
+    return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10" cy="13" r="4.5"/><path d="M10 17.5V22"/><path d="M7.5 19.8h5"/><path d="M13.2 9.8 19 4"/><path d="M14 4h5v5"/></svg>`;
+  }
+
+  function genderTitleText(gender, note) {
+    if (gender !== "Male" && gender !== "Female") return "Check gender with AI";
+    return `${gender} — from the AI answer${note ? ` (${note})` : ""}`;
+  }
+
+  function genderBadgeHtml(gender, note) {
+    const value = gender === "Male" || gender === "Female" ? gender : "";
+    const state = value === "Female" ? " is-female" : value === "Male" ? " is-male" : "";
+    const title = genderTitleText(value, note);
+    return `<button id="gender-badge-btn" class="gender-btn gender-action-btn${state}" type="button" title="${escapeHtml(title)}" aria-label="${escapeHtml(title)}">${genderIconSvg(value)}</button>`;
+  }
+
+  // Repaints the chip in place, so an answer that arrives for a card that is already on screen shows
+  // up without rebuilding the slide (and without disturbing the progress line under it).
+  function renderGenderBadge(recordSource, gender, note) {
+    const btn = recordElement(recordSource, "gender-badge-btn");
+    if (!btn) return;
+
+    const value = gender === "Male" || gender === "Female" ? gender : "";
+    btn.classList.toggle("is-female", value === "Female");
+    btn.classList.toggle("is-male", value === "Male");
+    btn.classList.remove("running");
+
+    const title = genderTitleText(value, note);
+    btn.setAttribute("title", title);
+    btn.setAttribute("aria-label", title);
+    btn.innerHTML = genderIconSvg(value);
+  }
+
+  // The Google AI Mode gender run, asked for by the icon beside a person's name. One question, one
+  // answer, and the chip itself carries what came back - so there is nothing else to trigger here and
+  // no month (or address) to carry into the query.
+  function startGoogleGenderAutomation(person, recordSource) {
+    const record = recordSource || "";
+    const session = { person, record };
+    genderSessionsByRecord[record] = session;
+    activeGenderSession = session;
+    lookupRecordByProvider.gender = record;
+
+    const chip = recordElement(record, "gender-badge-btn");
+    if (chip) chip.classList.add("running");
+
+    showVehicleProgress(
+      "GENDER",
+      15,
+      `Asking AI if ${person.name || "this person"} is male or female...`,
+      false,
+      record
+    );
+
+    chrome.runtime.sendMessage({
+      action: "START_GOOGLE_GENDER_LOOKUP",
+      person,
+      record
+    }, (res) => {
+      if (res && !res.success) {
+        if (chip) chip.classList.remove("running");
+        showVehicleProgress("GENDER", 100, `Error: ${res.error || "Failed to start"}`, true, record);
+        setTimeout(() => hideVehicleProgress("GENDER", record), 4000);
+      }
+    });
+  }
+
+  // The record a gender message belongs to - the same rule the DOB and email messages follow.
+  function genderMessageRecord(msg) {
+    const tagged = msg && msg.record ? String(msg.record) : "";
+    return tagged || lookupRecord("gender");
+  }
+
+  // The manual card's Search button. It asks the AI about the name and the address *as typed* (the
+  // background builds both queries from them, and the second query is the fallback), and whatever comes
+  // back fills the card in - which is what makes Rides, DOB and Email work on a person the record never
+  // named.
+  function startGoogleAddressAutomation(person, recordSource) {
+    const record = recordSource || "";
+    lookupRecordByProvider.address = record;
+
+    const name = String(person.name || "").trim();
+    const place = String(person.addressInput || "").trim();
+
+    if (!name || !place) {
+      showVehicleProgress("ADDRESS", 100, "Type a name and something of the address first.", true, record);
+      setTimeout(() => hideVehicleProgress("ADDRESS", record), 4000);
+      return;
+    }
+
+    addressSessionsByRecord[record] = { person, record };
+    activeAddressSession = addressSessionsByRecord[record];
+
+    const card = recordCard(record);
+    const searchBtn = card ? card.querySelector(".manual-search-btn") : null;
+    if (searchBtn) searchBtn.classList.add("running");
+
+    showVehicleProgress("ADDRESS", 15, `Asking AI to complete ${name} at ${place}...`, false, record);
+
+    chrome.runtime.sendMessage({
+      action: "START_GOOGLE_ADDRESS_LOOKUP",
+      person,
+      record
+    }, (res) => {
+      if (res && !res.success) {
+        if (searchBtn) searchBtn.classList.remove("running");
+        showVehicleProgress("ADDRESS", 100, `Error: ${res.error || "Failed to start"}`, true, record);
+        setTimeout(() => hideVehicleProgress("ADDRESS", record), 4000);
+      }
+    });
+  }
+
+  // The record an address message belongs to - the same rule the other runs' messages follow.
+  function addressMessageRecord(msg) {
+    const tagged = msg && msg.record ? String(msg.record) : "";
+    return tagged || lookupRecord("address");
+  }
+
+  // Puts what the AI resolved onto the person. The name and the address the user typed are *replaced*
+  // by it, which is the point of the run: every later lookup reads this person, so DOB, Rides and Email
+  // carry on from a full name and a complete address instead of from "Jeff Green" and "44718".
+  function applyAddressResult(msg, person) {
+    if (!person) return;
+
+    const name = String(msg.name || "").trim();
+    if (name) person.name = name;
+
+    const street = String(msg.street || "").trim();
+    const city = String(msg.city || "").trim();
+    const state = String(msg.state || "").trim();
+    const zip = String(msg.zip || "").trim();
+    const cityState = [city, state].filter(Boolean).join(", ");
+    const full =
+      String(msg.addressFull || "").trim() ||
+      [street, cityState, zip].filter(Boolean).join(", ").replace(/, ([A-Z]{2}), /, ", $1 ");
+
+    if (street || city || state || zip || full) {
+      person.address = { street: street, city: city, state: state, zip: zip, full: full };
+      person.addressInput = full || street || zip || city;
+      person.allAddresses = full || street ? [person.address] : [];
+      person.addressIndex = 0;
+    }
+
+    // The birth date the same answer named, when it named one - "his birth year is 1958 or early 1959".
+    // It goes on the person as the AI row (dob3), which is the slot the DOB box draws and the row the
+    // runs read a known DOB from, so the year the answer gave is on the card instead of being dropped,
+    // and Email's question carries it rather than asking blind.
+    const dob = String(msg.dob || "").trim();
+    if (dob) {
+      person.dob3 = dob;
+      person.dob3Source = String(msg.source || "google.ai");
+      person.dob3Note = String(msg.dobNote || "");
+      if (!person.dob) person.dob = dob;
+    }
+
+    const email = String(msg.email || "").trim().toLowerCase();
+    if (email) {
+      const merged = Array.isArray(person.emails) ? person.emails.slice() : [];
+      if (merged.indexOf(email) < 0) merged.push(email);
+      person.emails = merged;
+    }
+  }
+
   function renderDiscoveredEmails(recordSource, emails) {
     const box = recordElement(recordSource, "card-email-results");
     const container = recordElement(recordSource, "email-badges-container");
@@ -3586,6 +4635,17 @@
   // no record at all (an older worker still answering, for instance).
   const dobSessionsByRecord = Object.create(null); // record source -> { person, record }
   let activeDobSession = null;
+  // The Google AI Mode email run keeps the same record of its own: which card's person asked for it,
+  // so the addresses it reports are written onto that person and survive a re-render.
+  const emailSessionsByRecord = Object.create(null); // record source -> { person, record }
+  let activeEmailSession = null;
+  // ...and the gender run's: which card's person the icon belongs to, so the answer is written onto
+  // that person and survives a re-render of the slide.
+  const genderSessionsByRecord = Object.create(null); // record source -> { person, record }
+  let activeGenderSession = null;
+  // ...and the manual card's resolver: which card's typed-in person the answer belongs to.
+  const addressSessionsByRecord = Object.create(null); // record source -> { person, record }
+  let activeAddressSession = null;
 
   // The session of the run that started on this record, or the run in flight when the record is
   // unknown.
@@ -3599,6 +4659,12 @@
   function dobMessageRecord(msg) {
     const tagged = msg && msg.record ? String(msg.record) : "";
     return tagged || lookupRecord("dob");
+  }
+
+  // The record an email message belongs to - the same rule the DOB messages follow.
+  function emailMessageRecord(msg) {
+    const tagged = msg && msg.record ? String(msg.record) : "";
+    return tagged || lookupRecord("email");
   }
 
   function startDobAutomation(person, recordSource) {
@@ -3634,6 +4700,48 @@
     });
   }
 
+  // The Google AI Mode email run, asked for by the Email button on a card.
+  //
+  // The month the card already holds - the Google row first, then Unmask's, then ThatSthem's - is
+  // sent with it, because that is what turns the query's "born in 1950" into "born in February 1950".
+  // The run draws in the same progress box the DOB run uses (tagged EMAIL) and reports its own empty
+  // answer, so the card is never left spinning when Google names no address.
+  function startGoogleEmailAutomation(person, recordSource) {
+    const record = recordSource || "";
+    const session = { person, record };
+    emailSessionsByRecord[record] = session;
+    activeEmailSession = session;
+    lookupRecordByProvider.email = record;
+
+    // The DOB the email question is disambiguated with: the most specific date the card holds, so a date
+    // that names a month beats a bare year whichever row it came from. The AI row (dob3) can be a year
+    // the address resolver read out ("1958 or early 1959") while Unmask holds the exact date, and the
+    // question is better off with the month.
+    const dobRows = [person.dob3, person.dob2, person.dob1, person.dob].filter(Boolean);
+    const monthNamed = /(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)/i;
+    const knownDob = dobRows.find((value) => monthNamed.test(String(value))) || dobRows[0] || "";
+
+    showVehicleProgress(
+      "EMAIL",
+      10,
+      `Asking AI for ${person.name || "this person"}'s email address...`,
+      false,
+      record
+    );
+
+    chrome.runtime.sendMessage({
+      action: "START_GOOGLE_EMAIL_LOOKUP",
+      person,
+      record,
+      dob: knownDob
+    }, (res) => {
+      if (res && !res.success) {
+        showVehicleProgress("EMAIL", 100, `Error: ${res.error || "Failed to start"}`, true, record);
+        setTimeout(() => hideVehicleProgress("EMAIL", record), 4000);
+      }
+    });
+  }
+
   // Cancels the DOB run and closes the progress of every card that could be showing it: the one
   // the cancel button lives in, and the one that started the run in flight.
   function cancelDobAutomation(recordSource) {
@@ -3644,10 +4752,16 @@
     [record, runRecord].forEach((key) => {
       if (key) hideVehicleProgress("DOB", key);
       if (key && dobSessionsByRecord[key]) delete dobSessionsByRecord[key];
+      // The one CANCEL_DOB_LOOKUP stops the Google email run as well (it draws in this same box), so
+      // its progress is closed here too rather than left turning. So is the gender run.
+      if (key) hideVehicleProgress("EMAIL", key);
+      if (key) hideVehicleProgress("GENDER", key);
+      if (key && emailSessionsByRecord[key]) delete emailSessionsByRecord[key];
     });
 
     if (activeDobSession && activeDobSession.record === record) activeDobSession = null;
     if (!runRecord || runRecord === record) lookupRecordByProvider.dob = "";
+    if (activeEmailSession && activeEmailSession.record === record) activeEmailSession = null;
   }
 
   // Listen for vehicle & DOB discovery messages from background
@@ -3795,6 +4909,144 @@
       });
 
       updateRawSummary();
+    } else if (msg.action === "GOOGLE_EMAIL_PROGRESS") {
+      const pct = Math.round((msg.step / msg.totalSteps) * 100);
+      showVehicleProgress("EMAIL", pct, msg.message, false, emailMessageRecord(msg));
+    } else if (msg.action === "GOOGLE_EMAIL_RESULT") {
+      // The Google email run reports the one address it found for this record's person. It is merged
+      // into the addresses already on the card (Unmask's, ThatSthem's) rather than replacing them, and
+      // written onto the person so navigating away and back keeps it.
+      const record = emailMessageRecord(msg);
+      const session = emailSessionsByRecord[record] || activeEmailSession || null;
+      const person = session && session.person ? session.person : null;
+      const found = Array.isArray(msg.emails) ? msg.emails.filter(Boolean) : [];
+
+      if (person && found.length > 0) {
+        const merged = Array.isArray(person.emails) ? person.emails.slice() : [];
+        found.forEach((email) => {
+          if (merged.indexOf(email) < 0) merged.push(email);
+        });
+        person.emails = merged;
+      }
+
+      const all = person && Array.isArray(person.emails) && person.emails.length > 0 ? person.emails : found;
+      if (all.length > 0) renderDiscoveredEmails(record, all);
+
+      showVehicleProgress(
+        "EMAIL",
+        100,
+        found.length > 0 ? `Email discovered: ${found[0]}` : "No public email address was named for this address.",
+        found.length === 0,
+        record
+      );
+      setTimeout(() => {
+        hideVehicleProgress("EMAIL", record);
+      }, 4000);
+      updateRawSummary();
+    } else if (msg.action === "GOOGLE_EMAIL_EMPTY") {
+      const record = emailMessageRecord(msg);
+      showVehicleProgress("EMAIL", 100, msg.message || "AI found no email address", true, record);
+      setTimeout(() => {
+        hideVehicleProgress("EMAIL", record);
+      }, 4000);
+    } else if (msg.action === "GOOGLE_GENDER_PROGRESS") {
+      const pct = Math.round((msg.step / msg.totalSteps) * 100);
+      showVehicleProgress("GENDER", pct, msg.message, false, genderMessageRecord(msg));
+    } else if (msg.action === "GOOGLE_GENDER_RESULT") {
+      // The chip beside the name turns into the answer, and the answer is written onto the person so
+      // moving between the card's other people and back keeps it.
+      const record = genderMessageRecord(msg);
+      const session = genderSessionsByRecord[record] || activeGenderSession || null;
+      const person = session && session.person ? session.person : null;
+      const gender = msg.gender === "Male" || msg.gender === "Female" ? msg.gender : "";
+
+      if (person && gender) {
+        person.gender = gender;
+        person.genderNote = msg.note || "";
+        person.genderSource = msg.source || "google.ai";
+      }
+
+      if (gender) renderGenderBadge(record, gender, msg.note || "");
+
+      showVehicleProgress(
+        "GENDER",
+        100,
+        gender
+          ? `${person && person.name ? person.name + " — " : ""}${gender}${msg.note ? ` (${msg.note})` : ""}`
+          : "AI did not say whether this person is male or female.",
+        !gender,
+        record
+      );
+      setTimeout(() => {
+        hideVehicleProgress("GENDER", record);
+      }, 4000);
+      updateRawSummary();
+    } else if (msg.action === "GOOGLE_GENDER_EMPTY") {
+      const record = genderMessageRecord(msg);
+      showVehicleProgress("GENDER", 100, msg.message || "AI could not tell whether this person is male or female.", true, record);
+      renderGenderBadge(record, "", "");
+      setTimeout(() => {
+        hideVehicleProgress("GENDER", record);
+      }, 4000);
+    } else if (msg.action === "GOOGLE_ADDRESS_PROGRESS") {
+      const pct = Math.round((msg.step / msg.totalSteps) * 100);
+      showVehicleProgress("ADDRESS", pct, msg.message, false, addressMessageRecord(msg));
+    } else if (msg.action === "GOOGLE_ADDRESS_RESULT") {
+      // The answer fills the manual card in: the name and the address the user typed are replaced by
+      // what the AI found, and the card is redrawn so the fields show it. Everything under the card
+      // (Rides, DOB, Email, the gender chip) now runs off that fuller name and the complete address.
+      const record = addressMessageRecord(msg);
+      const session = addressSessionsByRecord[record] || activeAddressSession || null;
+      const person = session && session.person ? session.person : null;
+
+      applyAddressResult(msg, person);
+      // The answer belongs to this card, so it stays on the person it was asked about - the manual one.
+      repaintRecord(record, true);
+
+      // ...and the date it named goes into the DOB box as the AI row, beside whatever the DOB run found.
+      // The box is drawn row by row, so every row the person already holds is carried into this paint.
+      if (person && person.dob3) {
+        renderDiscoveredDob(record, {
+          dob1: person.dob1,
+          dob1Source: person.dob1Source,
+          dob1Note: person.dob1Note,
+          dob2: person.dob2,
+          dob2Source: person.dob2Source,
+          dob2Note: person.dob2Note,
+          dob3: person.dob3,
+          dob3Source: person.dob3Source,
+          dob3Note: person.dob3Note
+        });
+      }
+
+      const resolved = person
+        ? [person.name, person.address ? person.address.full : ""].filter(Boolean).join(" at ")
+        : "";
+      const note = msg.note ? ` (${msg.note})` : "";
+
+      showVehicleProgress(
+        "ADDRESS",
+        100,
+        resolved ? `Filled in: ${resolved}${note}` : "AI did not return an address for this person.",
+        !resolved,
+        record
+      );
+      setTimeout(() => {
+        hideVehicleProgress("ADDRESS", record);
+      }, 5000);
+      if (person && person.emails && person.emails.length > 0) {
+        renderDiscoveredEmails(record, person.emails);
+      }
+      updateRawSummary();
+    } else if (msg.action === "GOOGLE_ADDRESS_EMPTY") {
+      const record = addressMessageRecord(msg);
+      const card = recordCard(record);
+      const searchBtn = card ? card.querySelector(".manual-search-btn") : null;
+      if (searchBtn) searchBtn.classList.remove("running");
+      showVehicleProgress("ADDRESS", 100, msg.message || "AI could not resolve a full address from what was typed in.", true, record);
+      setTimeout(() => {
+        hideVehicleProgress("ADDRESS", record);
+      }, 5000);
     } else if (msg.action === "DOB_LOOKUP_EMPTY") {
       const record = dobMessageRecord(msg);
       showVehicleProgress("DOB", 100, msg.message || "No DOB found on Unmask", true, record);
@@ -3820,16 +5072,24 @@
   // ---------------------------------------------------------------------------
   const AUTOMATION_SETTINGS_KEY = "automation_settings";
   const AUTOMATION_SETTINGS_DEFAULTS = {
-    records: { record1: true, record2: true },
+    records: { record1: true, record2: true, record3: true },
     dob: { unmask: true, thatsthem: true, ai: true },
-    dnc: { record1: true, record2: true }
+    dnc: { record1: true, record2: true, record3: true }
   };
 
-  // The two sites are the user's Record 1 and Record 2; their names never reach the UI. Amica and
-  // Mercury are Ride 1 and Ride 2 the same way.
-  const RECORD_LABELS = { "infolookup.site": "Record 1", "infolookupp.com": "Record 2" };
-  const RECORD_KEYS = { "infolookup.site": "record1", "infolookupp.com": "record2" };
-  const RIDE_LABELS = { amica: "Ride 1", mercury: "Ride 2" };
+  // The three sites are the user's Record 1, Record 2 and Record 3; their names never reach the UI.
+  // Vehicle discovery is the one "Rides" action, and Mercury's automation has no UI entry point.
+  const RECORD_LABELS = {
+    "infolookup.site": "Record 1",
+    "infolookupp.com": "Record 2",
+    "uspeoplesearch.net": "Record 3"
+  };
+  const RECORD_KEYS = {
+    "infolookup.site": "record1",
+    "infolookupp.com": "record2",
+    "uspeoplesearch.net": "record3"
+  };
+  const RIDE_LABELS = { amica: "Rides", mercury: "Rides" };
 
   function recordLabel(source) {
     return RECORD_LABELS[String(source == null ? "" : source).toLowerCase()] || "Record";
@@ -3916,6 +5176,11 @@
     const closeSidebarBtn = shadow.getElementById("close-sidebar-btn");
 
     if (!settingsToggleBtn || !settingsSidebar) return;
+
+    // The build stamp, at the bottom of the drawer: proof of *which* copy of widget.js is on this page,
+    // which is the one thing that cannot be read off the cards themselves.
+    const buildStamp = shadow.getElementById("widget-build-stamp");
+    if (buildStamp) buildStamp.textContent = `Build ${WIDGET_BUILD}`;
 
     const toggles = Array.from(settingsSidebar.querySelectorAll(".setting-toggle"));
 

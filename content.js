@@ -21,7 +21,9 @@
     'infolookup.site': 'infolookup.site',
     'www.infolookup.site': 'infolookup.site',
     'infolookupp.com': 'infolookupp.com',
-    'www.infolookupp.com': 'infolookupp.com'
+    'www.infolookupp.com': 'infolookupp.com',
+    'uspeoplesearch.net': 'uspeoplesearch.net',
+    'www.uspeoplesearch.net': 'uspeoplesearch.net'
   };
   const sourceName = SOURCE_BY_HOST[host] || 'infolookup.site';
 
@@ -37,6 +39,8 @@
           activeSearchId = msg.searchId;
           if (sourceName === 'infolookup.site') {
             await executeInfolookupSearch(msg.phone, msg.searchId);
+          } else if (sourceName === 'uspeoplesearch.net') {
+            await executeUsPeopleSearch(msg.phone, msg.searchId);
           } else {
             await executeInfolookuppSearch(msg.phone, msg.searchId);
           }
@@ -922,5 +926,343 @@
     cleaned = cleaned.replace(/^(check-circle|info-circle|fas|fa|exclamation-circle)\s*/i, '');
     const firstLine = cleaned.split(/[\r\n]+/)[0].trim();
     return firstLine;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════════════════
+     USPEOPLESEARCH.NET HELPERS  (Record 3)
+
+     The phone box is `#input` with `#submit` beside it. The answer arrives in place:
+     each compliance check fills a row under `#tcpa`, and the owners land in
+     `#cards-wrap` as `.cx-card`s. While the lookup runs the page shows skeletons -
+     the rows are there but empty and the cards carry no name - so nothing is read
+     until the values themselves have arrived.
+  ═══════════════════════════════════════════════════════════════════════════════ */
+
+  // The whole answered text of the page. The site leaves the *previous* answer on screen while the
+  // next lookup runs, so this is what tells a fresh answer from the one already there: the new answer
+  // changes it, and a page that went empty (its skeletons) in between is proof enough on its own.
+  function usPeopleAnswerStamp() {
+    const text = (el) => (el ? (el.textContent || '').replace(/\s+/g, '') : '');
+    return `${text(document.getElementById('tcpa'))}|${text(document.getElementById('cards-wrap'))}`;
+  }
+
+  // What the page is showing right now. `answered` is false while the lookup is still running: the
+  // compliance rows exist but none of them carries a value, which is the skeleton state.
+  function readUsPeopleDomState() {
+    const compliance = extractUsPeopleCompliance();
+    const persons = extractUsPeoplePersons();
+    const bodyText = document.body ? document.body.innerText || '' : '';
+
+    return {
+      compliance: compliance,
+      persons: persons,
+      answered: Boolean(compliance),
+      noRecords: /no (?:records|results)(?: were)? found|invalid (?:phone )?number|please try a different number/i.test(bodyText)
+    };
+  }
+
+  async function executeUsPeopleSearch(phone, searchId) {
+    const start = Date.now();
+    let phoneInput = null;
+
+    // The search box, in the shapes this site has used: `#input` in the header form (with `#submit`
+    // beside it), the same box by name, or a numeric box inside that form.
+    while (Date.now() - start < 8000) {
+      phoneInput =
+        document.getElementById('input') ||
+        document.querySelector('form input[name="input"]') ||
+        document.querySelector('form input[type="tel"]') ||
+        document.querySelector('input[inputmode="numeric"]');
+      if (phoneInput) break;
+      await sleep(150);
+    }
+
+    if (!phoneInput) {
+      if (port) {
+        port.postMessage({
+          action: 'SEARCH_RESULT',
+          searchId: searchId,
+          source: sourceName,
+          error: 'Phone input field was not found on uspeoplesearch.net.'
+        });
+      }
+      return;
+    }
+
+    // Taken before the search is submitted: see usPeopleAnswerStamp.
+    const stampBefore = usPeopleAnswerStamp();
+
+    const cleanDigits = phone.replace(/\D/g, '');
+    phoneInput.focus();
+    const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+    if (nativeSetter) {
+      nativeSetter.call(phoneInput, cleanDigits);
+    } else {
+      phoneInput.value = cleanDigits;
+    }
+    phoneInput.dispatchEvent(new Event('input', { bubbles: true }));
+    phoneInput.dispatchEvent(new Event('change', { bubbles: true }));
+    phoneInput.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+
+    await sleep(60);
+
+    const findSubmitButton = () =>
+      document.getElementById('submit') ||
+      document.querySelector('form button[type="submit"]') ||
+      document.querySelector('button[type="submit"]') ||
+      Array.from(document.querySelectorAll('button')).find((b) =>
+        /search/i.test(`${b.textContent || ''} ${b.getAttribute('aria-label') || ''}`)
+      ) ||
+      null;
+
+    let submitBtn = findSubmitButton();
+    for (let attempt = 0; attempt < 10 && !submitBtn; attempt++) {
+      await sleep(150);
+      submitBtn = findSubmitButton();
+    }
+
+    // Enter as well as the click: the button is the documented way in, and a build that renders none
+    // searches on Enter alone. The wait below is what reports a search that never ran.
+    try {
+      phoneInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+    } catch (e) {}
+
+    if (submitBtn) {
+      submitBtn.click();
+    } else {
+      try {
+        const form = phoneInput.form || (phoneInput.closest && phoneInput.closest('form'));
+        if (form && typeof form.requestSubmit === 'function') {
+          form.requestSubmit();
+        }
+      } catch (e) {}
+    }
+
+    const maxWaitResults = 15000;
+    const searchStartTime = Date.now();
+    let sawLoading = false;
+
+    await sleep(80);
+
+    while (Date.now() - searchStartTime < maxWaitResults) {
+      if (activeSearchId !== searchId) return;
+
+      const state = readUsPeopleDomState();
+      if (!state.answered) sawLoading = true;
+
+      // The answer on screen is the new one: either the page went through its skeleton state after this
+      // search was submitted, or the answered text is not the text that was there before it. That is
+      // what keeps a previous lookup's answer from being reported as this one's.
+      if (state.answered && (sawLoading || usPeopleAnswerStamp() !== stampBefore)) {
+        if (port) {
+          port.postMessage({
+            action: 'SEARCH_RESULT',
+            searchId: searchId,
+            source: sourceName,
+            data: {
+              ...state.compliance,
+              persons: state.persons,
+              person: state.persons[0] || null
+            }
+          });
+        }
+        return;
+      }
+
+      if (state.answered && state.noRecords) {
+        if (port) {
+          port.postMessage({
+            action: 'SEARCH_RESULT',
+            searchId: searchId,
+            source: sourceName,
+            error: 'No records found or invalid phone number.'
+          });
+        }
+        return;
+      }
+
+      await sleep(120);
+    }
+
+    // Nothing arrived in time. An answer that has landed by now is still worth reporting - a lookup
+    // that took longer than the wait is not a failed one - while a page still showing its skeletons is
+    // reported as the timeout it is, instead of being read as though the skeletons were the answer.
+    const finalState = readUsPeopleDomState();
+    if (finalState.answered) {
+      if (port) {
+        port.postMessage({
+          action: 'SEARCH_RESULT',
+          searchId: searchId,
+          source: sourceName,
+          data: {
+            ...finalState.compliance,
+            persons: finalState.persons,
+            person: finalState.persons[0] || null
+          }
+        });
+      }
+      return;
+    }
+
+    if (port) {
+      port.postMessage({
+        action: 'SEARCH_RESULT',
+        searchId: searchId,
+        source: sourceName,
+        error: 'Timed out waiting for uspeoplesearch.net results.'
+      });
+    }
+  }
+
+  // The compliance table of uspeoplesearch.net: one `.tcpa-row` per check, each holding a `.tcpa-label`
+  // and the `.tcpa-value` the scrub fills in. That value carries `populated` once it has answered, and
+  // the site's own verdict sits in the same attribute - `alert` for a hit, `safe` for a clear check -
+  // which is read in preference to the wording ("Registered" / "Clean").
+  //
+  // Labels are matched with their whitespace removed: "DNC National", "DNC State" and "Litigator Owner"
+  // each put half of their label in a <sub>, so the label reads "DNCNational" and "LitigatorOwner".
+  function extractUsPeopleCompliance() {
+    const rows = Array.from(document.querySelectorAll('#tcpa .tcpa-row, .tcpa .tcpa-row'));
+    if (rows.length === 0) return null;
+
+    const answers = Object.create(null);
+    for (const row of rows) {
+      const labelEl = row.querySelector('.tcpa-label');
+      const valueEl = row.querySelector('.tcpa-value');
+      if (!labelEl || !valueEl) continue;
+
+      const key = cleanText(labelEl.textContent || '').replace(/\s+/g, '').toLowerCase();
+      if (!key) continue;
+
+      answers[key] = {
+        value: cleanText(valueEl.textContent || ''),
+        populated: valueEl.classList.contains('populated'),
+        hit: valueEl.classList.contains('alert'),
+        clear: valueEl.classList.contains('safe')
+      };
+    }
+
+    const answer = (key) => {
+      const row = answers[key];
+      // An unpopulated row is the skeleton state, which is not an answer.
+      if (!row || !row.populated || !row.value) return null;
+      const hit = row.hit || (!row.clear && /regist|listed|flagged|dnc|yes/i.test(row.value));
+      return { value: row.value, hit: hit };
+    };
+
+    const national = answer('dncnational');
+    const state = answer('dncstate');
+    const litigator = answer('litigator');
+    const blacklist = answer('blacklist');
+    const ownerLitigator = answer('litigatorowner');
+
+    // Nothing has answered yet: the rows are on screen as skeletons, with empty values.
+    if (!national && !state && !litigator && !blacklist) return null;
+
+    return {
+      dnc: usPeopleDncValue(national, state),
+      // A litigator on the person's own row or on the owner's is a litigator on the record.
+      litigator: usPeopleFlagValue(litigator, ownerLitigator),
+      blacklist: usPeopleFlagValue(blacklist)
+    };
+  }
+
+  // Registered on both lists is what the other two records report as "State & Federal DNC": the same
+  // phone against the same two registers, so the same value, and the card colours it the same way.
+  function usPeopleDncValue(national, state) {
+    const onNational = Boolean(national && national.hit);
+    const onState = Boolean(state && state.hit);
+    if (onNational && onState) return 'State & Federal DNC';
+    if (onNational) return 'Federal DNC';
+    if (onState) return 'State DNC';
+    return 'Clean';
+  }
+
+  // One flag per card, from the rows that belong to it. A check with no row, or a row that never
+  // answered, reads as clear - which is what the other two records do with the same missing answer.
+  function usPeopleFlagValue(...rows) {
+    return rows.some((row) => row && row.hit) ? 'Flagged' : 'Clean';
+  }
+
+  // The owners as uspeoplesearch.net renders them: `#cards-wrap > .cx-card`, each carrying the name and
+  // age in `.cx-basic`, the addresses in `.cx-addresses .cx-address` (the first row is "LIVES AT" and
+  // the rest "LIVED AT", each with a `.cx-address-col` per part), the relatives in `.cx-misc
+  // .cx-related` and the birth year in `.cx-misc .cx-dob`.
+  //
+  // A card with no name is one of the loading skeletons and is skipped, which is what keeps a half-drawn
+  // answer from being read as a person.
+  function extractUsPeoplePersons() {
+    const cards = Array.from(document.querySelectorAll('#cards-wrap > .cx-card, .cx-info .cx-card'));
+    if (cards.length === 0) return [];
+
+    const persons = [];
+    for (const card of cards) {
+      let name = '';
+      const nameEl = card.querySelector('.cx-name .value') || card.querySelector('.cx-name h3');
+      if (nameEl) {
+        const clone = nameEl.cloneNode(true);
+        clone.querySelectorAll('button, svg').forEach((el) => el.remove());
+        name = cleanText(clone.textContent || '');
+      }
+      if (!name) continue;
+
+      // The card shows the age and the birth year in separate columns; the card format the widget reads
+      // is the one the other records produce, "84 yrs (1942)".
+      const ageValue = cleanText((card.querySelector('.cx-age .value') || {}).textContent || '');
+      const dobValue = cleanText((card.querySelector('.cx-dob .value') || {}).textContent || '');
+      const age = ageValue ? (dobValue ? `${ageValue} yrs (${dobValue})` : `${ageValue} yrs`) : '';
+
+      let bestAddress = null;
+      const allAddresses = [];
+      for (const row of Array.from(card.querySelectorAll('.cx-addresses .cx-address, .cx-address'))) {
+        const street = cleanAddressField(readUsPeopleAddressCol(row, 'home'));
+        const city = cleanAddressField(readUsPeopleAddressCol(row, 'city'));
+        // The state column holds the full name ("Ohio") on this site, which every lookup downstream
+        // already accepts (the same shape the other record produces).
+        const state = cleanAddressField(readUsPeopleAddressCol(row, 'state'));
+        const zip = cleanAddressField(readUsPeopleAddressCol(row, 'zip'));
+        if (!street) continue;
+
+        const full = [street, [city, state].filter(Boolean).join(', '), zip]
+          .filter(Boolean)
+          .join(', ')
+          // The state and the ZIP are one field on the card ("Cincinnati, Ohio 45236"), so the comma
+          // between them goes - whichever way the state is written, "OH" or "Ohio".
+          .replace(/,\s*([A-Za-z]{2,}),\s*(\d{5})\b/, ', $1 $2');
+
+        const address = { street: street, city: city, state: state, zip: zip, full: full };
+        // "LIVES AT" is the current address and is the one every action runs on; the "LIVED AT" rows
+        // stay in the history beside it.
+        const label = cleanText((row.querySelector('.cx-address-col.home .label') || {}).textContent || '');
+        if (!bestAddress && /^lives/i.test(label)) bestAddress = address;
+        allAddresses.push(address);
+      }
+      if (!bestAddress) bestAddress = allAddresses[0] || null;
+      if (!bestAddress) continue;
+
+      const related = Array.from(card.querySelectorAll('.cx-related .value.relation, .cx-related .relation'))
+        .map((el) => cleanText(el.textContent || ''))
+        .filter((relative) => relative && !/^not present$/i.test(relative));
+
+      persons.push({
+        name: name,
+        avatar: name.slice(0, 2).toUpperCase(),
+        age: age,
+        address: bestAddress,
+        allAddresses: allAddresses,
+        related: related
+      });
+    }
+
+    return persons;
+  }
+
+  // One column of an owner's address row: the street ("home"), city, state or ZIP.
+  function readUsPeopleAddressCol(row, col) {
+    const el =
+      row.querySelector(`.cx-address-col.${col} .value`) ||
+      row.querySelector(`.cx-address-col.${col} h4.value`) ||
+      row.querySelector(`.${col} .value`);
+    return el ? el.textContent || '' : '';
   }
 })();

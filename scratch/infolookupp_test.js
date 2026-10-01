@@ -107,7 +107,7 @@ ok(
   'the background dispatches the search to the new source',
   // The record list is what the lookup walks, so the new source is named there, and the walk
   // dispatches whatever the Settings panel left switched on.
-  /const RECORD_SOURCES = \['infolookup\.site', 'infolookupp\.com'\]/.test(bgSrc) &&
+  /const RECORD_SOURCES = \['infolookup\.site', 'infolookupp\.com', 'uspeoplesearch\.net'\]/.test(bgSrc) &&
     /for \(const source of recordSources\) \{[\s\S]{0,120}dispatchToWorker\(source, phoneNumber, searchId\)/.test(bgSrc)
 );
 ok('the background no longer names the old source', !bgSrc.includes('vibegenx'));

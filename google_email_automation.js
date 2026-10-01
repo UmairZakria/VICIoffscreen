@@ -1,14 +1,16 @@
-// Content script for the Google AI Mode birth-month lookup.
+// Content script for the Google AI Mode email lookup.
 //
 // Runs on https://www.google.com/* - in a background tab, or in the extension's hidden offscreen
-// runner. It is a *parallel* source for the DOB search: while Unmask and ThatSthem are being
-// walked, this asks Google AI Mode
+// runner. It is a separate AI Mode job from the birth-month run, started by the Email button on a
+// record card (after a DOB search has put a birth month on the card, if it found one) and asks
+// Google AI Mode
 //
-//   "{name} lives at {address} born in {year} in which month ? no rough guess accurate"
+//   "{name} lives at {address} born in {year} any public available primary email .
+//    gmail hotmail yahoo icloud are prefered"
 //
 // for the record's primary address first and then, one at a time, for its other addresses. What it
-// finds is reported as GOOGLE_DOB_RESULT and drawn as its own row next to the Unmask / ThatSthem
-// dates, so the two can be compared.
+// finds is reported as GOOGLE_EMAIL_RESULT and drawn in the card's Email Addresses box beside the
+// addresses Unmask / ThatSthem found.
 //
 // The page is opened at google.com, the query is typed into the search box and submitted with
 // Enter, and the results page is then switched into AI Mode (the "AI Mode" control, which is the
@@ -25,10 +27,10 @@
 (function () {
   "use strict";
 
-  if (window.__googleAiAutomationLoaded) return;
-  window.__googleAiAutomationLoaded = true;
+  if (window.__googleEmailAutomationLoaded) return;
+  window.__googleEmailAutomationLoaded = true;
 
-  var STORAGE_KEY = "google_pending_lookup";
+  var STORAGE_KEY = "google_email_pending_lookup";
   // Every wait in this file is a deadline sampled on this tick, so it is also the floor on how long
   // any one step appears to take: a gesture that the page acts on in 100 ms still waits for the next
   // tick before it is noticed. It is kept small for exactly that reason - the tick body is a handful
@@ -80,15 +82,11 @@
   // slow trip can never cost the run its result.
   var CLEANUP_GIVE_UP_AFTER_MS = 90000;
 
-  var FULL_MONTHS = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-  ];
-
-  // Long names first, so "January 1949" is read as January rather than as an abbreviation.
-  var MONTH_RE =
-    "(January|February|March|April|May|June|July|August|September|October|November|December" +
-    "|Sept|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)";
+  // The address shapes Google's answer uses, and the bit of prose that separates the address the
+  // answer calls *primary* from the ones it lists for the household. Both are read out of the answer
+  // column's text, so they only ever see what the answer itself stated.
+  var EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+  var HOUSEHOLD_RE = /\b(?:household|co-occupant|co-occupants|family member|relatives?)\b/i;
 
   function isVisible(el) {
     if (!el || !el.getBoundingClientRect) return false;
@@ -123,7 +121,7 @@
   function sendProgress(step, total, message) {
     try {
       chrome.runtime.sendMessage({
-        action: "GOOGLE_LOOKUP_PROGRESS",
+        action: "GOOGLE_EMAIL_PROGRESS",
         step: step,
         totalSteps: total,
         message: message,
@@ -135,9 +133,9 @@
   function sendResult(found, query) {
     try {
       chrome.runtime.sendMessage({
-        action: "GOOGLE_DOB_RESULT",
-        dob: found.dob,
-        year: found.year,
+        action: "GOOGLE_EMAIL_RESULT",
+        emails: found.emails || [],
+        primary: found.primary || "",
         note: found.note || "",
         source: "google.ai",
         query: query,
@@ -336,7 +334,8 @@
   // Reading the whole page was the bug behind the run ending the moment the results page painted:
   // that page also carries the query echo, the ordinary result list and cited records, and a date in
   // any of them ("Age 88 (Mar 1938)") was being read as an answer. The column holds the answer and
-  // nothing else, so a date found in it is a date the AI actually stated.
+  // nothing else, so an address found in it is one the AI actually stated - and the hidden copy of the
+  // signed-in account's own address, which the page carries elsewhere, can never reach it.
   function answerText() {
     var main =
       document.querySelector('div.mZJni[data-container-id="main-col"]') ||
@@ -347,140 +346,114 @@
   }
 
   // The answer column is shared with the control strip under the answer ("Copy", "Share", …), which
-  // carries no dates, so no filtering is needed beyond the length gate the caller applies.
+  // carries no email addresses, so no filtering is needed beyond the length gate the caller applies.
   function answerIsPresent(text) {
     return !!text && text.length >= MIN_ANSWER_CHARS;
   }
 
   // -------------------------------------------------------------------------- reading the answer
 
-  function monthIndex(name) {
-    var key = String(name || "").toLowerCase().replace(/\.$/, "").slice(0, 3);
-    for (var i = 0; i < FULL_MONTHS.length; i++) {
-      if (FULL_MONTHS[i].toLowerCase().slice(0, 3) === key) return i;
-    }
-    return -1;
-  }
+  // Every email address the answer states, in the order it states them, lower-cased and de-duped.
+  //
+  // Only the answer column's *rendered* text is read, so the page's own plumbing (the account's own
+  // address in the hidden data blocks, the share links) never reaches this - but a build that did
+  // render one of them must not put it on the card, so the obvious non-answers are dropped anyway.
+  var NON_ANSWER_EMAIL_RE =
+    /@(?:example\.(?:com|org|net)|google\.com|gstatic\.com|googleusercontent\.com)$/i;
 
-  // Every date the answer states, in any of the shapes it uses:
-  //
-  //   "October 8, 1951"   a full date
-  //   "October 1951"      month and year
-  //   "Oct. 8, 1951"
-  //
-  // The day is optional and is kept when it is there. Month-then-year alone was the miss behind a
-  // whole date being reported as a bare year: "born on October 8, 1951" has a day between the month
-  // and the year, so it did not match at all, and the reader fell through to the year-only pattern.
-  function collectDates(text) {
+  function collectEmails(text) {
+    if (!text) return [];
+
     var out = [];
-    var re = new RegExp(
-      "\\b" + MONTH_RE + "\\.?\\s+(?:(\\d{1,2})(?:st|nd|rd|th)?\\s*,?\\s+)?(\\d{4})\\b",
-      "gi"
-    );
+    var lower = String(text).toLowerCase();
     var m;
-    while ((m = re.exec(text)) !== null) {
-      var idx = monthIndex(m[1]);
-      if (idx < 0) continue;
-      out.push({
-        month: FULL_MONTHS[idx],
-        day: m[2] ? parseInt(m[2], 10) : 0,
-        year: parseInt(m[3], 10),
-        index: m.index
-      });
+    EMAIL_RE.lastIndex = 0;
+    while ((m = EMAIL_RE.exec(lower)) !== null) {
+      var email = m[0].replace(/^[.\-_]+|[.\-_]+$/g, "");
+      if (!email || NON_ANSWER_EMAIL_RE.test(email)) continue;
+      if (out.indexOf(email) < 0) out.push(email);
     }
     return out;
   }
 
-  // "October 8, 1951" when the answer states the day, "October 1951" when it only states the month.
-  function dateLabel(date) {
-    return date.day ? date.month + " " + date.day + ", " + date.year : date.month + " " + date.year;
-  }
+  // The providers the query asks for by name, so the answer's own pick can be held against what was
+  // asked for. Used *within* the answer's pick, never over it.
+  var PREFERRED_EMAIL_RE =
+    /@(?:gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|rocketmail|icloud|me|mac|aol)\.[a-z.]{2,}$/i;
 
-  // A month+year inside a sentence about a birth is the answer; one that merely appears somewhere
-  // on the page is a last resort.
-  function scoreCandidate(candidate, text) {
-    var before = text.slice(Math.max(0, candidate.index - 80), candidate.index).toLowerCase();
-    if (/born|birth/.test(before)) return 3;
-    if (/\bage\b|\bdob\b/.test(before)) return 2;
-    return 1;
-  }
-
-  // The best birth month in the answer. The record's own birth year is the anchor: a date within
-  // two years of it is preferred, because the record's age is what says this is the right person.
-  function extractDob(text, expectedYear) {
+  // The address the answer is actually about.
+  //
+  // The answer is prose and the addresses are stated in it in order: the first one is the address the
+  // answer calls the *primary* one, and anything after its "this household ... for family/co-occupants"
+  // sentence belongs to somebody else at the same address. So the first address before that sentence
+  // wins, and the household ones are only reported when the answer stated nothing primary at all.
+  //
+  // `expectedName` is the gate against a namesake: the answer names the person it is answering about
+  // ("Based on publicly available records for Theresa Dunlap ..."), and an address is only reported
+  // from an answer that names this record's person. The *whole* name is required, so a relative at the
+  // same address who shares the surname - a Loften Dunlap against a Theresa Dunlap, which is exactly
+  // what the household paragraph is full of - cannot pass as this record's person. An answer about
+  // somebody else reports nothing at all and the run moves on to the next address, which is the right
+  // way round: a relative's or a namesake's address on the card is worse than an empty row.
+  function extractEmail(text, expectedName) {
     if (!text) return null;
 
-    var dates = collectDates(text).map(function (d) {
-      d.score = scoreCandidate(d, text);
-      return d;
-    });
+    var all = collectEmails(text);
+    if (all.length === 0) return null;
 
-    // The record's own birth year is the anchor and it is a *requirement*, not a preference. The
-    // answer text names relatives and cited records as well, so a date that contradicts the record
-    // belongs to somebody else - reporting it would be worse than reporting nothing.
-    if (expectedYear) {
-      dates = dates.filter(function (d) {
-        return Math.abs(d.year - expectedYear) <= 2;
-      });
+    var lower = String(text).toLowerCase().replace(/\s+/g, " ");
+    var householdAt = -1;
+    var householdMarker = lower.match(HOUSEHOLD_RE);
+    if (householdMarker && typeof householdMarker.index === "number") {
+      householdAt = householdMarker.index;
     }
 
-    if (dates.length > 0) {
-      dates.sort(function (a, b) {
-        if (b.score !== a.score) return b.score - a.score;
-        if (expectedYear) {
-          var da = Math.abs(a.year - expectedYear);
-          var db = Math.abs(b.year - expectedYear);
-          if (da !== db) return da - db;
+    var primary = [];
+    var household = [];
+    for (var i = 0; i < all.length; i++) {
+      var at = lower.indexOf(all[i]);
+      if (householdAt >= 0 && at > householdAt) household.push(all[i]);
+      else primary.push(all[i]);
+    }
+
+    var name = String(expectedName || "").trim().toLowerCase().replace(/\s+/g, " ");
+    if (name) {
+      var tokens = name.split(" ").filter(Boolean);
+      // The whole name, and - for a record that carries a middle initial - the first and last name
+      // together, which is how the answer writes a person whose middle name it did not repeat.
+      var needles = tokens.length > 1 ? [tokens.join(" ")] : [name];
+      if (tokens.length > 2) needles.push(tokens[0] + " " + tokens[tokens.length - 1]);
+
+      var namesThePerson = false;
+      for (var n = 0; n < needles.length; n++) {
+        if (needles[n] && lower.indexOf(needles[n]) >= 0) {
+          namesThePerson = true;
+          break;
         }
-        return a.index - b.index;
-      });
-
-      var best = dates[0];
-      // No note on the row: the difference between the answer's year and the record's is not
-      // reported. A date outside the window was refused above, so whatever reaches here is already
-      // this record's person - the row just shows the date the answer gave.
-      return {
-        dob: dateLabel(best),
-        year: best.year,
-        day: best.day,
-        score: best.score,
-        note: ""
-      };
+      }
+      if (!namesThePerson) return null;
     }
 
-    // The answer may name the month on its own - "His exact birth month is October." - which is the
-    // literal answer to the question. The record's own year completes it, and the row says so rather
-    // than passing it off as a date the answer stated.
-    var monthOnly = text.match(
-      /\bbirth\s+month\b[^.\n]{0,30}?\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i
-    );
-    if (monthOnly) {
-      var mi = monthIndex(monthOnly[1]);
-      if (mi >= 0) {
-        var monthName = FULL_MONTHS[mi];
-        return {
-          dob: expectedYear ? monthName + " " + expectedYear : monthName,
-          year: expectedYear || null,
-          day: 0,
-          score: 3,
-          note: "month only"
-        };
+    // A preferred provider only breaks a tie inside what the answer stated - never the answer's own
+    // primary address, because a primary address is the thing that was asked for.
+    var list = primary.length > 0 ? primary : household;
+    var chosen = list[0] || "";
+    if (chosen && !PREFERRED_EMAIL_RE.test(chosen)) {
+      for (var j = 0; j < list.length; j++) {
+        if (PREFERRED_EMAIL_RE.test(list[j])) {
+          chosen = list[j];
+          break;
+        }
       }
     }
+    if (!chosen) return null;
 
-    // No month stated at all. A birth year on its own is still worth showing - the Unmask and
-    // ThatSthem rows mark year-only values the same way.
-    var ym = text.match(/\bborn[^.\n]{0,40}?\b(19\d{2}|20[0-1]\d)\b/i);
-    if (ym) {
-      var year = parseInt(ym[1], 10);
-      if (!expectedYear || Math.abs(year - expectedYear) <= 2) {
-        return { dob: String(year), year: year, day: 0, score: 2, note: "year only" };
-      }
-    }
-
-    return null;
+    return {
+      emails: [chosen],
+      primary: chosen,
+      note: primary.length === 0 ? "household address" : ""
+    };
   }
-
   // ------------------------------------------------------------- removing the search-history entry
   //
   // Google remembers the query the run typed and offers that string straight back in the box's
@@ -544,17 +517,23 @@
     return !!left && left === right;
   }
 
-  // The exact shape of every query this extension types:
+  // The exact shape of the queries this extension types - this run's own, and the birth-month run's
+  // (which is swept up as well, because both are ours and a sweep that only knew its own would leave
+  // the other's entries behind):
+  //
+  //   "{name} lives at {address} born in {year|Month year} any public available primary email .
+  //    gmail hotmail yahoo icloud are prefered"
   //   "{name} lives at {address} born in {year} in which month ? no rough guess accurate"
+  //
   // It is anchored at the end on purpose: a row that merely *mentions* those words (a user's own
   // longer search, or a variant of one) is not one of ours and is left alone. Nothing a person types
   // by hand ends like this, so a row that matches can only have come from an earlier run - which is
   // why those stale entries are swept up as well.
-  var DOB_QUERY_RE =
-    /\blives? at\b[\s\S]{0,160}\bborn in\s+(?:19|20)\d{2}\s+in which month\s*\?\s*no rough guess accurate$/i;
+  var OWN_QUERY_RE =
+    /\blives? at\b[\s\S]{0,200}\bborn in\b[\s\S]{0,200}(?:no rough guess accurate|are prefered)\s*$/i;
 
   function isOwnQueryText(text) {
-    return !!text && DOB_QUERY_RE.test(text);
+    return !!text && OWN_QUERY_RE.test(text);
   }
 
   // The string a suggestion stands for: `data-entityname` is Google's own copy of it, the option
@@ -1014,7 +993,7 @@
 
   // ---------------------------------------------------------------------------------- the run
 
-  // This address did not produce a birth month. The background owns the list of addresses, so it is
+  // This address did not produce an email address. The background owns the list of addresses, so it is
   // asked for the next one; when there is none left it reports the empty result itself.
   function requestNextAddress(state, reason) {
     state.reported = true;
@@ -1022,7 +1001,7 @@
     sendProgress(2, 3, reason);
     try {
       chrome.runtime.sendMessage(
-        { action: "GOOGLE_DOB_NEXT_ADDRESS", record: sessionRecord(), reason: reason },
+        { action: "GOOGLE_EMAIL_NEXT_ADDRESS", record: sessionRecord(), reason: reason },
         function (res) {
           if (chrome.runtime.lastError) return;
           if (!res || res.exhausted || !res.nextQuery) return;
@@ -1049,11 +1028,9 @@
       reloads: 0,
       startedAt: Date.now(),
       result: {
-        dob: found.dob,
-        year: found.year,
-        note: found.note || "",
-        day: found.day || 0,
-        score: found.score || 0
+        emails: found.emails || [],
+        primary: found.primary || "",
+        note: found.note || ""
       }
     };
 
@@ -1228,7 +1205,7 @@
 
     var query = currentQuery(session);
     if (!query) return;
-    var expectedYear = session.targetYear || null;
+    var expectedName = session.targetName || "";
 
     var state = {
       startedAt: Date.now(),
@@ -1257,7 +1234,7 @@
       stableAt: 0
     };
 
-    sendProgress(1, 3, "Asking AI about " + (session.targetName || "this person") + "...");
+    sendProgress(1, 3, "Asking AI for " + (session.targetName || "this person") + "'s email address...");
     traceHistory("run start on " + String(window.location.href) + " - the query is: " + query);
     state.interval = setInterval(tick, TICK_MS);
     tick();
@@ -1324,8 +1301,8 @@
         return;
       }
 
-      // 3. AI Mode is open: wait for the answer paragraph to arrive, then read the birth month out of
-      // it. Nothing is read until a paragraph is actually there - and only that paragraph is read.
+      // 3. AI Mode is open: wait for the answer to arrive, then read the email address out of it.
+      // Nothing is read until a paragraph is actually there - and only that paragraph is read.
       var waited = Date.now() - state.startedAt;
       var text = answerText();
 
@@ -1350,7 +1327,7 @@
       var settled = stableFor >= ANSWER_STABLE_MS || waited >= ANSWER_MAX_MS;
       if (!settled || waited < ANSWER_MIN_MS) return;
 
-      var found = extractDob(text, expectedYear);
+      var found = extractEmail(text, expectedName);
       if (found) {
         // The search that produced this is now in Google's history, and Google needs a moment to record
         // it: the run goes back to google.com, refreshes until the entry shows up, deletes it, and only
@@ -1367,11 +1344,11 @@
         return;
       }
 
-      // The paragraph is complete and holds no birth month that agrees with the record, so this
+      // The answer is complete and names no email address that belongs to this record's person, so this
       // address gave nothing.
       requestNextAddress(
         state,
-        "AI's answer did not name a birth month for this address."
+        "AI's answer named no public email address for this address."
       );
     }
   }

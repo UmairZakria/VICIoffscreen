@@ -103,5 +103,20 @@
       "urlFilter": "||google.com",
       "resourceTypes": ["sub_frame", "xmlhttprequest", "other"]
     }
+  },
+  {
+    "id": 8,
+    "priority": 1,
+    "action": {
+      "type": "modifyHeaders",
+      "responseHeaders": [
+        { "header": "x-frame-options", "operation": "remove" },
+        { "header": "content-security-policy", "operation": "remove" }
+      ]
+    },
+    "condition": {
+      "urlFilter": "||uspeoplesearch.net",
+      "resourceTypes": ["sub_frame", "xmlhttprequest", "other"]
+    }
   }
 ]

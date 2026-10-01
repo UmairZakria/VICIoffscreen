@@ -1,14 +1,14 @@
-// Content script for the Google AI Mode birth-month lookup.
+// Content script for the Google AI Mode gender lookup.
 //
 // Runs on https://www.google.com/* - in a background tab, or in the extension's hidden offscreen
-// runner. It is a *parallel* source for the DOB search: while Unmask and ThatSthem are being
-// walked, this asks Google AI Mode
+// runner. It is the third AI Mode job beside the birth-month run and the email run, started by the
+// gender button on a record card (the icon next to the person's name) and asks Google AI Mode
 //
-//   "{name} lives at {address} born in {year} in which month ? no rough guess accurate"
+//   "{name} is male or female?"
 //
-// for the record's primary address first and then, one at a time, for its other addresses. What it
-// finds is reported as GOOGLE_DOB_RESULT and drawn as its own row next to the Unmask / ThatSthem
-// dates, so the two can be compared.
+// once per person - a question about a name has nothing to narrow down address by address, so this run
+// is a single query. What it finds is reported as GOOGLE_GENDER_RESULT and shown on the person's own
+// card, next to the name the question was about.
 //
 // The page is opened at google.com, the query is typed into the search box and submitted with
 // Enter, and the results page is then switched into AI Mode (the "AI Mode" control, which is the
@@ -25,10 +25,10 @@
 (function () {
   "use strict";
 
-  if (window.__googleAiAutomationLoaded) return;
-  window.__googleAiAutomationLoaded = true;
+  if (window.__googleGenderAutomationLoaded) return;
+  window.__googleGenderAutomationLoaded = true;
 
-  var STORAGE_KEY = "google_pending_lookup";
+  var STORAGE_KEY = "google_gender_pending_lookup";
   // Every wait in this file is a deadline sampled on this tick, so it is also the floor on how long
   // any one step appears to take: a gesture that the page acts on in 100 ms still waits for the next
   // tick before it is noticed. It is kept small for exactly that reason - the tick body is a handful
@@ -47,8 +47,10 @@
   var ANSWER_STABLE_MS = 900;
   var ANSWER_MAX_MS = 75000;
   // Nothing is read until the answer column actually holds a paragraph, so an empty or
-  // still-rendering column can never be mistaken for an answer.
-  var MIN_ANSWER_CHARS = 40;
+  // still-rendering column can never be mistaken for an answer. The gate is short here on purpose:
+  // the answer to this question is often one sentence long - "Val Power is female." is a complete
+  // answer - so the length a birth-month answer needs would have thrown it away.
+  var MIN_ANSWER_CHARS = 12;
   // How long the answer may take to appear at all. A page that never returns a paragraph has
   // answered this address with "nothing": the run moves on, and closes once there is no address
   // left to ask.
@@ -79,16 +81,6 @@
   // Past this point in the run the answer is reported without waiting for the cleanup any more, so a
   // slow trip can never cost the run its result.
   var CLEANUP_GIVE_UP_AFTER_MS = 90000;
-
-  var FULL_MONTHS = [
-    "January", "February", "March", "April", "May", "June",
-    "July", "August", "September", "October", "November", "December"
-  ];
-
-  // Long names first, so "January 1949" is read as January rather than as an abbreviation.
-  var MONTH_RE =
-    "(January|February|March|April|May|June|July|August|September|October|November|December" +
-    "|Sept|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Oct|Nov|Dec)";
 
   function isVisible(el) {
     if (!el || !el.getBoundingClientRect) return false;
@@ -123,7 +115,7 @@
   function sendProgress(step, total, message) {
     try {
       chrome.runtime.sendMessage({
-        action: "GOOGLE_LOOKUP_PROGRESS",
+        action: "GOOGLE_GENDER_PROGRESS",
         step: step,
         totalSteps: total,
         message: message,
@@ -135,9 +127,8 @@
   function sendResult(found, query) {
     try {
       chrome.runtime.sendMessage({
-        action: "GOOGLE_DOB_RESULT",
-        dob: found.dob,
-        year: found.year,
+        action: "GOOGLE_GENDER_RESULT",
+        gender: found.gender,
         note: found.note || "",
         source: "google.ai",
         query: query,
@@ -354,133 +345,104 @@
 
   // -------------------------------------------------------------------------- reading the answer
 
-  function monthIndex(name) {
-    var key = String(name || "").toLowerCase().replace(/\.$/, "").slice(0, 3);
-    for (var i = 0; i < FULL_MONTHS.length; i++) {
-      if (FULL_MONTHS[i].toLowerCase().slice(0, 3) === key) return i;
-    }
-    return -1;
-  }
-
-  // Every date the answer states, in any of the shapes it uses:
+  // The gender the answer states for the person.
   //
-  //   "October 8, 1951"   a full date
-  //   "October 1951"      month and year
-  //   "Oct. 8, 1951"
+  // The answer is short and its wording varies, but the person and the word always sit together:
   //
-  // The day is optional and is kept when it is there. Month-then-year alone was the miss behind a
-  // whole date being reported as a bare year: "born on October 8, 1951" has a day between the month
-  // and the year, so it did not match at all, and the reader fell through to the year-only pattern.
-  function collectDates(text) {
-    var out = [];
-    var re = new RegExp(
-      "\\b" + MONTH_RE + "\\.?\\s+(?:(\\d{1,2})(?:st|nd|rd|th)?\\s*,?\\s+)?(\\d{4})\\b",
-      "gi"
-    );
-    var m;
-    while ((m = re.exec(text)) !== null) {
-      var idx = monthIndex(m[1]);
-      if (idx < 0) continue;
-      out.push({
-        month: FULL_MONTHS[idx],
-        day: m[2] ? parseInt(m[2], 10) : 0,
-        year: parseInt(m[3], 10),
-        index: m.index
-      });
-    }
-    return out;
-  }
+  //   "Val Power is female."
+  //   "John is traditionally a male given name. ... are uniformly identified as male."
+  //
+  // So it is read sentence by sentence, and each sentence is weighted by what it actually said. A
+  // statement about the person by name outranks "identified as male", which outranks a pronoun (she,
+  // he), which outranks the name-style wording ("a male given name") - that last one describes the
+  // *name* rather than the person, so it is only trusted when nothing better was stated, and the card
+  // is told as much.
+  var MALE_GENDER_RE = /\b(?:male|man|men|boy|gentleman)\b/i;
+  var FEMALE_GENDER_RE = /\b(?:female|woman|women|girl|lady)\b/i;
+  // The sentence is explaining the name, not the person: "John is traditionally a male given name".
+  var STATED_ABOUT_NAME_RE = /\b(?:given name|first name|forename|masculine name|feminine name)\b/i;
+  var IDENTIFIED_AS_RE =
+    /\b(?:identified|recorded|listed|registered|documented|described|reported|stated|categorised|categorized|classed)\s+as\s+(?:a\s+|an\s+)?(?:male|female|man|woman|boy|girl|lady|gentleman)\b/i;
+  var IS_GENDER_RE = /\bis\b[^.!?]{0,40}?\b(?:male|female|man|woman|boy|girl|lady|gentleman)\b/i;
+  var GENDER_PRONOUN_RE = /\b(?:he|she|his|her|him|hers)\b/i;
 
-  // "October 8, 1951" when the answer states the day, "October 1951" when it only states the month.
-  function dateLabel(date) {
-    return date.day ? date.month + " " + date.day + ", " + date.year : date.month + " " + date.year;
-  }
+  // What one sentence says, and how much it is worth. The value comes from a gender word where there
+  // is one; with no gender word at all, a pronoun can still carry it ("She is based in Adelaide"), and
+  // that is worth less than anything stated outright. A sentence that names both genders ("a male name
+  // also given to women") says nothing usable, so it is dropped rather than guessed at.
+  function readGenderSentence(sentence, nameTokens) {
+    var maleWord = MALE_GENDER_RE.test(sentence);
+    var femaleWord = FEMALE_GENDER_RE.test(sentence);
+    if (maleWord && femaleWord) return { value: "", score: 0 };
+    if (!maleWord && !femaleWord) return readPronounSentence(sentence);
 
-  // A month+year inside a sentence about a birth is the answer; one that merely appears somewhere
-  // on the page is a last resort.
-  function scoreCandidate(candidate, text) {
-    var before = text.slice(Math.max(0, candidate.index - 80), candidate.index).toLowerCase();
-    if (/born|birth/.test(before)) return 3;
-    if (/\bage\b|\bdob\b/.test(before)) return 2;
-    return 1;
-  }
-
-  // The best birth month in the answer. The record's own birth year is the anchor: a date within
-  // two years of it is preferred, because the record's age is what says this is the right person.
-  function extractDob(text, expectedYear) {
-    if (!text) return null;
-
-    var dates = collectDates(text).map(function (d) {
-      d.score = scoreCandidate(d, text);
-      return d;
+    var value = maleWord ? "Male" : "Female";
+    var mentionsName = nameTokens.some(function (token) {
+      return sentence.indexOf(token) >= 0;
     });
 
-    // The record's own birth year is the anchor and it is a *requirement*, not a preference. The
-    // answer text names relatives and cited records as well, so a date that contradicts the record
-    // belongs to somebody else - reporting it would be worse than reporting nothing.
-    if (expectedYear) {
-      dates = dates.filter(function (d) {
-        return Math.abs(d.year - expectedYear) <= 2;
-      });
-    }
-
-    if (dates.length > 0) {
-      dates.sort(function (a, b) {
-        if (b.score !== a.score) return b.score - a.score;
-        if (expectedYear) {
-          var da = Math.abs(a.year - expectedYear);
-          var db = Math.abs(b.year - expectedYear);
-          if (da !== db) return da - db;
-        }
-        return a.index - b.index;
-      });
-
-      var best = dates[0];
-      // No note on the row: the difference between the answer's year and the record's is not
-      // reported. A date outside the window was refused above, so whatever reaches here is already
-      // this record's person - the row just shows the date the answer gave.
-      return {
-        dob: dateLabel(best),
-        year: best.year,
-        day: best.day,
-        score: best.score,
-        note: ""
-      };
-    }
-
-    // The answer may name the month on its own - "His exact birth month is October." - which is the
-    // literal answer to the question. The record's own year completes it, and the row says so rather
-    // than passing it off as a date the answer stated.
-    var monthOnly = text.match(
-      /\bbirth\s+month\b[^.\n]{0,30}?\b(January|February|March|April|May|June|July|August|September|October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\b/i
-    );
-    if (monthOnly) {
-      var mi = monthIndex(monthOnly[1]);
-      if (mi >= 0) {
-        var monthName = FULL_MONTHS[mi];
-        return {
-          dob: expectedYear ? monthName + " " + expectedYear : monthName,
-          year: expectedYear || null,
-          day: 0,
-          score: 3,
-          note: "month only"
-        };
-      }
-    }
-
-    // No month stated at all. A birth year on its own is still worth showing - the Unmask and
-    // ThatSthem rows mark year-only values the same way.
-    var ym = text.match(/\bborn[^.\n]{0,40}?\b(19\d{2}|20[0-1]\d)\b/i);
-    if (ym) {
-      var year = parseInt(ym[1], 10);
-      if (!expectedYear || Math.abs(year - expectedYear) <= 2) {
-        return { dob: String(year), year: year, day: 0, score: 2, note: "year only" };
-      }
-    }
-
-    return null;
+    if (STATED_ABOUT_NAME_RE.test(sentence)) return { value: value, score: 2 };
+    if (IDENTIFIED_AS_RE.test(sentence)) return { value: value, score: 4 };
+    if (mentionsName && IS_GENDER_RE.test(sentence)) return { value: value, score: 5 };
+    if (IS_GENDER_RE.test(sentence)) return { value: value, score: 3 };
+    if (GENDER_PRONOUN_RE.test(sentence)) return { value: value, score: mentionsName ? 3 : 2 };
+    return { value: value, score: 1 };
   }
 
+  // A sentence with no gender word in it, where only a pronoun can say which way it goes.
+  function readPronounSentence(sentence) {
+    var male = /\b(?:he|him|his)\b/i.test(sentence);
+    var female = /\b(?:she|her|hers)\b/i.test(sentence);
+    if (male === female) return { value: "", score: 0 };
+    return { value: male ? "Male" : "Female", score: 2 };
+  }
+
+  // The gender this run reports: the two sides are added up sentence by sentence and the larger one
+  // wins. Nothing at all, or a tie, is reported as nothing - an answer that contradicts itself is not
+  // something to put on a card.
+  //
+  // `expectedName` is the identity check. The query gives the answer nothing else to go on - no
+  // address, no birth year - so the answer naming a word of the person's name is the whole of it: the
+  // first name alone is enough ("John ..."), because that is how the answer writes the person it was
+  // asked about.
+  function extractGender(text, expectedName) {
+    if (!text) return null;
+
+    var lower = String(text).toLowerCase().replace(/\s+/g, " ");
+    var name = String(expectedName || "").trim().toLowerCase().replace(/\s+/g, " ");
+    var tokens = name.split(" ").filter(function (token) {
+      return token.length > 1;
+    });
+    if (!tokens.length) return null;
+
+    var namesThePerson = tokens.some(function (token) {
+      return lower.indexOf(token) >= 0;
+    });
+    if (!namesThePerson) return null;
+
+    var totals = { Male: 0, Female: 0 };
+    var best = 0;
+    var sentences = lower.split(/[.!?\n]+/);
+
+    for (var i = 0; i < sentences.length; i++) {
+      var read = readGenderSentence(sentences[i], tokens);
+      if (!read.value || !read.score) continue;
+      totals[read.value] += read.score;
+      if (read.score > best) best = read.score;
+    }
+
+    if (totals.Male === totals.Female) return null;
+    var gender = totals.Male > totals.Female ? "Male" : "Female";
+
+    return {
+      gender: gender,
+      // A verdict that no sentence stated outright - only the name-style wording ("a male given name")
+      // or a pronoun supports it - is still shown; it just says so, rather than passing a guess off as
+      // a statement about the person.
+      note: best >= 4 ? "" : "indirect wording",
+      score: totals[gender]
+    };
+  }
   // ------------------------------------------------------------- removing the search-history entry
   //
   // Google remembers the query the run typed and offers that string straight back in the box's
@@ -544,17 +506,24 @@
     return !!left && left === right;
   }
 
-  // The exact shape of every query this extension types:
+  // The exact shape of the queries this extension types - this run's own, and the other two AI runs'
+  // (which are swept up as well, because all three are ours and a sweep that only knew its own would
+  // leave the others' entries behind):
+  //
+  //   "{name} is male or female?"
+  //   "{name} lives at {address} born in {year|Month year} any public available primary email .
+  //    gmail hotmail yahoo icloud are prefered"
   //   "{name} lives at {address} born in {year} in which month ? no rough guess accurate"
+  //
   // It is anchored at the end on purpose: a row that merely *mentions* those words (a user's own
   // longer search, or a variant of one) is not one of ours and is left alone. Nothing a person types
   // by hand ends like this, so a row that matches can only have come from an earlier run - which is
   // why those stale entries are swept up as well.
-  var DOB_QUERY_RE =
-    /\blives? at\b[\s\S]{0,160}\bborn in\s+(?:19|20)\d{2}\s+in which month\s*\?\s*no rough guess accurate$/i;
+  var OWN_QUERY_RE =
+    /(?:\blives? at\b[\s\S]{0,200}\bborn in\b[\s\S]{0,200}(?:no rough guess accurate|are prefered)|\bis\s+male\s+or\s+female\b[^?]{0,4}\?)\s*$/i;
 
   function isOwnQueryText(text) {
-    return !!text && DOB_QUERY_RE.test(text);
+    return !!text && OWN_QUERY_RE.test(text);
   }
 
   // The string a suggestion stands for: `data-entityname` is Google's own copy of it, the option
@@ -1014,7 +983,7 @@
 
   // ---------------------------------------------------------------------------------- the run
 
-  // This address did not produce a birth month. The background owns the list of addresses, so it is
+  // This question did not produce an answer. The background owns the run, so it is
   // asked for the next one; when there is none left it reports the empty result itself.
   function requestNextAddress(state, reason) {
     state.reported = true;
@@ -1022,7 +991,7 @@
     sendProgress(2, 3, reason);
     try {
       chrome.runtime.sendMessage(
-        { action: "GOOGLE_DOB_NEXT_ADDRESS", record: sessionRecord(), reason: reason },
+        { action: "GOOGLE_GENDER_NEXT_ADDRESS", record: sessionRecord(), reason: reason },
         function (res) {
           if (chrome.runtime.lastError) return;
           if (!res || res.exhausted || !res.nextQuery) return;
@@ -1049,11 +1018,8 @@
       reloads: 0,
       startedAt: Date.now(),
       result: {
-        dob: found.dob,
-        year: found.year,
-        note: found.note || "",
-        day: found.day || 0,
-        score: found.score || 0
+        gender: found.gender,
+        note: found.note || ""
       }
     };
 
@@ -1228,7 +1194,7 @@
 
     var query = currentQuery(session);
     if (!query) return;
-    var expectedYear = session.targetYear || null;
+    var expectedName = session.targetName || "";
 
     var state = {
       startedAt: Date.now(),
@@ -1257,7 +1223,7 @@
       stableAt: 0
     };
 
-    sendProgress(1, 3, "Asking AI about " + (session.targetName || "this person") + "...");
+    sendProgress(1, 3, "Asking AI if " + (session.targetName || "this person") + " is male or female...");
     traceHistory("run start on " + String(window.location.href) + " - the query is: " + query);
     state.interval = setInterval(tick, TICK_MS);
     tick();
@@ -1324,8 +1290,8 @@
         return;
       }
 
-      // 3. AI Mode is open: wait for the answer paragraph to arrive, then read the birth month out of
-      // it. Nothing is read until a paragraph is actually there - and only that paragraph is read.
+      // 3. AI Mode is open: wait for the answer to arrive, then read the gender out of it. Nothing is
+      // read until a paragraph is actually there - and only that paragraph is read.
       var waited = Date.now() - state.startedAt;
       var text = answerText();
 
@@ -1334,7 +1300,7 @@
         // one has answered this address with nothing, so the run moves on - and closes once there is
         // no address left to ask.
         if (waited >= ANSWER_APPEAR_MS) {
-          requestNextAddress(state, "AI returned no answer for this address.");
+          requestNextAddress(state, "AI returned no answer for this person.");
         }
         return;
       }
@@ -1350,7 +1316,7 @@
       var settled = stableFor >= ANSWER_STABLE_MS || waited >= ANSWER_MAX_MS;
       if (!settled || waited < ANSWER_MIN_MS) return;
 
-      var found = extractDob(text, expectedYear);
+      var found = extractGender(text, expectedName);
       if (found) {
         // The search that produced this is now in Google's history, and Google needs a moment to record
         // it: the run goes back to google.com, refreshes until the entry shows up, deletes it, and only
@@ -1367,11 +1333,11 @@
         return;
       }
 
-      // The paragraph is complete and holds no birth month that agrees with the record, so this
-      // address gave nothing.
+      // The answer is complete and does not say which of the two this person is, so this question gave
+      // nothing.
       requestNextAddress(
         state,
-        "AI's answer did not name a birth month for this address."
+        "AI's answer did not name this person's gender."
       );
     }
   }

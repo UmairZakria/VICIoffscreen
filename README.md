@@ -8,7 +8,8 @@ A Chrome / Microsoft Edge Manifest V3 extension with:
 * **White & Black Minimalist Theme**: Crisp white main background (`#ffffff`), solid black buttons (`#000000`), black text, and clean modern hairline dividers.
 * **Sticky Draggable On-Page Widget**: Floats directly on top of your CRM, dialer, or any website.
   - **Sticky**: Stays fixed as you scroll.
-  - **Draggable**: Drag by the header grip (`⋮⋮`) anywhere across monitors.
+  - **Draggable**: Drag by the header anywhere across monitors.
+  - **Refresh**: the circular-arrow button at the left of the header restarts every background worker (see *Refresh: what the header button restarts* below).
   - **Remembers Position**: Restores your preferred screen location across reloads.
   - **Collapsible / Closable**: Minimize with `_` or close with `✕`. Click extension toolbar icon to toggle.
 * **Parallel Dual-Source Headless Search**:
@@ -16,7 +17,7 @@ A Chrome / Microsoft Edge Manifest V3 extension with:
   - Source 2: `https://infolookupp.com/`
   - Runs both searches simultaneously in parallel in the background without opening visible tabs.
   - **Fastest Response First**: Displays results immediately as soon as the first source finishes.
-  - **Smart Deduplication**: If both websites return the same record, it displays only once with a `✓ Verified Match Across Both Sites` badge. If different records are returned, it displays them in order.
+  - **One Card Per Record**: Record 1 and Record 2 always keep their own card, even when both sites return exactly the same person – nothing is merged, so the two answers can be compared and each record can be switched on or off on its own in Settings.
 * **Full Identity & First Address Extraction**:
   - Full Name
   - Initials Avatar
@@ -135,7 +136,7 @@ Regression harness: `node scratch/unmask_relative_link_test.js`
 ## Google AI Mode: the DOB row, and the search-history cleanup
 
 Google is a **second, independent DOB source** beside Unmask. The run asks AI Mode
-`"{name} lives at {address} born in {year} in which month ? no rough guess accurate"` for the
+*"{name} lives at {address} born in {year} in which month ? no rough guess accurate"* for the
 record's primary address and then for its other addresses, and what comes back is drawn as its own
 row next to the Unmask / ThatSthem dates (`google.ai`) so the two can be compared. Like the other
 sources it runs in the hidden offscreen runner (`GOOGLE_VISIBLE = false`), so no tab appears.
@@ -174,15 +175,33 @@ Everything is bounded (`LIST_OPEN_MAX_MS`, at most `HISTORY_MAX_DELETES` rows an
 the box is **re-armed** right before Enter (`armQuery`): Escape closes the list and the typed query is
 written back, so an item left selected in it can never be what Google searches for instead.
 
+**Every step is a deadline sampled on a 150 ms tick**, never a sleep: a click the page acts on in 80 ms is
+noticed on the next tick, and one it ignores is waited out on that same tick with a repeat press before
+being given up on. The dials are `DELETE_RETRY_MS` (the repeat press, 300 ms, twice) and
+`DELETE_WAIT_MS` (before a pressed row is declared ignored), the click ladder that opens the list
+(400 ms, 800 ms, then `LIST_OPEN_MAX_MS`), and `HISTORY_SWEEP_MAX_MS` for the sweep as a whole. A box that
+renders **no rows at all** is handed back after 600 ms instead of waiting `LIST_OPEN_MAX_MS` out — the
+caller seeds the box next, which is what actually gets rows on screen.
+
+On the results page the answer is read once its text has been unchanged for `ANSWER_STABLE_MS` and never
+before `ANSWER_MIN_MS`. The one long fixed part of the run is the cleanup trip back to google.com:
+`CLEANUP_RELOAD_DELAY_MS` per page load, `CLEANUP_MAX_RELOADS` loads and `CLEANUP_MAX_MS` in total. The
+answer is already in hand while that trip runs, and a run already past `CLEANUP_GIVE_UP_AFTER_MS` reports
+it immediately instead of taking the trip at all.
+
 **The sweep never fails silently** — the progress line names the outcome, which is also how the step
 is diagnosed on the live page:
 
 | Progress line | What it means |
 | --- | --- |
-| *"Removed N searches from Google's history."* | the Delete presses worked (N includes stale entries) |
-| *"Google's suggestion list did not open - the search history was left as it is."* | no rows ever rendered or `aria-expanded` never flipped |
-| *"Google did not remove the search-history entry - its Delete control ignored the click."* | the row was there and pressed, but Google did not act on it |
-| *"No Google search-history entry for this search yet."* | nothing of ours was in the list |
+| *"Removed N searches from the search history."* | the Delete presses worked (N includes stale entries) |
+| *"The suggestion list did not open - the search history was left as it is."* | no rows ever rendered or `aria-expanded` never flipped |
+| *"The search-history entry was not removed - its Delete control ignored the click."* | the row was there and pressed, but the page did not act on it |
+| *"No search-history entry for this search yet."* | nothing of ours was in the list |
+
+**Nothing the user sees names Google.** Every progress line calls the source **AI** — the same word the
+Settings panel uses for that switch — and the search-history lines name no site at all. The full name
+survives only in the console trace below, which is a diagnostic, not the product.
 
 The runner's console (`chrome://extensions` → the extension → **Inspect views: offscreen.html**) also
 logs `[Google] search-history sweep: N removed, M left alone, X ms`. To *watch* the step, set
@@ -208,6 +227,149 @@ list, a consent wall — the answer it is holding is reported (and a run already
 `CLEANUP_GIVE_UP_AFTER_MS` reports immediately instead of taking the trip at all).
 
 Regression harness: `node scratch/google_history_delete_test.js`
+
+### The email run (the card's **Email** button)
+
+The same page, the same search box, the same history sweep — a different question:
+
+    "{name} lives at {address} born in {year|Month year} any public available primary email .
+     gmail hotmail yahoo icloud are prefered"
+
+* **Started by the Email button** on a record card (beside DOB) and governed by the *same* Settings
+  switch as the DOB run's Google leg (`DOB Sources → AI`): a user who turned AI Mode off means no
+  Google AI calls at all, whatever they are for.
+* **The birth month goes into the query when the card already has one.** `birthMonthName` reads the
+  Google row first, then Unmask's, then ThatSthem's, so a month a previous search found turns the
+  query's `born in 1950` into `born in February 1950` — which places the person far better. With no
+  month on the card the bare year is used, exactly as the hand-written query does.
+* **One Google page, one job.** The email run and the birth-month run share the one hidden runner
+  frame, so starting either supersedes the other (`startGoogleEmailLookup` ↔ `startGoogleDobLookup`).
+  That is also the order that makes sense, because the DOB answer is where the month comes from.
+* **What is reported is what the answer stated**: the first address in the answer column *before* its
+  "this household … for family/co-occupants" sentence — the one the answer itself calls primary. An
+  address from the household sentence is used only when nothing primary was stated, and the row says
+  `household address` when it is. The answer also has to name the record's person **in full**, so a
+  relative at the same address (a Loften Dunlap against a Theresa Dunlap) can never put their address
+  on that card; an answer that names nobody this run asked about reports nothing, and the run moves on.
+* Addresses are drawn in the card's **Email Addresses** box, **merged** with whatever Unmask /
+  ThatSthem already found rather than replacing them, and written onto the person so a re-render keeps
+  them.
+* Progress is tagged **EMAIL** in the card's progress box. An address the answer never names reports
+  *"No public email address was named for this address."* and the **next address is asked** — the street
+  addresses the record carries are all completed (city + ZIP) before the run starts, so a record whose
+  addresses are street-only is asked about in full rather than through its first address alone. The run
+  ends with *"AI found no public email address for any known address."*
+
+`google_email_automation.js` is derived from `google_automation.js` by
+`node scratch/build_google_email_script.js` — that script does the mechanical half (guard name, storage
+key, message names); the answer reader (`collectEmails` / `extractEmail`) is edited in place and is
+what the harness below covers. Re-running the generator would overwrite those edits.
+
+Regression harness: `node scratch/google_email_extract_test.js` — the reader, against the two real
+Google answers this was built from (primary vs household, namesake refusal, casing, page addresses).
+
+### The gender run (the chip beside a person's name)
+
+The smallest of the three AI jobs, and the only one that asks about a *person* rather than a record:
+
+    "{name} is male or female?"
+
+* **Started by the chip beside the name** on every person card. The button *is* the display: both
+  symbols until it has been asked, then the symbol the AI named, recoloured (pink for female, blue for
+  male), with the wording in its tooltip. Nothing else is added to the card for it — and the icon is not
+  a new row, so the card reads the same as before.
+* **One query, no address list.** A question about a name has nothing to narrow down address by
+  address, so the background builds exactly one query (`buildGoogleGenderQueries`), and the run ends
+  when the answer names a gender or when the answer has been read and does not.
+* **The reader weighs what each sentence said** (`readGenderSentence`): a statement about the person by
+  name ("Val Power is female.") outranks "uniformly identified as male", which outranks a pronoun
+  ("She is based in Adelaide"), which outranks the name-style wording ("John is traditionally a male
+  given name"). A verdict that only the last two support is still shown, marked `indirect wording` — a
+  guess about how a name is usually given is never passed off as a statement about the person. An
+  answer that names both, or neither, reports nothing at all.
+* **The identity check is the name itself**, because the query gives the answer nothing else: it has to
+  name at least one word of the person's name, and the first name is enough (`"John ..."` is how the
+  answer writes the person it was asked about).
+* Same runner, same rules as the other two: the gender run shares the one Google page, so starting any
+  of the three AI jobs supersedes the others, it is governed by the same `DOB Sources → AI` switch, and
+  the card's Cancel button stops it.
+
+Regression harness: `node scratch/google_gender_extract_test.js` — the reader, against the two real
+answers this was built from (the direct statement, "identified as male", the name-style sentence, a
+pronoun-only answer, an answer about somebody else, and one that names both).
+
+## The manual card (a record that named nobody, or a person it does not have)
+
+Every record card carries a **+** at its right end, and a record that named nobody shows the same card
+with fields in place of a name and an address:
+
+| Field | What it takes |
+| --- | --- |
+| **name** | the person's name - as much of it as is known |
+| **street** (the card's street line) | the house number and street, or nothing at all |
+| **city** (the card's city line) | the city, state and ZIP - or just a ZIP, or just a city and state |
+
+Both address lines are fields, but they are drawn as the card draws a found address: the street bold and
+the city muted underneath, with no boxes. Search is the card's own mini-button, on the address title row
+where a found card keeps its Copy - and the AI resolver behind it:
+
+    "{name} lives at {street, city, state zip} what is the full address, email and dob?"  ← asked first
+    "{name} lives at {street, city, state zip} whats the full address?"                   ← the fallback
+
+The second query is only asked when the first produced nothing usable - the same "next address" walk the
+DOB and email runs already use. What comes back **replaces** what the user typed: the fuller name
+("Frank Peugh" → "Franklin C. Peugh"), the street, city, state and ZIP, an email when the answer states
+one, and the birth date when it names one. Only then do DOB, Rides and Email have a name and a complete
+address to run from.
+
+* `applyManualAddressInput` (widget) splits the two lines into the parts a lookup needs while the user
+  types - a city and a ZIP where it can find them - and keeps the pair as `addressInput`, which is what
+  the AI queries are built from. Nothing is invented: a bare `75115` stays a bare ZIP until the answer
+  supplies the rest.
+* `extractAddressRecord` (content script) reads every shape a real answer has come back in: the labelled
+  rows (`Full Address: 130 Meadowbrook Dr, Desoto, TX 75115 (located in the Mantlebrook neighborhood).`),
+  the lead-in with the address on its own lines (`… zip code is:` / `2700 Orchard Park St NW` /
+  `Canton, OH 44718`), and the address written into a sentence
+  (`The full address for Jeffrey V. Green in Canton, OH is 2700 Orchard Park St NW, Canton, OH 44718.`).
+  The asides are skipped, so *"He also previously lived nearby at 2646 Orchard Park St NW"* is never
+  mistaken for the current address.
+* `readAnswerBirthDate` reads the **birth date** out of the same answer, in the answer's own words:
+  `1958 or early 1959` from *"given the current year is 2026, his birth year is 1958 or early 1959"*,
+  `March 1958` from *"born in March 1958"*, or a stated date as it is written (`09/16/1963`). It goes onto
+  the person as the **AI row of the DOB box** (`dob3`, the slot the DOB run's AI leg writes) with a note
+  saying how much of a date it was - `year only` / `month/day unknown` / nothing for a whole date - so
+  the year the answer gave is on the card instead of being dropped, and Email's question carries it.
+  The hedge is kept on purpose: it is the AI saying how sure it is.
+* The **name** is only taken when it is the person that was asked about (`samePersonName`: a shared word,
+  or one word starting the other, which is how a fuller name passes). An answer about somebody else
+  leaves the typed name alone and only the address is used.
+* The manual card is exempt from the ZIP filter and carries no ZIP box of its own - the ZIP goes in its
+  address field, which is what the AI resolver is for - and what it resolves is written onto the card's
+  person, so the card is redrawn with the filled-in fields.
+* The card the **+** adds goes **in front** of the people the lookup found and the card jumps to it: the
+  thing just asked for is the thing on screen (1 / 7, not 7 / 7). A new ZIP filter still lands on a found
+  person - the filter is about the people the lookup found, not about the card being typed into - while a
+  resolver's answer stays on the card that asked for it.
+* The **Email** button asks its question with the birth date where one is known - the record's own age
+  ("71 yrs (1955)"), the DOB the DOB run has already put on the card ("born in September 1963"), or the
+  year the resolver read out ("born in 1958") - and asks it without one where none exists. Where two rows
+  disagree the one that names a month is used, so a bare year cannot displace an exact date. A card typed
+  in by hand has no age at all, and the year used to be required: the Email button then answered "This
+  record has no address with a city and ZIP to ask Google about" about a card whose address was sitting
+  right there on it.
+* A record whose lookup *failed* keeps its existing "… failed" line rather than a manual card: the
+  compliance badge on that card would read "Clean", which is the one thing nobody may be told about a
+  record that never answered.
+
+Regression harness: `node scratch/google_address_extract_test.js` — the reader, against the real answers
+this was built from: labelled rows, address-as-lines, an address written into a sentence, a stranger's
+name, a street-only answer, the birth year with its hedge, a month-and-year, a stated date, and an answer
+with nothing in it.
+
+Regression harness: `node scratch/google_email_queries_test.js` — the Email question as it is built for
+a record the lookup answered for and for a card typed in by hand (with the card's DOB, and with no
+birth date anywhere at all), where the year comes from, the address split that keeps a city from being
+lost to a unit number, and the two cases that really are worth asking nothing about.
 
 ## Full Address Completion (infolookupp.com records)
 
@@ -649,8 +811,12 @@ its source answers:
   answers late is still streamed to the widget instead of its record silently vanishing,
   and the widget now names the record that failed
   (*"Completed (Record 1) - Record 2 failed"*).
-* Identical records from both sites are still collapsed into one card with the
-  *"✓ Verified Match Across Both Sites"* badge.
+* **Identical records are never merged.** Every record draws its own card — *"Compliance · Record 1"*
+  and *"Compliance · Record 2"* — with its own compliance grid and its own person/address slides, so the
+  two answers can be read side by side and each record can be switched on or off on its own. An earlier
+  build collapsed a match into a single card, retagged it *"Compliance · \<site 1\> & \<site 2\>
+  (Verified)"* and moved the person details between them; that path, its *"✓ Verified Match Across Both
+  Sites"* status line and the record-equality helpers behind it are gone.
 
 ## The record's addresses on the card
 
@@ -727,9 +893,11 @@ default**, so an install that never opens the panel behaves exactly as it always
 | **DNC Status** | **Record 1** | whether that record's DNC / Litigator / Blacklist card is drawn |
 | | **Record 2** | the same for the second record |
 
-The two lookup sites are called **Record 1 / Record 2** (and the vehicle providers **Ride 1 /
-Ride 2**) throughout the UI: the sites behind them are never named on a card, in a progress line or in
-a summary.
+The two lookup sites are called **Record 1 / Record 2**, and vehicle discovery is the single **Rides**
+action, throughout the UI: the sites and the insurance providers behind them are never named on a card,
+in a progress line or in a summary. Mercury's automation (the Mercury content script, its
+`mercury_pending_quote` hand-off and the `mercury` provider branch in the background) is still wired up,
+it simply has no button anymore — **Rides** is the only way to start a vehicle run, and it runs on Amica.
 
 * Each switch is a plain `<label class="setting-row"><input class="setting-toggle"
   data-setting="records.record1">…` and the panel writes **one key** — `automation_settings` — that the
@@ -738,7 +906,9 @@ a summary.
   `chrome.storage.onChanged`).
 * **Only the records that are on are searched.** Switching Record 2 off means its card never appears;
   the lookup itself carries on with Record 1, and *"this lookup is done"* waits for exactly the
-  records that were asked for — one or two (`expectedSources`), never a fixed two.
+  records that were asked for — one or two (`expectedSources`), never a fixed two. Because the two
+  records are never merged into one card, that switch is always visible in the result: one record
+  switched on means exactly one card.
 * **A DOB platform that is off is never asked, and never a fallback.** With **Unmask** off the run
   starts on ThatSthem; with **ThatSthem** off, Unmask exhaustion *ends* the run instead of falling
   through (`startThatsThemPhase` refuses outright, so no path can reach it). The three switches are read
@@ -751,6 +921,83 @@ a summary.
   value or a value written by an older version can never silently turn a source off.
 
 Regression harness: `node scratch/settings_toggles_test.js`
+
+
+## Brand assets: the logo and the icon set
+
+`logo.png` (528×473, RGBA, transparent page background) is the single source of the product mark — a
+blue → green shield with a white check. It is **portrait** (1.116 : 1 as exported, and the mark itself
+is 381×449, i.e. 0.85 : 1), which is exactly why it cannot simply be handed to the browser as an icon:
+every icon slot is square, so a non-square file gets squashed into 16×16 / 32×32 and the shield comes
+out distorted.
+
+* `icons/icon16.png`, `icon32.png`, `icon48.png`, `icon128.png` — the extension icon, referenced from
+  `manifest.json` under **both** `icons` and `action.default_icon`, so the toolbar button, the
+  extensions page (`chrome://extensions`) and the browser's extension menu all show the mark.
+* `icons/icon512.png` — for store listings (Chrome Web Store / AMO uploads want a 128 and a large
+  version; it is not referenced by the manifest).
+* They are generated, never hand-made: **`node scratch/make_icons.js`** decodes `logo.png`, trims the
+  leftover margin, re-centres the mark on a **square** canvas (aspect preserved, only 4 % breathing
+  room) and box-downscales it, weighted by alpha so the transparent edge cannot darken the outline.
+  `node scratch/make_icons.js 16 32 48 128 256 512` chooses sizes, `--keep-background` skips the
+  background cut (there is none to cut in the shipped file — the flood fill clears *border-connected*
+  white only, which is what keeps the white check inside the shield intact).
+* The logo itself (not the icon set) is what the **sign-in screens** show, in place of the old black
+  rounded square with a lock glyph: `popup.html` and `window.html` through the `.login-badge-icon` rule
+  in `window.css`, the in-page widget's own sign-in view in `widget.js`, and the admin portal's login
+  page (`dnc-portal/public/logo.png`, used in `src/app/login/page.js`). Every box stays square and the
+  image is fitted with `object-fit: contain`, so the mark is never stretched.
+* `logo.png` is listed in `web_accessible_resources` because the injected widget renders inside the
+  **page's** DOM: without that entry the shadow root could not load it. (A page with a strict
+  `img-src` policy can still refuse it, exactly as it can refuse the widget's Poppins fonts; every
+  other surface is an extension page and unaffected.)
+
+
+## Refresh: what the header button restarts
+
+The circular-arrow button at the left of the widget header (where the six-dot drag grip used to be) does
+a **real, whole-extension restart** — one `RESTART_EXTENSION` message, handled by `restartExtension()` in
+`background.js`:
+
+1. **Every run in flight is stopped** (`stopEveryRun()`): the phone lookup is answered and dropped
+   (its 20 s safety timer cleared), the ride, DOB and Google runs are cancelled — each one hands the
+   user's own tab back exactly as a normal finish does — and the warm Amica page is dropped
+   (`setAmicaWarm(false)`).
+2. **The pending-run storage those runs wrote** (`amica_pending_quote`, `mercury_pending_quote`,
+   `unmask_pending_lookup`, `thatsthem_pending_lookup`, `google_pending_lookup`) is cleared, so a
+   cancelled run cannot be picked up by the next page load.
+3. **The tab is remembered** (`widget_reinject_after_reload`), then the worker replies — the reply is
+   deliberately sent *before* the reload, because the reload destroys the worker that would send it.
+4. **`chrome.runtime.reload()`** reloads the whole extension, front and back: the service worker is
+   torn down and started again, the offscreen document and every runner frame inside it (both record
+   frames, Amica, Unmask, ThatSthem, Google) are destroyed and rebuilt, the static
+   `declarativeNetRequest` rules are re-registered, and the popup / detached window are closed and
+   reopen fresh afterwards.
+5. **Every open widget takes itself out of its page** (`EXTENSION_RELOADING`): the reload invalidates all
+   of their contexts at once, and a widget with no context left is an inert box whose buttons do
+   nothing — so they are removed rather than left behind.
+6. **The widget comes back on the tab that asked.** The reload invalidates the widget's own context, so
+   the service worker that starts up on the other side re-injects `widget.js` into the remembered tab
+   (one shot, and only within 60 s of the press). `widget.js` also clears the injection flag and removes
+   any leftover host element first, so the result is one live widget — never a live one stacked on a
+   corpse — and the toolbar icon can still bring one back by hand if a reload ever failed to happen.
+
+The widget receives the answer immediately, so the icon stops spinning at once and the status line
+reads *"Extension restarted — this page is coming back with it…"*. Pressing it while a search is running
+cancels that search: the widget bumps its own session id, so anything the cancelled run still streams in
+is ignored.
+
+Two safety nets: if the worker never answers, an **8 s watchdog** stops the spinner and points at
+`chrome://extensions`; and if the page still holds a widget from an **older extension context** (an
+update or a previous reload invalidated it), `chrome.runtime.sendMessage` throws and that is reported as
+*"This page holds an older copy of the widget — reload the page, then press refresh again"* instead of
+spinning for ever. In either case the toolbar icon still toggles/re-injects the widget.
+
+Nothing the user configured is touched by a restart: the signed-in session, the Settings switches, the
+widget position and the address cache all survive (they live in `chrome.storage.local`).
+
+Dragging is unaffected: the **whole header is still the grab handle** (the header's other buttons are
+excluded from the drag, so pressing refresh never moves the widget).
 
 
 ## Portal server: the extension talks to the live deployment
@@ -780,6 +1027,163 @@ the URL that will actually be called. The endpoints used are `POST /api/auth/log
 `GET /api/auth/me`, `POST /api/lookup/consume`, and `GET|POST /api/admin/users` (admin portal only).
 No local Next.js server is needed for an installed build.
 
+
+## Record 3 (uspeoplesearch.net)
+
+The third record has the same shape as the other two - a site with a phone box, driven in the offscreen
+runner frame, read back into a card - and it is wired through every place a record has to be named:
+
+| Where | What it carries |
+| --- | --- |
+| `manifest.json` | the host permission and the `content.js` match for `uspeoplesearch.net` |
+| `rules.json` | rule 8: the framing headers stripped for `\|\|uspeoplesearch.net` (without it the site refuses to be framed at all) |
+| `offscreen.html` / `offscreen.js` | `frame-uspeoplesearch` and its `RUNNERS` entry (`https://www.uspeoplesearch.net/`) |
+| `content.js` | `SOURCE_BY_HOST`, the dispatch branch, and the search and the two readers below |
+| `background.js` | `RECORD_SOURCES`, `RECORD_KEYS` (`record3`), `recordLabel` ("Record 3"), the `records.record3` / `dnc.record3` defaults, and the worker port |
+| `widget.js`, `popup.html` / `popup.js`, `window.html` / `window.js` | the label and keys, the two settings switches, and the same defaults |
+
+**The search** is `#input` with `#submit` beside it. The page keeps the *previous* answer on screen while
+the next lookup runs, and shows loading skeletons in the meantime, so nothing is read until the answer on
+screen is the new one:
+
+* `readUsPeopleDomState` reports `answered: false` while the TCPA rows are there but empty - the skeleton
+  state - so a half-drawn page is never reported as a result;
+* a value counts only when it carries the site's own `populated` class, so the empty skeleton rows are
+  ignored whatever they hold;
+* the answered text of `#tcpa` + `#cards-wrap` is stamped before the search is submitted and compared
+  afterwards (`usPeopleAnswerStamp`), so a lookup slower than the wait can never report the previous
+  phone's answer as this one's - the failure a stale answer causes, silently;
+* an owner card with no name is a skeleton and is skipped, for the same reason.
+
+**The compliance table** is one `.tcpa-row` per check, and each label is matched with its whitespace
+removed, because "DNC National", "DNC State" and "Litigator Owner" each put half of their label in a
+`<sub>` ("DNCNational"). The verdict is read from the value's own class - `alert` for a hit, `safe` for a
+clear check - with the wording ("Registered") only as a fallback, and it maps onto the values the other
+two records already produce:
+
+| The site says | The card reads |
+| --- | --- |
+| National **and** State registered | `State & Federal DNC` |
+| National only | `Federal DNC` |
+| State only | `State DNC` |
+| neither | `Clean` |
+| `Litigator`, or the owner's `Litigator`, a hit | `Flagged` |
+| `Blacklist` a hit | `Flagged` |
+
+**The owners** are the `.cx-card`s under `#cards-wrap`: the name and age from `.cx-basic`, the addresses
+from `.cx-addresses .cx-address` (the `LIVES AT` row is the one every action runs on; the `LIVED AT` rows
+become the history beside it), the relatives from `.cx-related` (with `Not Present` dropped) and the birth
+year from `.cx-dob`, which the card carries the way a card shows it - `84 yrs (1942)`.
+
+Regression harness: `node scratch/uspeoplesearch_test.js` — the wiring end to end (manifest, framing
+rule, runner frame, record keys and label, all three panels' switches) plus both readers driven with the
+site's own markup: the both-registers answer, each single-register case, a hit on the owner's litigator
+and on the blacklist, the skeleton state that has to read as "no answer yet", and owner cards with three
+addresses, a PO Box row and a `Not Present` relative.
+
+## The pop-out (the panel in its own window)
+
+The widget's last header control is a **pop-out**: it moves the panel out of the page and into its own
+window. That button replaced the old minimize control, which is gone - the panel is now either on the page
+or in a window of its own, never a collapsed strip.
+
+**The detached window *is* the panel.** `window.html` is a 780-byte page whose only content is
+`<script src="widget.js">` - the same file the toolbar icon injects into a page - so there is one interface
+to maintain instead of two that drift apart (which is what had happened: the old `window.html` still showed
+the superseded summary layout). In that window the panel adds `window-mode`: it fills the window instead of
+floating over a page, the header is no longer a drag handle, the pop-out button hides itself (already out),
+and the ✕ closes the window rather than hiding a panel there is no page to hide it from.
+
+* A content script has no access to `chrome.windows`, so the button asks the worker
+  (`OPEN_DETACHED_WINDOW`) and the worker creates the window with `type: 'popup'` - a real window, not
+  another tab - and answers once it is up.
+* **The panel stands aside, and comes back.** It is *hidden*, not removed, and only after that answer
+  (so a failure to open leaves it where it was). Closing the window shows that very panel again on the
+  page it came from, holding everything it had - `chrome.windows.onRemoved` in the worker sends
+  `SHOW_WIDGET` to the tab that asked. If that page has no panel left to show (it was reloaded, or the
+  panel was closed from the page), a fresh one is injected, the same way the toolbar icon does it.
+* Where the panel came from is kept in storage (`widget_popout_return`), because the worker can be torn
+  down between the pop-out and the close; it is ignored after 12 hours, and the window id recorded with it
+  means closing some *other* window cannot claim the return.
+* The window reopens where it was left: `winBounds` is written by the panel as the window is moved and
+  resized, and both this button and the popup's own pop-out read it. Asking twice brings the open window
+  forward (`chrome.windows.update`) rather than stacking a second copy.
+* **Auto mode runs the lookup where the panel is.** Auto watches the portal's dialer for a phone number,
+  and only the in-page copy can see it - so that copy announces every number it detects
+  (`PAGE_PHONE_DETECTED`, which the worker relays to the extension's own views) and **the copy that is on
+  screen runs the lookup**: the page's own when it is showing, the window's when the page's has stood
+  aside, and nothing at all when the panel is hidden from the toolbar. In the window that receiving end is
+  `runDetectedPhoneLookup`, which ignores a number it has already looked up - so one detection is one
+  lookup, and one credit.
+* The icon is the same "leave this frame" glyph the popup's pop-out uses, so the two read as the same
+  action on both surfaces.
+
+`window.js` is now unreferenced by the interface (it was the old window's own implementation) while
+`window.css` is still shared - `popup.css` re-exports it and `popup.html` links it - so only `window.js`
+is a candidate for deletion.
+
+## The sign-in screen
+
+The widget's signed-out state **is** the sign-in screen, and it is the one screen in the widget that is
+not part of the white card: a photograph (`bg.jpg`) behind a dark gradient scrim, with the form sitting on
+it. The scrim is what keeps every label readable whatever the photo does behind it, and the panel runs
+edge to edge inside the body's padding so the image has no white frame around it.
+
+* `bg.jpg` is loaded through `chrome.runtime.getURL('bg.jpg')` and is therefore listed in
+  `manifest.web_accessible_resources` **beside `logo.png`** - a resource that is not listed there cannot be
+  loaded by a page at all, and the panel would be left with its fallback. That fallback is the gradient,
+  which is the first background layer on purpose: a missing or renamed image still leaves a readable
+  panel, just without the photograph.
+* While signed out the header is part of the panel (`container.classList.add('signed-out')`), so the brand
+  title and the four window controls switch to light ink instead of sitting in a white bar on top of a
+  dark surface.
+* The fields are labelled, each carries a leading icon, and the password has a reveal control: the eye
+  (`#widget-auth-eye`) toggles the input's type and swaps itself for the struck-through eye, so the state
+  is visible without hovering. It reads nothing and sends nothing.
+* Autofill is kept from painting the fields white (`-webkit-autofill` is re-inked), because a white field
+  in the middle of the panel is the one thing that would give the design away.
+* **The type is stated, not inherited - and 300 has to be registered.** Headings, paragraphs, labels and
+  form controls do not inherit a font from the card, which is why the first cut of this panel came out in
+  the browser's default face: the panel names `Poppins` itself, and so does each of those elements inside
+  it. The panel is set in the **300 (Light)** face - `Poppins-Light.ttf`, registered as
+  `@font-face { font-weight: 300 }` beside the other weights, because a request for 300 with no face
+  declared for it falls back to the nearest declared weight (400) and "light" comes out looking exactly
+  like regular. The scale it uses: the wordmark 13px/300 tracked 0.16em and uppercased; the headline
+  22px/300; the line under it 11.5px/300 on a 1.7 line-height; labels 11px/400 tracked 0.06em and
+  uppercased; fields and the footer 300; the submit label 400, since a button at 300 reads as too slight;
+  and the header wordmark matches the panel at 13px/300.
+* **The ids are the contract.** `#widget-auth-view`, `#widget-auth-alert` (`-text`), `#widget-auth-form`,
+  `#widget-auth-username`, `#widget-auth-password`, `#widget-auth-submit`, `#widget-auth-btn-text` and
+  `#widget-auth-spinner` are what the sign-in code reads, so a restyle has to keep every one of them.
+  `scratch/settings_toggles_test.js` asserts exactly that - along with the backdrop wiring, the manifest
+  entry for it and the reveal control - which is what stops a future redesign from breaking sign-in
+  silently.
+
+## The manifest is Manifest V3 only
+
+`manifest.json` declares `"manifest_version": 3`, and its `background` block carries **only**
+`service_worker`:
+
+    "background": {
+      "service_worker": "background.js"
+    },
+
+* **Never add `"scripts"`** (or `"page"`, or `"persistent"`) beside it. Those are Manifest V2 keys, and
+  Chrome refuses the *whole* background block when it sees them: the extension still loads, and then does
+  nothing at all - clicking the toolbar icon does not open the widget, because the click handler lives in
+  the service worker that never started. `chrome://extensions` reports it as a **warning**
+  (`'background.scripts' requires manifest version of 2 or lower`), not an error, which is what let it sit
+  there looking harmless.
+* It is a **reload-time** failure: Chrome reads `manifest.json` when the extension is reloaded, and keeps
+  using the manifest it already has until then. A key added today therefore breaks the extension on the
+  *next* reload, however long ago it was added.
+* `browser_specific_settings.gecko` stays: Chrome ignores it and Firefox needs the id. A Firefox build of
+  this extension needs its own manifest (Firefox before 136 wants `background.scripts`), so if it is ever
+  published there, build that manifest separately rather than putting the key back here.
+* `node scratch/manifest_test.js` guards all of it - the MV3 shape, the absence of MV2 keys, that every
+  file the manifest names really exists (a missing icon or `rules.json` refuses the load just as quietly),
+  that all four Google automation scripts are listed, and that the widget's build stamp names the shipped
+  version.
 
 ## How to Install / Reload
 
