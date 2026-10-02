@@ -312,6 +312,11 @@ ok(
     /dnc: \{ record1: true, record2: true, record3: true \}/.test(bgSrc)
 );
 ok('there is a worker port for it', /'uspeoplesearch\.net': null/.test(bgSrc));
+ok('all three site waits allow 45 seconds for data to load', (contentSrc.match(/const maxWaitResults = 45000/g) || []).length >= 3);
+ok('the background waits up to 60 seconds before its lookup safety timeout', /}, 60000\);/.test(bgSrc));
+ok('the widget waits longer than the source-result window', /65000\)/.test(widgetSrc));
+ok('unknown compliance is not displayed as a flagged hit', /lower === "unknown"/.test(widgetSrc));
+ok('a previous no-result prompt is not reused without a fresh result', /noRecordsBefore/.test(contentSrc) && /finalFreshAnswer/.test(contentSrc));
 
 ok('the content script maps its host to the source', /'www\.uspeoplesearch\.net': 'uspeoplesearch\.net'/.test(contentSrc));
 ok(
@@ -344,6 +349,18 @@ checkJson('a phone registered on both lists is State & Federal DNC', answered.ex
   blacklist: 'Clean'
 });
 check('and the page is reported as answered', answered.readUsPeopleDomState().answered, true);
+check('a loaded person may be read even if it has no address', loadExtractors(
+  pageWith(BOTH_REGISTERED, [ownerCard({ name: 'Jamie Example' })])
+).extractUsPeoplePersons().length, 1);
+
+const notFoundPrompt = element('p', { id: 'cx-ie', class: 'd-row cx-prompt', text: 'Not Found' });
+const notFoundPage = documentFor(
+  tcpaTable([]),
+  element('div', { class: 'd-col cx-cards', id: 'cards-wrap' }),
+  notFoundPrompt
+);
+const notFound = loadExtractors(notFoundPage);
+check('the #cx-ie Not Found prompt is recognized without compliance rows', notFound.readUsPeopleDomState().noRecords, true);
 
 const complianceFor = (rows) => loadExtractors(pageWith(rows, [])).extractUsPeopleCompliance();
 const withValue = (match, change) =>

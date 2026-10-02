@@ -106,14 +106,12 @@ function fakeButton() {
     id: 'quoteActionButton',
     disabled: false,
     closest: () => null,
+    offsetParent: {},
+    getClientRects: () => [{}],
     scrollIntoView: () => {},
     focus: () => {},
     getAttribute: () => null,
-    // clickElement() sends the pointer/mouse sequence and exactly one click: only the click
-    // counts as a submission.
-    dispatchEvent: (ev) => {
-      if (ev.type === 'click') clicks++;
-    },
+    click: () => { clicks++; },
   };
 }
 
@@ -163,6 +161,33 @@ check(
 check('PO box never used', mod.buildAddressCandidates(PROFILE).some((a) => /po box/i.test(a.street)), false);
 check('plain string addresses are accepted', mod.buildAddressCandidates({ address: '9 Raw St' }).length, 1);
 check('empty profile -> no candidates', mod.buildAddressCandidates({}).length, 0);
+{
+  const autocompleteEvents = [];
+  const autocompleteAttributes = {};
+  const autocomplete = {
+    value: '',
+    setAttribute: (name, value) => { autocompleteAttributes[name] = value; },
+    dispatchEvent: (event) => autocompleteEvents.push(event.type),
+  };
+  const addressFields = {
+    streetAutocomplete: autocomplete,
+    streetInput: fakeInput('street-native'),
+    streetTwoInput: fakeInput('street2'),
+    cityInput: fakeInput('city'),
+    stateInput: fakeInput('state'),
+    zipAddrInput: fakeInput('zip'),
+  };
+  mod.applyAddressTo(addressFields, PROFILE.address, {
+    street: 'fallback',
+    city: 'Fallback',
+    state: 'TX',
+    zip: '76133',
+  });
+  check('autocomplete widget receives the street value', autocomplete.value, '11 Bad Rd');
+  check('autocomplete widget value attribute is synchronized', autocompleteAttributes.value, '11 Bad Rd');
+  check('autocomplete widget receives input and change events', autocompleteEvents, ['input', 'change']);
+  check('native address field remains synchronized for Amica validation', addressFields.streetInput.value, '11 Bad Rd');
+}
 
 // ---------------------------------------------------------------------------
 // Scenario 1: every address is flagged invalid -> Nominatim saves the quote
@@ -199,6 +224,23 @@ check('the refill cleared the invalid mark', form.streetInput.isInvalid(), false
 
 tick(1000);
 check('address 2 submitted', clicks, 2);
+
+// A disabled or not-yet-rendered quote CTA must not be treated as a successful submit.
+const waitingState = makeState();
+const waitingForm = makeForm();
+let waitingAt = 50000;
+mod.handleAddressStep(waitingState, PROFILE, waitingForm, waitingAt);
+waitingAt += 1000;
+waitingForm.startQuoteBtn.disabled = true;
+mod.handleAddressStep(waitingState, PROFILE, waitingForm, waitingAt);
+check('disabled Start Your Quote button is not counted as submitted', waitingState.addressClickedAt, 0);
+check('disabled Start Your Quote button is not clicked', clicks, 2);
+waitingForm.startQuoteBtn.disabled = false;
+waitingAt += 1000;
+mod.handleAddressStep(waitingState, PROFILE, waitingForm, waitingAt);
+check('enabled Start Your Quote button is clicked natively', clicks, 3);
+check('the response wait starts only after the click', waitingState.addressClickedAt, waitingAt);
+clicks = 2;
 
 form.streetInput.markInvalid();
 tick(2000);
@@ -341,4 +383,3 @@ console.log('\n== no vehicles found: trying the other addresses ==\n');
 
 console.log(`\n=== TOTAL: ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);
-

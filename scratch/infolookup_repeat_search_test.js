@@ -139,6 +139,10 @@ ok(
   src.includes("includes('just searched')")
 );
 ok('a bounded retry exists for the duplicate guard', src.includes('duplicateRetries'));
+ok('the first site checks results for up to 45 seconds', /const maxWaitResults = 45000/.test(liveCode));
+ok('the first site recognizes its explicit no-result message', /no result found for this number/.test(liveCode));
+ok('the first site does not publish an empty result from compliance alone', /personsList\.length > 0 && personReady/.test(liveCode));
+ok('the first site rejects unchanged prior person markup', /guardCleared \|\| personResultStamp\(\) !== personResultStampBefore/.test(liveCode));
 
 console.log(`\n${passed} passed, ${failures.length} failed`);
 if (failures.length) {

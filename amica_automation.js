@@ -103,7 +103,11 @@
       try {
         step(stamp, reason);
       } catch (e) {
-        // A broken step must never kill the funnel.
+        if (typeof opts.onError === "function") {
+          opts.onError(e);
+        } else {
+          console.error("[Amica] Automation step failed:", e);
+        }
       }
       running = false;
     }
@@ -636,6 +640,12 @@
     var state = addr && addr.state ? addr.state.trim() : fallback.state;
     var zip = addr && addr.zip ? String(addr.zip).trim() : fallback.zip;
 
+    if (form.streetAutocomplete) {
+      form.streetAutocomplete.value = street;
+      form.streetAutocomplete.setAttribute("value", street);
+      form.streetAutocomplete.dispatchEvent(new Event("input", { bubbles: true }));
+      form.streetAutocomplete.dispatchEvent(new Event("change", { bubbles: true }));
+    }
     if (form.streetInput) fillAndTypeInput(form.streetInput, street);
     if (form.streetTwoInput && unit) fillAndTypeInput(form.streetTwoInput, unit);
     if (form.cityInput) fillAndTypeInput(form.cityInput, city);
@@ -709,9 +719,22 @@
     // 2. Press "Start Your Quote" once the fields have settled
     if (!state.addressClickedAt) {
       if (now - state.addressFilledAt < ADDRESS_SETTLE_MS) return;
-      if (form.startQuoteBtn) clickElement(form.startQuoteBtn);
+      if (!form.startQuoteBtn) return;
+      var quoteButton = form.startQuoteBtn.closest("button") || form.startQuoteBtn;
+      if (
+        quoteButton.disabled ||
+        quoteButton.getAttribute("aria-disabled") === "true" ||
+        (quoteButton.offsetParent === null &&
+          quoteButton.getClientRects().length === 0)
+      ) {
+        return;
+      }
+      quoteButton.scrollIntoView({ behavior: "auto", block: "center" });
+      quoteButton.focus();
+      quoteButton.click();
       state.addressClickedAt = now;
       state.lastActionTime = now;
+      sendProgress(2, 6, "Submitted address with Start Your Quote...");
       return;
     }
 
@@ -839,6 +862,17 @@
           if (/^\d{4}\s+[A-Z0-9\s-]+$/i.test(t) && !vehicles.includes(t)) {
             vehicles.push(t);
           }
+        }, {
+          onError: function (e) {
+            state.stopped = true;
+            ticker.stop();
+            console.error("[Amica] Automation step failed:", e);
+            sendError(
+              "Amica automation error: " +
+                (e && e.message ? e.message : String(e)),
+            );
+            clearPendingQuote();
+          },
         });
 
         if (vehicles.length > 0) {
@@ -1037,14 +1071,27 @@
       // ==========================================
       // STEP 2: Address Entry Form (#autofilladdress / #addressForm)
       // ==========================================
-      var startQuoteBtn =
-        document.getElementById("quoteActionButton") ||
-        document.querySelector(
-          'button[data-id="GetaQuote.aStartQuote"], button[type="submit"]',
-        );
       var streetInput =
         document.getElementById("addressLineOneInputQuoting") ||
         document.querySelector('input[name="addressLineOne"]');
+      var addressForm =
+        document.getElementById("addressForm") ||
+        (streetInput && streetInput.closest("form"));
+      var streetAutocomplete =
+        addressForm &&
+        addressForm.querySelector(
+          "[data-quote-address-autocomplete] gmp-place-autocomplete",
+        );
+      var startQuoteBtn =
+        (addressForm &&
+          (addressForm.querySelector(
+            'button.quote-flyout-panel__button[data-id="GetaQuote.aStartQuote"]',
+          ) || addressForm.querySelector("#quoteActionButton"))) ||
+        document.querySelector(
+          'button.quote-flyout-panel__button[data-id="GetaQuote.aStartQuote"]',
+        ) ||
+        document.querySelector('button[data-id="GetaQuote.aStartQuote"]') ||
+        document.getElementById("quoteActionButton");
       var streetTwoInput =
         document.getElementById("addressLineTwoInputQuoting") ||
         document.querySelector(
@@ -1060,12 +1107,19 @@
         document.getElementById("zipcodeAddrInputQuoting") ||
         document.querySelector('input[name="zip"]');
 
-      if (streetInput && cityInput && streetInput.offsetParent !== null) {
+      if (
+        streetInput &&
+        cityInput &&
+        addressForm &&
+        (addressForm.offsetParent !== null ||
+          addressForm.getClientRects().length > 0)
+      ) {
         handleAddressStep(
           state,
           profile,
           {
             streetInput: streetInput,
+            streetAutocomplete: streetAutocomplete,
             streetTwoInput: streetTwoInput,
             cityInput: cityInput,
             stateInput: stateInput,
@@ -1125,6 +1179,70 @@
       // ==========================================
       // STEP 1A: Initial Quoting ZIP
       // ==========================================
+      var landingZip =
+        document.getElementById("zip-input-quote_hero") ||
+        document.querySelector(".quote-hero__pulldown .zip-input__field");
+      var landingForm =
+        (landingZip &&
+          (landingZip.closest(".quote-hero__pulldown") ||
+            landingZip.closest("form"))) ||
+        document.querySelector(".quote-hero__pulldown");
+      var landingProductSelect =
+        landingForm &&
+        landingForm.querySelector(
+          '.quote-hero__select-field, select[id*="quote-hero-select-field"]',
+        );
+      var landingSubmit =
+        landingForm &&
+        landingForm.querySelector(
+          ".quote-hero__pulldown-submit, button[type='submit']",
+        );
+
+      if (
+        landingZip &&
+        landingForm &&
+        (landingZip.offsetParent !== null ||
+          landingZip.getClientRects().length > 0)
+      ) {
+        var bundledValue = "PrivatePassenger|HO3";
+        var autoOnlyValue = "PrivatePassenger";
+        if (landingProductSelect) {
+          var availableValues = [];
+          for (var i = 0; i < landingProductSelect.options.length; i++) {
+            availableValues.push(String(landingProductSelect.options[i].value));
+          }
+          if (
+            availableValues.indexOf(bundledValue) === -1 &&
+            availableValues.indexOf(autoOnlyValue) !== -1
+          ) {
+            bundledValue = autoOnlyValue;
+          }
+          if (landingProductSelect.value !== bundledValue) {
+            setSelectValue(landingProductSelect, bundledValue);
+          }
+        }
+
+        var initialZip =
+          profile.address && profile.address.zip
+            ? String(profile.address.zip).trim()
+            : "76133";
+        sendProgress(1, 6, "Entering ZIP code " + initialZip + "...");
+        if (landingZip.value !== initialZip) {
+          fillAndTypeInput(landingZip, initialZip);
+        }
+        if (stepGate(state, "zip", now)) {
+          if (landingSubmit) {
+            clickElement(landingSubmit);
+          } else if (typeof landingForm.requestSubmit === "function") {
+            landingForm.requestSubmit();
+          } else {
+            return;
+          }
+          state.lastActionTime = now;
+        }
+        return;
+      }
+
       var initZip = document.getElementById("zipcodeInitInputQuoting");
       if (initZip && initZip.offsetParent !== null) {
         var initialZip =
@@ -1224,7 +1342,12 @@
   function waitUntilUsable(callback) {
     var began = Date.now();
     (function poll() {
-      if (document.readyState === "complete" && document.getElementById("zipcodeInitInputQuoting")) {
+      var readyField =
+        document.getElementById("zipcodeInitInputQuoting") ||
+        document.querySelector(
+          ".quote-hero__pulldown #zip-input-quote_hero, .quote-hero__pulldown .zip-input__field",
+        );
+      if (document.readyState === "complete" && readyField) {
         callback(true);
         return;
       }

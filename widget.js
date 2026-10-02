@@ -2819,7 +2819,7 @@
 
     try {
       const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Lookup timed out. Please try again.")), 12000)
+        setTimeout(() => reject(new Error("Lookup timed out. Please try again.")), 65000)
       );
 
       const response = await Promise.race([
@@ -3920,6 +3920,8 @@
       !lower ||
       lower === "-" ||
       lower === "--" ||
+      lower === "unknown" ||
+      lower === "not available" ||
       lower.includes("loading")
     ) {
       return "badge-neutral";

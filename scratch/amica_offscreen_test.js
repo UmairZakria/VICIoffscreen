@@ -338,6 +338,16 @@ async function runStartWithoutOffscreen(profile) {
   ok('Mercury is not diverted into the offscreen frame', !/provider === 'mercury'/.test(slice(bgSrc, 'async function startVehicleLookup', '// The offscreen path for Amica', 'startVehicleLookup').replace(/\/\/.*$/gm, '')));
   ok('Amica keeps a tab fallback', /falling back to a background tab/.test(bgSrc));
   ok('Amica is offered the offscreen frame first', /if \(provider === 'amica'\) \{[\s\S]*?startAmicaInOffscreen\(profile\)/.test(bgCode));
+  const progressHandler = slice(
+    bgSrc,
+    "if (request.action === 'VEHICLE_LOOKUP_PROGRESS') {",
+    "if (request.action === 'VEHICLE_LOOKUP_SUCCESS')",
+    'vehicle progress handler'
+  );
+  ok(
+    'the startup-only progress line leaves the warm fallback armed',
+    /request\.message !== 'Starting Amica vehicle automation\.\.\.'/.test(progressHandler)
+  );
 
   // -------------------------------------------------------------------------
   console.log('\n== 4. finishing a run ==\n');

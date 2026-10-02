@@ -137,6 +137,9 @@
     const firstSection = listContainer?.querySelector('.section') || listContainer?.querySelector('.person-info');
     const personNameEl = firstSection?.querySelector('.person-name');
     const personNameText = personNameEl ? personNameEl.textContent.trim() : '';
+    const noResult = /no result found for this number|no owner information available/i.test(
+      firstSection?.textContent || ''
+    );
     if (personNameText && !personNameText.toLowerCase().includes('load')) {
       personReady = true;
       const lowerName = personNameText.toLowerCase();
@@ -149,6 +152,7 @@
       ready: complianceReady,
       personReady,
       persons,
+      noResult,
       compliance: complianceReady
         ? {
             dnc: formatInfolookupComplianceValue(cleanText(dncText)),
@@ -212,6 +216,11 @@
     if (guardCleared) {
       clearInfolookupResultsDom();
     }
+    const personResultStamp = () => {
+      const list = document.getElementById('personInfoListContainer');
+      return list ? (list.textContent || '').replace(/\s+/g, ' ').trim() : '';
+    };
+    const personResultStampBefore = personResultStamp();
 
     // 1. Enter phone number
     const cleanDigits = phone.replace(/\D/g, '');
@@ -255,11 +264,11 @@
 
     // 3. Fast-poll for new results (100ms interval for sub-second capture)
     const searchStart = Date.now();
-    const maxWaitResults = 12000;
+    const maxWaitResults = 45000;
     let compliance = null;
-    let complianceReady = false;
-    let complianceReadyTime = null;
     let duplicateRetries = 0;
+    let stableResultKey = '';
+    let stableResultAt = 0;
 
     while (Date.now() - searchStart < maxWaitResults) {
       if (activeSearchId !== searchId) return; // Discard if user triggered a newer search
@@ -308,21 +317,36 @@
       // Check compliance stats + person information
       const state = readInfolookupDomState();
 
-      if (state.ready) {
-        if (!complianceReady) {
-          complianceReady = true;
-          complianceReadyTime = Date.now();
-        }
-        compliance = state.compliance;
-      }
+      if (state.ready) compliance = state.compliance;
 
       const personReady = state.personReady;
       const personsList = state.persons;
 
-      // Fast return condition:
-      if (complianceReady && compliance) {
-        if (personReady || (complianceReadyTime && (Date.now() - complianceReadyTime > 3000))) {
-          postInfolookupResult(searchId, compliance, personsList);
+      const freshPersonResult =
+        guardCleared || personResultStamp() !== personResultStampBefore;
+      if (state.noResult && freshPersonResult) {
+        postInfolookupResult(
+          searchId,
+          compliance || { dnc: 'Unknown', litigator: 'Unknown', blacklist: 'Unknown' },
+          []
+        );
+        return;
+      }
+
+      if (personsList.length > 0 && personReady && freshPersonResult) {
+        const resultKey = JSON.stringify({ persons: personsList, compliance });
+        if (resultKey !== stableResultKey) {
+          stableResultKey = resultKey;
+          stableResultAt = Date.now();
+        } else if (
+          Date.now() - stableResultAt >= 1200 &&
+          (state.ready || Date.now() - stableResultAt >= 3000)
+        ) {
+          postInfolookupResult(
+            searchId,
+            compliance || { dnc: 'Unknown', litigator: 'Unknown', blacklist: 'Unknown' },
+            personsList
+          );
           return;
         }
       }
@@ -331,8 +355,19 @@
     }
 
     // Fallback if loop ends
-    if (complianceReady && compliance) {
-      postInfolookupResult(searchId, compliance, extractInfolookupSitePersons());
+    const finalState = readInfolookupDomState();
+    const finalPersons = finalState.persons;
+    const finalPersonResultIsFresh =
+      guardCleared || personResultStamp() !== personResultStampBefore;
+    if (
+      (finalPersons.length > 0 && finalPersonResultIsFresh) ||
+      (finalState.noResult && finalPersonResultIsFresh)
+    ) {
+      postInfolookupResult(
+        searchId,
+        compliance || { dnc: 'Unknown', litigator: 'Unknown', blacklist: 'Unknown' },
+        finalPersons
+      );
       return;
     }
 
@@ -631,6 +666,12 @@
       searchBtn = findSearchButton();
     }
 
+    const resultStampBefore = JSON.stringify({
+      compliance: extractInfolookuppCompliance(),
+      persons: extractInfolookuppPersons(),
+      notFound: (document.querySelector('.cx-prompt.cx-not-found, p.cx-not-found') || {}).textContent || ''
+    });
+
     // Enter is pressed as well: the older build needed it next to the click, and a build that
     // renders no submit button searches on Enter alone. A missing button is therefore not an
     // immediate error any more - the results wait below reports a timeout if nothing was ever
@@ -650,10 +691,11 @@
       } catch (e) {}
     }
 
-    const maxWaitResults = 12000;
+    const maxWaitResults = 45000;
     const searchStartTime = Date.now();
-    let sawScrubbing = false;
-    let scrubFinishedTime = null;
+    let sawLoading = false;
+    let stableResultKey = '';
+    let stableResultAt = 0;
 
     await sleep(80);
 
@@ -661,10 +703,6 @@
       if (activeSearchId !== searchId) return;
 
       const bodyText = document.body.innerText || '';
-
-      if (bodyText.includes('Running TCPA scrub') || bodyText.toLowerCase().includes('scrubbing')) {
-        sawScrubbing = true;
-      }
 
       // Compliance and owners as the current build renders them: the pills sit in
       // `.compliance-status-item` (a `.compliance-label` next to a `.status-pill`) and the owners
@@ -674,9 +712,36 @@
       const personsList = extractInfolookuppPersons();
       const person = personsList[0] || null;
       const stillScrubbing = bodyText.includes('Running TCPA scrub') || bodyText.toLowerCase().includes('scrubbing');
+      if (stillScrubbing) sawLoading = true;
+      const notFoundEl = document.querySelector('.cx-prompt.cx-not-found, p.cx-not-found');
+      const noResult =
+        !!notFoundEl ||
+        /no owner found for this number|no records found|invalid phone number/i.test(
+          notFoundEl ? notFoundEl.textContent || '' : bodyText
+        );
+      const freshResult =
+        sawLoading ||
+        JSON.stringify({
+          compliance,
+          persons: personsList,
+          notFound: notFoundEl ? notFoundEl.textContent || '' : ''
+        }) !== resultStampBefore;
 
-      if (sawScrubbing && !stillScrubbing && !scrubFinishedTime) {
-        scrubFinishedTime = Date.now();
+      if (noResult && freshResult) {
+        if (port) {
+          port.postMessage({
+            action: 'SEARCH_RESULT',
+            searchId: searchId,
+            source: sourceName,
+            data: {
+              ...(compliance || { dnc: 'Unknown', litigator: 'Unknown', blacklist: 'Unknown' }),
+              persons: [],
+              person: null,
+              notFound: true
+            }
+          });
+        }
+        return;
       }
 
       if (compliance && compliance.dnc && compliance.litigator && compliance.blacklist && !stillScrubbing) {
@@ -686,50 +751,28 @@
           !compliance.blacklist.toLowerCase().includes('scrub');
 
         if (isNotPlaceholder) {
-          if (personsList.length > 0 && personsList[0].name) {
-            if (port) {
-              port.postMessage({
-                action: 'SEARCH_RESULT',
-                searchId: searchId,
-                source: sourceName,
-                data: {
-                  ...compliance,
-                  persons: personsList,
-                  person: person
-                }
-              });
+          if (personsList.length > 0 && personsList[0].name && freshResult) {
+            const resultKey = JSON.stringify({ compliance, personsList });
+            if (resultKey !== stableResultKey) {
+              stableResultKey = resultKey;
+              stableResultAt = Date.now();
+            } else if (Date.now() - stableResultAt >= 1200) {
+              if (port) {
+                port.postMessage({
+                  action: 'SEARCH_RESULT',
+                  searchId: searchId,
+                  source: sourceName,
+                  data: {
+                    ...compliance,
+                    persons: personsList,
+                    person: person
+                  }
+                });
+              }
+              return;
             }
-            return;
-          }
-
-          if (scrubFinishedTime && (Date.now() - scrubFinishedTime > 1500)) {
-            if (port) {
-              port.postMessage({
-                action: 'SEARCH_RESULT',
-                searchId: searchId,
-                source: sourceName,
-                data: {
-                  ...compliance,
-                  persons: personsList,
-                  person: person || null
-                }
-              });
-            }
-            return;
           }
         }
-      }
-
-      if (bodyText.includes('No records found') || bodyText.includes('Invalid phone number')) {
-        if (port) {
-          port.postMessage({
-            action: 'SEARCH_RESULT',
-            searchId: searchId,
-            source: sourceName,
-            error: 'No records found or invalid phone number.'
-          });
-        }
-        return;
       }
 
       await sleep(100);
@@ -738,16 +781,31 @@
     const finalCompliance = extractInfolookuppCompliance();
     const finalPersons = extractInfolookuppPersons();
 
-    if (finalCompliance && (finalCompliance.dnc || finalCompliance.litigator || finalCompliance.blacklist)) {
+    const finalNotFoundEl = document.querySelector('.cx-prompt.cx-not-found, p.cx-not-found');
+    const finalNoResult =
+      !!finalNotFoundEl ||
+      /no owner found for this number|no records found|invalid phone number/i.test(
+        finalNotFoundEl ? finalNotFoundEl.textContent || '' : (document.body.innerText || '')
+      );
+    const finalResultStamp = JSON.stringify({
+      compliance: finalCompliance,
+      persons: finalPersons,
+      notFound: finalNotFoundEl ? finalNotFoundEl.textContent || '' : ''
+    });
+    if (
+      (finalPersons.length > 0 || finalNoResult) &&
+      (sawLoading || finalResultStamp !== resultStampBefore)
+    ) {
       if (port) {
         port.postMessage({
           action: 'SEARCH_RESULT',
           searchId: searchId,
           source: sourceName,
           data: {
-            ...finalCompliance,
+            ...(finalCompliance || { dnc: 'Unknown', litigator: 'Unknown', blacklist: 'Unknown' }),
             persons: finalPersons,
-            person: finalPersons[0] || null
+            person: finalPersons[0] || null,
+            notFound: finalNoResult
           }
         });
       }
@@ -952,12 +1010,20 @@
     const compliance = extractUsPeopleCompliance();
     const persons = extractUsPeoplePersons();
     const bodyText = document.body ? document.body.innerText || '' : '';
+    const noResultEl = document.querySelector(
+      '#cx-ie.d-row.cx-prompt, p#cx-ie.cx-prompt, .d-row.cx-prompt'
+    );
+    const noResultText = noResultEl ? noResultEl.textContent || '' : '';
+    const noResultPattern =
+      /not found|no (?:records|results)(?: were)? found|invalid (?:phone )?number|please try a different number/i;
 
     return {
       compliance: compliance,
       persons: persons,
       answered: Boolean(compliance),
-      noRecords: /no (?:records|results)(?: were)? found|invalid (?:phone )?number|please try a different number/i.test(bodyText)
+      noRecords:
+        noResultPattern.test(noResultText) ||
+        /no (?:records|results)(?: were)? found|invalid (?:phone )?number|please try a different number/i.test(bodyText)
     };
   }
 
@@ -990,7 +1056,9 @@
     }
 
     // Taken before the search is submitted: see usPeopleAnswerStamp.
+    const stateBefore = readUsPeopleDomState();
     const stampBefore = usPeopleAnswerStamp();
+    const noRecordsBefore = stateBefore.noRecords;
 
     const cleanDigits = phone.replace(/\D/g, '');
     phoneInput.focus();
@@ -1038,9 +1106,11 @@
       } catch (e) {}
     }
 
-    const maxWaitResults = 15000;
+    const maxWaitResults = 45000;
     const searchStartTime = Date.now();
     let sawLoading = false;
+    let stableResultKey = '';
+    let stableResultAt = 0;
 
     await sleep(80);
 
@@ -1048,37 +1118,49 @@
       if (activeSearchId !== searchId) return;
 
       const state = readUsPeopleDomState();
-      if (!state.answered) sawLoading = true;
+      if (!state.answered && !state.noRecords) sawLoading = true;
 
-      // The answer on screen is the new one: either the page went through its skeleton state after this
-      // search was submitted, or the answered text is not the text that was there before it. That is
-      // what keeps a previous lookup's answer from being reported as this one's.
-      if (state.answered && (sawLoading || usPeopleAnswerStamp() !== stampBefore)) {
+      const freshAnswer = sawLoading || usPeopleAnswerStamp() !== stampBefore;
+      if (state.noRecords && (!noRecordsBefore || freshAnswer)) {
         if (port) {
           port.postMessage({
             action: 'SEARCH_RESULT',
             searchId: searchId,
             source: sourceName,
             data: {
-              ...state.compliance,
-              persons: state.persons,
-              person: state.persons[0] || null
+              ...(state.compliance || { dnc: 'Unknown', litigator: 'Unknown', blacklist: 'Unknown' }),
+              persons: [],
+              person: null,
+              notFound: true
             }
           });
         }
         return;
       }
 
-      if (state.answered && state.noRecords) {
-        if (port) {
-          port.postMessage({
-            action: 'SEARCH_RESULT',
-            searchId: searchId,
-            source: sourceName,
-            error: 'No records found or invalid phone number.'
-          });
+      // The answer on screen is the new one: either the page went through its skeleton state after this
+      // search was submitted, or the answered text is not the text that was there before it. That is
+      // what keeps a previous lookup's answer from being reported as this one's.
+      if (state.persons.length > 0 && freshAnswer) {
+        const resultKey = JSON.stringify({ compliance: state.compliance, persons: state.persons });
+        if (resultKey !== stableResultKey) {
+          stableResultKey = resultKey;
+          stableResultAt = Date.now();
+        } else if (Date.now() - stableResultAt >= 1200) {
+          if (port) {
+            port.postMessage({
+              action: 'SEARCH_RESULT',
+              searchId: searchId,
+              source: sourceName,
+              data: {
+                ...(state.compliance || { dnc: 'Unknown', litigator: 'Unknown', blacklist: 'Unknown' }),
+                persons: state.persons,
+                person: state.persons[0] || null
+              }
+            });
+          }
+          return;
         }
-        return;
       }
 
       await sleep(120);
@@ -1088,16 +1170,33 @@
     // that took longer than the wait is not a failed one - while a page still showing its skeletons is
     // reported as the timeout it is, instead of being read as though the skeletons were the answer.
     const finalState = readUsPeopleDomState();
-    if (finalState.answered) {
+    const finalFreshAnswer = sawLoading || usPeopleAnswerStamp() !== stampBefore;
+    if (finalState.persons.length > 0 && finalFreshAnswer) {
       if (port) {
         port.postMessage({
           action: 'SEARCH_RESULT',
           searchId: searchId,
           source: sourceName,
           data: {
-            ...finalState.compliance,
+            ...(finalState.compliance || { dnc: 'Unknown', litigator: 'Unknown', blacklist: 'Unknown' }),
             persons: finalState.persons,
             person: finalState.persons[0] || null
+          }
+        });
+      }
+      return;
+    }
+    if (finalState.noRecords && (!noRecordsBefore || finalFreshAnswer)) {
+      if (port) {
+        port.postMessage({
+          action: 'SEARCH_RESULT',
+          searchId: searchId,
+          source: sourceName,
+          data: {
+            ...(finalState.compliance || { dnc: 'Unknown', litigator: 'Unknown', blacklist: 'Unknown' }),
+            persons: [],
+            person: null,
+            notFound: true
           }
         });
       }
@@ -1238,7 +1337,6 @@
         allAddresses.push(address);
       }
       if (!bestAddress) bestAddress = allAddresses[0] || null;
-      if (!bestAddress) continue;
 
       const related = Array.from(card.querySelectorAll('.cx-related .value.relation, .cx-related .relation'))
         .map((el) => cleanText(el.textContent || ''))

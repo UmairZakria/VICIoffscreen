@@ -443,8 +443,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     setAmicaWarm(!!request.ready);
   }
   if (request.action === 'VEHICLE_LOOKUP_PROGRESS') {
-    // A warm Amica has picked the quote up and is running: the fallback loader must not fire.
-    if (activeVehicleLookup) activeVehicleLookup.sawProgress = true;
+    // The initial "Starting..." line only confirms that the script ran; it does not prove the
+    // landing form was found or submitted. Keep the warm fallback armed until the quote flow
+    // reports a real step so a stale/new-layout page cannot leave the lookup stuck indefinitely.
+    if (
+      activeVehicleLookup &&
+      request.message !== 'Starting Amica vehicle automation...'
+    ) {
+      activeVehicleLookup.sawProgress = true;
+    }
     broadcastVehicleMessage(request);
   }
   if (request.action === 'VEHICLE_LOOKUP_SUCCESS') {
@@ -3877,7 +3884,7 @@ async function startParallelLookup(phoneNumber, session, sender, sendResponse, c
     timeoutId: null
   };
 
-  // 20-second safety timeout. The lookup is only marked expired (not discarded), so a
+  // 60-second safety timeout. The lookup is only marked expired (not discarded), so a
   // slow source that answers later is still streamed to the widget instead of vanishing.
   activeLookup.timeoutId = setTimeout(() => {
     if (activeLookup && activeLookup.searchId === searchId) {
@@ -3885,13 +3892,13 @@ async function startParallelLookup(phoneNumber, session, sender, sendResponse, c
         try {
           activeLookup.sendResponse({
             success: false,
-            error: 'Parallel lookup timed out after 20s.'
+            error: 'Parallel lookup timed out after 60s.'
           });
         } catch (e) {}
       }
       activeLookup.expired = true;
     }
-  }, 20000);
+  }, 60000);
 
   try {
     await ensureOffscreenDocument();

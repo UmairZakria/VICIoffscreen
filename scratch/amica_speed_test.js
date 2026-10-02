@@ -492,7 +492,33 @@ check('no 50 ms polling interval is left', /setInterval\([^;]*,\s*50\s*\)/.test(
 check('no clearInterval(interval) is left', code.includes('clearInterval(interval)'), false);
 check('the tick reuses the ticker timestamp', tickBody.includes('var now = Date.now();'), false);
 check('the ticker is stopped when vehicles are found', tickBody.includes('state.vehiclesFound = true;'), true);
-check('every stop path stops the ticker', (tickBody.match(/ticker\.stop\(\)/g) || []).length, 4);
+check('every stop path stops the ticker', (tickBody.match(/ticker\.stop\(\)/g) || []).length, 5);
+check('step failures are reported to the caller', tickBody.includes('onError: function (e)'), true);
+check('step failures are sent to the user and clear the pending quote', [
+  tickBody.includes('sendError('),
+  tickBody.includes('clearPendingQuote();'),
+], [true, true]);
+check('the updated quote ZIP field is targeted', code.includes('getElementById("zip-input-quote_hero")'), true);
+check('landing controls are queried inside their quote form', code.includes('landingForm.querySelector('), true);
+check('Auto + Home is preferred over Auto-only', code.includes('"PrivatePassenger|HO3"') && code.includes('"PrivatePassenger"'), true);
+check(
+  'address submission targets Amica Start Your Quote instead of a generic submit',
+  /button\.quote-flyout-panel__button\[data-id="GetaQuote\.aStartQuote"\]/.test(code) &&
+    !/button\[data-id="GetaQuote\.aStartQuote"\],\s*button\[type="submit"\]/.test(code),
+  true
+);
+check('address CTA uses native button activation', /quoteButton\.click\(\)/.test(code), true);
+check('address submit timer is set only after a usable CTA is activated', [
+  /if \(!form\.startQuoteBtn\) return;/.test(code),
+  /quoteButton\.disabled/.test(code),
+  /quoteButton\.click\(\);\s*state\.addressClickedAt = now;/.test(code),
+], [true, true, true]);
+check('updated Amica form is identified by its #addressForm container', /getElementById\("addressForm"\)/.test(code), true);
+check('hidden native street input does not gate the address step', /addressForm\.offsetParent !== null/.test(code), true);
+check('Google address autocomplete receives the street value', [
+  /streetAutocomplete\.value = street/.test(code),
+  /streetAutocomplete\.setAttribute\("value", street\)/.test(code),
+], [true, true]);
 check('the run is capped by MAX_RUNTIME_MS', tickBody.includes('now - state.startTime > MAX_RUNTIME_MS'), true);
 check('the old 90 s literal is gone', tickBody.includes('90000'), false);
 check('a stuck page cannot leave the ticker running', code.includes('}, MAX_RUNTIME_MS + 15000);'), true);

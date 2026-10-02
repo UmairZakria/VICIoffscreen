@@ -178,6 +178,11 @@ ok(
 );
 ok('Enter is still dispatched next to the click', /key: 'Enter', code: 'Enter'/.test(contentCode));
 ok('the form is submitted when there is no button at all', /form\.requestSubmit\(\)/.test(contentCode));
+ok('results are polled for up to 45 seconds', /const maxWaitResults = 45000/.test(contentCode));
+ok('the supplied no-owner prompt is detected', /cx-prompt\.cx-not-found/.test(contentCode));
+ok('a no-owner response is sent as empty result data, not a source error', /notFound: true/.test(contentCode));
+ok('an empty compliance-only state is not immediately returned', !/scrubFinishedTime/.test(contentCode));
+ok('an unchanged previous owner result is ignored', /JSON\.stringify\(\{\s*compliance,\s*persons: personsList,[\s\S]{0,120}!== resultStampBefore/.test(contentCode));
 
 // ---------------------------------------------------------------------------
 console.log('\n== 4. the combined "STATE / ZIP" column is split, placeholders are not values ==\n');
@@ -379,4 +384,3 @@ check('a placeholder dash is not a status', parse.formatInfolookuppComplianceVal
 // ---------------------------------------------------------------------------
 console.log(`\n=== TOTAL: ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);
-

@@ -65,6 +65,13 @@ What the new markup needed:
   label. A build with no submit button is no longer an instant failure: Enter (and
   `form.requestSubmit()`) is tried, and the results wait reports the timeout if nothing was
   submitted.
+* **A record card waits for an actual answer.** All three source flows poll for up to **45 s**;
+  they do not treat compliance-only values or unchanged prior results as an empty owner result.
+  `infolookup.site` recognizes its `.person-name` no-result message,
+  `infolookupp.com` recognizes `.cx-prompt.cx-not-found`, and `uspeoplesearch.net` recognizes
+  `#cx-ie.d-row.cx-prompt` with *"Not Found"*. Those explicit states stream an empty-person result
+  so the widget can show its placeholder card; while a result is still loading, polling continues.
+  The background safety limit is **60 s**, and the widget waits **65 s** before timing out.
 
 Regression harness: `node scratch/infolookupp_test.js`
 
@@ -712,20 +719,27 @@ press Amica on a record    ->  the quote is written to storage
 ```
 
 * **Only the page can say when it is usable**, so it reports it. `amica_automation.js` waits for
-  `document.readyState === "complete"` **and** the quoting ZIP field
-  (`#zipcodeInitInputQuoting`) before sending `AMICA_RUNNER_READY { ready: true }`. The background
-  stores that in `amica_runner_ready` (10-minute TTL) and takes the fast path only when it is
-  there — it is never assumed.
+  `document.readyState === "complete"` **and** a quoting ZIP field before sending
+  `AMICA_RUNNER_READY { ready: true }`. This accepts both the previous
+  `#zipcodeInitInputQuoting` field and the current `#zip-input-quote_hero` /
+  `.zip-input__field` layout. The background stores that in `amica_runner_ready` (10-minute TTL)
+  and takes the fast path only when it is there — it is never assumed.
+* **The current homepage quote form is handled directly.** The automation selects **Auto + Home**
+  (`PrivatePassenger|HO3`), enters the record's ZIP in `#zip-input-quote_hero`, then submits the
+  button inside that same quote form. Auto-only (`PrivatePassenger`) is selected only if the
+  bundled option is absent. The form controls are scoped to `.quote-hero__pulldown` so a different
+  page form cannot be submitted by mistake.
 * **Nothing is pre-loaded while a run is in flight.** `prewarmAmica()` returns early when
   `activeVehicleLookup` is set, so the frame is never reloaded underneath a running quote.
 * **Two different teardowns, on purpose.** `finishVehicleLookup()` — the end of a run — loads the
   next Amica (`prepareNext` defaults to `true`). The start path passes
   `finishVehicleLookup({ prepareNext: false })`, because the new run is about to take that frame
   itself.
-* **A warm page that does not start is not waited on.** If no `VEHICLE_LOOKUP_PROGRESS` arrives
-  within 4 s (`AMICA_WARM_FALLBACK_MS`) the background says so and loads Amica the normal way. The
-  cold path is untouched, and it is what runs when the pre-load failed, the TTL expired, or the
-  frame was replaced by a fresh offscreen document.
+* **A warm page that does not reach a quote step is not waited on.** The initial
+  *"Starting Amica vehicle automation..."* message alone does not disarm the fallback. If no
+  subsequent step arrives within 4 s (`AMICA_WARM_FALLBACK_MS`), the background says so and loads
+  Amica the normal way. The cold path is untouched, and it is what runs when the pre-load failed,
+  the TTL expired, or the frame was replaced by a fresh offscreen document.
 * **One page serves exactly one run** (`started` in `amica_automation.js`): the funnel navigates
   deep into the quote flow, so the next search always gets a freshly loaded frame.
 * Cookies are cleared at pre-load time as well as at cold start, so the page parked there is a
@@ -760,6 +774,17 @@ Everything that used to be repeated work happens once:
   `click` — it no longer dispatches a click *and* calls `targetBtn.click()`, which ran every
   Amica handler twice and queued duplicate quote requests. It also leaves
   `disabled`/`aria-disabled` buttons alone and jumps to the target instead of smooth-scrolling.
+* **The address form submits only its quote CTA.** The address step looks for
+  `button.quote-flyout-panel__button[data-id="GetaQuote.aStartQuote"]` inside the street field's
+  form (then the same exact CTA on the page, for Amica layouts without a wrapping form). It uses
+  the button's native `.click()` activation so the site's submit behavior runs, and does not fall
+  back to an arbitrary `button[type="submit"]`, which could submit the site's search form instead.
+  A missing or disabled CTA does not count as a submission or start the address-response timer.
+* **The current address field is a Google autocomplete widget.** Amica marks the native
+  `#addressLineOneInputQuoting` as `hidden` and renders a `gmp-place-autocomplete` in its place.
+  The address step is therefore detected through `#addressForm`, not the hidden input's
+  visibility; it sets the autocomplete widget's value as well as the native address field before
+  filling city, state and ZIP and pressing the quote CTA.
 * **One progress message per state** — `background.js` broadcasts every
   `VEHICLE_LOOKUP_PROGRESS` to **every** tab, so an identical line is not repeated for **1.5 s**.
 * **One wide scan per change** — the *"how would you like to enter your vehicle info"* text scan
@@ -796,18 +821,17 @@ Progress messages: *"Amica rejected 11 Bad Rd, Akron, OH - trying the next addre
 
 Regression harness: `node scratch/amica_address_test.js`
 
-## Reliability of the dual-source record list
+## Reliability of the multi-source record list
 
-Both sites are searched in parallel and each record is streamed to the widget the moment
-its source answers:
+All enabled sources are searched in parallel and each record is streamed to the widget when
+its source has a stable result or an explicit no-result state:
 
-* The **first** record shows instantly (*"Fastest Result: Record 1 (awaiting
-  secondary…)"*), the second one is appended as *Record 2*. Only the records switched
-  on in Settings are searched, so switching one off leaves a single-card lookup.
+* The first successful record streams immediately; each other enabled source is appended independently.
+  Only the records switched on in Settings are searched.
 * Only the **primary address** of a street-only (infolookupp) record is completed before
   streaming, with a **1.2 s budget** — the history addresses are completed on demand by
   Amica / Mercury / Unmask, which reuse the same cache.
-* The parallel-lookup timeout (**20 s**) no longer throws the run away: a source that
+* The parallel-lookup timeout (**60 s**) no longer throws the run away: a source that
   answers late is still streamed to the widget instead of its record silently vanishing,
   and the widget now names the record that failed
   (*"Completed (Record 1) - Record 2 failed"*).
@@ -960,7 +984,7 @@ a **real, whole-extension restart** — one `RESTART_EXTENSION` message, handled
 `background.js`:
 
 1. **Every run in flight is stopped** (`stopEveryRun()`): the phone lookup is answered and dropped
-   (its 20 s safety timer cleared), the ride, DOB and Google runs are cancelled — each one hands the
+   (its 60 s safety timer cleared), the ride, DOB and Google runs are cancelled — each one hands the
    user's own tab back exactly as a normal finish does — and the warm Amica page is dropped
    (`setAmicaWarm(false)`).
 2. **The pending-run storage those runs wrote** (`amica_pending_quote`, `mercury_pending_quote`,
@@ -1053,7 +1077,10 @@ screen is the new one:
 * the answered text of `#tcpa` + `#cards-wrap` is stamped before the search is submitted and compared
   afterwards (`usPeopleAnswerStamp`), so a lookup slower than the wait can never report the previous
   phone's answer as this one's - the failure a stale answer causes, silently;
-* an owner card with no name is a skeleton and is skipped, for the same reason.
+* an owner card with no name is a skeleton and is skipped, for the same reason; a name with no address
+  is still retained rather than mistaken for an empty result;
+* the page's `#cx-ie.d-row.cx-prompt` / *"Not Found"* state is returned as a completed empty-person
+  result, without inventing clean compliance values.
 
 **The compliance table** is one `.tcpa-row` per check, and each label is matched with its whitespace
 removed, because "DNC National", "DNC State" and "Litigator Owner" each put half of their label in a
