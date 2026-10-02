@@ -409,14 +409,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   // A security check has appeared. There is nothing to click - Cloudflare only accepts a real
-  // hand - so all this does is put the check in front of the user once: in offscreen mode the run
-  // is promoted into a real tab (a hidden frame cannot be shown), in tab mode that tab is simply
-  // brought forward. When the run ends the tab is handed back (see restoreCallerTab).
+  // hand - so an offscreen run opens a background copy and waits for that tab to confirm the
+  // challenge before showing it. A tab already running the check is simply brought forward.
   if (request.action === 'FOCUS_LOOKUP_TAB') {
     bringLookupIntoView(sender).catch(() => {});
   }
-  // The user cleared the check in the promoted tab. The tab stays open - the run still needs it -
-  // but it goes back into the background and the user is returned to where they started.
+  // The user cleared the check in the promoted tab. The run is returned to the hidden runner when
+  // that tab actually showed the challenge; otherwise the tab remains as a background fallback.
   if (request.action === 'CHALLENGE_CLEARED') {
     hideLookupAfterChallenge(sender).catch(() => {});
   }
@@ -1873,11 +1872,11 @@ function persistDobSession(session) {
 // when a document from an earlier install outlives an update. Without the retry that stale state
 // quietly degraded every DOB run into the visible tab this was built to remove.
 // "This document is no use": either it has no such runner, or it exists but is not answering at all.
-// Both are worth one freshly created document before anything falls back to a tab.
+// Both are worth one freshly created document before the runner is reported unavailable.
 const REPLACE_DOCUMENT_REASONS = ['no-frame', 'unknown-source', 'offscreen-not-listening'];
 
 // Starts a DOB step inside the hidden offscreen runner. The answer carries the reason when the
-// runner is not available, so the caller can fall back to a real background tab *and* say why.
+// runner is not available, so Unmask can report a clear error without opening a browser tab.
 async function startDobInOffscreen(frame, url) {
   let prepared = await prepareRunner(frame, url);
 
@@ -1892,16 +1891,14 @@ async function startDobInOffscreen(frame, url) {
   if (!prepared.ok) {
     console.warn(
       '[Background] Hidden runner unavailable for ' + frame + ' (' + prepared.reason +
-        ') - using a background tab instead.'
+        ').'
     );
   }
   return { ok: prepared.ok, reason: prepared.reason || '' };
 }
 
-// Opens a DOB run. The hidden offscreen runner is used first so that no tab ever appears in the
-// user's tab strip; a real background tab is the fallback when the offscreen document cannot be
-// created. `session` must already be in storage before the runner loads, because the content
-// script reads it exactly once on load.
+// Opens a DOB run in the hidden runner. `session` must already be in storage before the runner
+// loads, because the content script reads it exactly once on load.
 async function openDobRunner(url, session) {
   session.currentUrl = url;
   await persistDobSession(session);
@@ -1923,35 +1920,17 @@ async function openDobRunner(url, session) {
     return run;
   }
 
-  // Remembered so the progress line can say why this run is not hidden, instead of the reason
-  // living only in the service-worker console.
-  run.fallbackReason = prepared.reason;
-
-  // Say so out loud. Every other path keeps the run invisible, so a tab appearing in the tab
-  // strip with no explanation is exactly what the hidden runner exists to avoid.
-  console.warn('[Background] Falling back to a background tab for the DOB run.');
-  broadcastDobMessage({
-    action: 'DOB_LOOKUP_PROGRESS',
-    step: 1,
-    totalSteps: 5,
-    message: 'Hidden runner unavailable - this lookup is using a background tab.',
-    record: session.record || ''
-  });
-
-  const tab = await chrome.tabs.create({ url, active: false });
-  run.mode = 'tab';
-  run.tabId = tab.id;
-  // The tab id is kept in the persisted session as well: if the service worker is restarted mid-run
-  // the in-memory run is gone, and nothing would ever close that tab again.
-  session.dobTabId = tab.id;
-  persistDobSession(session);
-  activeDobLookup = run;
-  return run;
+  const error = new Error(
+    'Unmask hidden runner unavailable (' + prepared.reason + '). No browser tab was opened.'
+  );
+  error.code = 'DOB_OFFSCREEN_UNAVAILABLE';
+  error.record = session.record || '';
+  throw error;
 }
 
 // A security check cannot be solved in the offscreen runner: a hidden frame cannot be put in
-// front of anyone. The run is handed over to a real tab sitting on the same step, which is left
-// in front of the user to solve, and the frame is parked so only one runner stays live.
+// front of anyone. The run is handed over to a background tab on the same step; that tab is only
+// activated if it independently detects the challenge, and the frame is parked meanwhile.
 //
 // The URL comes from `session.currentUrl`, which the background records as it walks the run,
 // rather than from the page that reported the check. Cloudflare normally serves its interstitial
@@ -1961,9 +1940,11 @@ async function promoteDobRunToTab(reportedUrl) {
   const run = activeDobLookup;
   if (!run) return false;
 
-  // Already promoted: nothing to create, so just keep it in front.
+  // Already promoted: do not show a normal page unless that tab confirms the challenge.
   if (run.mode === 'tab' && run.tabId) {
-    chrome.tabs.update(run.tabId, { active: true }).catch(() => {});
+    if (run.challengeSeenInTab) {
+      chrome.tabs.update(run.tabId, { active: true }).catch(() => {});
+    }
     return true;
   }
 
@@ -1973,7 +1954,7 @@ async function promoteDobRunToTab(reportedUrl) {
 
   let tab;
   try {
-    tab = await chrome.tabs.create({ url, active: true });
+    tab = await chrome.tabs.create({ url, active: false });
   } catch (e) {
     return false;
   }
@@ -1987,18 +1968,18 @@ async function promoteDobRunToTab(reportedUrl) {
   run.tabId = tab.id;
   // Why this run is in a tab, so the progress line can say so.
   run.promotedForCheck = true;
+  run.challengeSeenInTab = false;
+  run.challengePromotions = (run.challengePromotions || 0) + 1;
 
   if (session) {
     session.promotedForChallenge = true;
     session.challengeCleared = false;
+    session.challengeSeenInTab = false;
     // Kept in the session as well, so a service-worker restart cannot orphan this tab.
     session.dobTabId = tab.id;
     persistDobSession(session);
   }
 
-  if (tab.windowId !== undefined) {
-    chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
-  }
   return true;
 }
 
@@ -2006,6 +1987,11 @@ async function promoteDobRunToTab(reportedUrl) {
 // tab; in tab mode the tab is activated, which is what this has always done.
 async function bringLookupIntoView(sender) {
   const run = activeDobLookup;
+
+  if (run && run.returningOffscreen) {
+    run.challengeDuringReturn = true;
+    return;
+  }
 
   if (run && run.mode === 'offscreen') {
     await promoteDobRunToTab(sender && sender.url);
@@ -2028,23 +2014,20 @@ async function bringLookupIntoView(sender) {
   // hand-back for *this* one has not happened yet. Leaving the flag from the previous check would
   // mean a later one is solved and the user is never handed back.
   if (run && run.tabId === tabId) {
+    run.challengeSeenInTab = true;
     const session = run.session || (await storedDobSession());
     if (session) {
       session.promotedForChallenge = true;
       session.challengeCleared = false;
+      session.challengeSeenInTab = true;
       persistDobSession(session);
     }
   }
 }
 
-// The check is solved: hide it again and hand the user back to where they started.
-//
-// The tab is deliberately NOT closed here. Closing it was tried and reverted, because whether a
-// hidden frame gets challenged is a different question from whether a top-level tab does: the frame
-// came back challenged straight after the user had cleared the check in the tab, so it was promoted
-// again, the tab loaded cleanly, reported "cleared", and was closed - a tab that opened and closed
-// over and over. The run therefore stays in the tab, the tab drops to the background, and the user
-// gets their own tab back; endDobLookup() closes it when the run finishes.
+// Once a real challenge has been cleared in the promoted tab, resume that exact search URL in the
+// hidden runner and close the temporary tab. A tab promoted because the iframe was challenged but
+// loaded without showing a challenge remains in the background instead, avoiding a promote/close loop.
 async function hideLookupAfterChallenge(sender) {
   const run = activeDobLookup;
   if (!run || run.mode !== 'tab' || !run.tabId) return;
@@ -2055,12 +2038,65 @@ async function hideLookupAfterChallenge(sender) {
 
   const session = run.session || (await storedDobSession());
   if (session && session.challengeCleared) return;
+  const tabId = run.tabId;
+  const sawChallenge = !!(run.challengeSeenInTab || (session && session.challengeSeenInTab));
   if (session) {
     session.challengeCleared = true;
-    persistDobSession(session);
   }
 
-  await restoreCallerTab(session, run.tabId);
+  if (
+    !session ||
+    !session.currentUrl ||
+    (!sawChallenge && (run.challengePromotions || 0) >= 2)
+  ) {
+    run.promotedForCheck = false;
+    if (session) {
+      session.promotedForChallenge = false;
+      session.challengeSeenInTab = false;
+      await persistDobSession(session);
+    }
+    await restoreCallerTab(session, tabId);
+    return;
+  }
+
+  const runnerSource = session.currentUrl.includes('thatsthem.com')
+    ? 'thatsthem.com'
+    : 'unmask.com';
+  run.returningOffscreen = true;
+  run.challengeDuringReturn = false;
+  session.promotedForChallenge = false;
+  session.challengeSeenInTab = false;
+  delete session.dobTabId;
+  await persistDobSession(session);
+  if (activeDobLookup !== run) return;
+  const prepared = await prepareRunner(runnerSource, session.currentUrl);
+  if (activeDobLookup !== run) return;
+
+  run.returningOffscreen = false;
+  if (!prepared.ok) {
+    run.promotedForCheck = false;
+    run.challengeSeenInTab = false;
+    session.dobTabId = tabId;
+    await persistDobSession(session);
+    await restoreCallerTab(session, tabId);
+    return;
+  }
+
+  run.mode = 'offscreen';
+  run.tabId = null;
+  run.currentRunnerSource = runnerSource;
+  run.promotedForCheck = false;
+  run.challengeSeenInTab = false;
+  await persistDobSession(session);
+  await restoreCallerTab(session, tabId);
+  chrome.tabs.remove(tabId).catch(() => {});
+
+  // The iframe may still be challenged even though the top-level page was cleared. If it reports
+  // that during the handoff, promote again only after the temporary tab is gone.
+  if (run.challengeDuringReturn && activeDobLookup === run) {
+    run.challengeDuringReturn = false;
+    await promoteDobRunToTab(session.currentUrl);
+  }
 }
 
 // Ends a DOB run: the user is taken back to where they started, the lookup tab closes (after a
@@ -2082,6 +2118,9 @@ async function endDobLookup(session, delayMs) {
     // No tab was ever opened, so there is nothing to close and nowhere to send the user: the
     // runner is simply parked back on about:blank so the results are not left sitting in memory.
     chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: run.source }).catch(() => {});
+    if (run.source !== 'thatsthem.com') {
+      chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: 'thatsthem.com' }).catch(() => {});
+    }
     activeDobLookup = null;
   }
 
@@ -2896,6 +2935,7 @@ async function startDobLookup(person, phone, sendResponse, sender, record, sourc
     sendResponse = phone;
     phone = null;
   }
+  const recordSource = record ? String(record) : '';
   try {
     if (activeDobLookup && activeDobLookup.tabId) {
       chrome.tabs.remove(activeDobLookup.tabId).catch(() => {});
@@ -2916,8 +2956,6 @@ async function startDobLookup(person, phone, sendResponse, sender, record, sourc
 
     // Which record card asked for this run. Every message the run produces carries it back, so a
     // press on the other card can never show this record's DOB (and the other way round).
-    const recordSource = record ? String(record) : '';
-
     const rawPhone = phone || person?.phone || person?.phoneNumber || (person?.phones && person.phones[0]) || '';
 
     // normalizeAddressList drops addresses without a city/zip, so complete the
@@ -3087,6 +3125,17 @@ async function startDobLookup(person, phone, sendResponse, sender, record, sourc
 
     if (sendResponse) sendResponse({ success: true, tabId: run.tabId });
   } catch (err) {
+    if (err && err.code === 'DOB_OFFSCREEN_UNAVAILABLE') {
+      activeDobLookup = null;
+      chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: 'unmask.com' }).catch(() => {});
+      chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: 'thatsthem.com' }).catch(() => {});
+      chrome.storage.local.remove(['unmask_pending_lookup', THATSTHEM_STORAGE_KEY]).catch(() => {});
+      broadcastDobMessage({
+        action: 'DOB_LOOKUP_ERROR',
+        error: err.message,
+        record: err.record || recordSource
+      });
+    }
     if (sendResponse) sendResponse({ success: false, error: err.message });
   }
 }

@@ -114,8 +114,10 @@ for (const pair of [['unmask', unmask], ['thatsthem', thatsthem]]) {
 // The wait must be measured from when the check was first seen, and reset when it clears.
 ok('unmask times the wait from detection', /state\.challengeDetectedAt = Date\.now\(\)/.test(unmask));
 ok('unmask resets the wait when the check clears', /state\.challengeDetectedAt = 0/.test(unmask));
+ok('unmask permits a later challenge hand-back', /state\.challengeClearedSent = false/.test(unmask));
 ok('thatsthem times the wait from detection', /state\.checkedAt = Date\.now\(\)/.test(thatsthem));
 ok('thatsthem resets the wait when the check clears', /state\.checkedAt = 0/.test(thatsthem));
+ok('thatsthem permits a later challenge hand-back', /state\.challengeClearedSent = false/.test(thatsthem));
 
 // ---------------------------------------------------------------------------
 // 3. The Unmask "unlock results" click is not a security check

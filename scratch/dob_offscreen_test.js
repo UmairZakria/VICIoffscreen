@@ -332,18 +332,18 @@ function loadEnd(cfg) {
   }
 
   {
-    // The offscreen document cannot be created at all; the run must still happen, just in a tab.
+    // The offscreen document cannot be created at all; Unmask must fail explicitly rather than
+    // placing a browser tab in the user's tab strip.
     const f = fake({ hasDocument: false, createThrows: true });
-    const run = await f.mod.openDobRunner('https://unmask.com/address/1', {});
-    check('the fallback opens a background tab', f.log.createdTabs.length, 1);
-    check('the fallback tab is not focused', f.log.createdTabs[0].active, false);
-    check('the fallback tab loads the step url', f.log.createdTabs[0].url, 'https://unmask.com/address/1');
-    check('the run is in tab mode', run.mode, 'tab');
-    check(
-      'the fallback says so, instead of appearing with no explanation',
-      f.log.storage.some((m) => m.__msg && /background tab/.test(m.__msg.message || '')),
-      true
-    );
+    let error = null;
+    try {
+      await f.mod.openDobRunner('https://unmask.com/address/1', {});
+    } catch (e) {
+      error = e;
+    }
+    check('no fallback tab is opened', f.log.createdTabs.length, 0);
+    check('the offscreen failure has an explicit error code', error && error.code, 'DOB_OFFSCREEN_UNAVAILABLE');
+    check('the error says no browser tab was opened', /No browser tab was opened/.test((error && error.message) || ''), true);
   }
 
   {
@@ -399,21 +399,31 @@ function loadEnd(cfg) {
 
   {
     // A document that answers without this runner is stale, and it says so itself: nothing failed,
-    // the list it reported simply does not contain the frame. That has to replace the document
-    // rather than being read as "there is no runner".
+    // the list it reported simply does not contain the frame. It is replaced once, then failure is
+    // reported without silently creating a browser tab.
     const f = fake({ hasDocument: true, runners: ['infolookup.site', 'infolookupp.com'] });
-    const run = await f.mod.openDobRunner('https://unmask.com/address/1', {});
+    let error = null;
+    try {
+      await f.mod.openDobRunner('https://unmask.com/address/1', {});
+    } catch (e) {
+      error = e;
+    }
 
     check('nothing is asked of a document that says it has no such runner', f.events.includes('prepare'), false);
     check('the document is replaced', f.events.includes('offscreen.close'), true);
-    check('and a run it still cannot serve falls back', [f.log.createdTabs.length, run.mode], [1, 'tab']);
+    check('a runner still cannot serve it, no tab is opened', [f.log.createdTabs.length, error && error.code], [0, 'DOB_OFFSCREEN_UNAVAILABLE']);
   }
 
   {
-    // A runner that refuses to prepare for any other reason still falls back to a tab.
+    // A runner that refuses to prepare for any other reason must not open a tab.
     const f = fake({ prepareOk: false });
-    const run = await f.mod.openDobRunner('https://unmask.com/address/1', {});
-    check('a refused runner falls back to a tab', [f.log.createdTabs.length, run.mode], [1, 'tab']);
+    let error = null;
+    try {
+      await f.mod.openDobRunner('https://unmask.com/address/1', {});
+    } catch (e) {
+      error = e;
+    }
+    check('a refused runner fails without a tab', [f.log.createdTabs.length, error && error.code], [0, 'DOB_OFFSCREEN_UNAVAILABLE']);
   }
 
   // -------------------------------------------------------------------------
@@ -429,7 +439,7 @@ function loadEnd(cfg) {
 
     check('promotion succeeded', promoted, true);
     check('exactly one tab is opened', f.log.createdTabs.length, 1);
-    check('the tab is focused so the user sees the check', f.log.createdTabs[0].active, true);
+    check('the handoff tab opens in the background first', f.log.createdTabs[0].active, false);
     check('the tab opens on the real step url', f.log.createdTabs[0].url, 'https://unmask.com/address/3724-Kildare-Dr');
     check(
       'the cloudflare interstitial url is not what the user is sent to',
@@ -438,7 +448,7 @@ function loadEnd(cfg) {
     );
     check('the run switches to tab mode', run.mode, 'tab');
     check('the run records the tab', run.tabId, 100);
-    check('the window is focused', f.log.focusedWindows, [3]);
+    check('the window is not focused before the tab confirms a challenge', f.log.focusedWindows, []);
     check('the session is marked promoted', session.promotedForChallenge, true);
     check('the session is not yet marked cleared', session.challengeCleared, false);
     check(
@@ -451,7 +461,7 @@ function loadEnd(cfg) {
     const again = await f.mod.promoteDobRunToTab('https://unmask.com/whatever');
     check('a repeat promotion opens no extra tab', f.log.createdTabs.length, 1);
     check('a repeat promotion still succeeds', again, true);
-    check('a repeat promotion brings the tab forward', f.log.activated, [100]);
+    check('a repeat promotion does not show an unverified page', f.log.activated, []);
   }
 
   {
@@ -469,23 +479,25 @@ function loadEnd(cfg) {
     const session = {
       promotedForChallenge: true,
       challengeCleared: false,
+      challengeSeenInTab: true,
       callerTabId: 9,
       currentUrl: 'https://unmask.com/address/3724-Kildare-Dr'
     };
-    const run = { mode: 'tab', tabId: 100, source: 'unmask.com', session };
+    const run = { mode: 'tab', tabId: 100, source: 'unmask.com', session, challengeSeenInTab: true };
     const f = fake({ run });
 
     await f.mod.hideLookupAfterChallenge({ tab: { id: 100, windowId: 3 } });
 
     check('the user is sent back to the tab they started from', f.events.includes('restoreCallerTab'), true);
     check('the session records the hand-back', session.challengeCleared, true);
-
-    // The tab is deliberately kept. Closing it flapped: whether a hidden frame gets challenged is
-    // not the same question as whether a top-level tab does, so the frame came back challenged and
-    // the run was promoted again - a tab opening and closing over and over.
-    check('the tab is not closed', f.log.removedTabs, []);
-    check('the run stays in the tab that can pass the check', [run.mode, run.tabId], ['tab', 100]);
-    check('the run is never handed back to the frame', run.mode === 'offscreen', false);
+    check('the real search URL is prepared in the hidden runner', f.log.storage.some((m) =>
+      m.__msg && m.__msg.action === 'PREPARE_RUNNER' &&
+      m.__msg.source === 'unmask.com' &&
+      m.__msg.url === session.currentUrl
+    ), true);
+    check('the completed challenge returns the run to offscreen mode', [run.mode, run.tabId], ['offscreen', null]);
+    check('the temporary challenge tab is closed', f.log.removedTabs, [100]);
+    check('the tab id is removed from the persisted session', session.dobTabId, undefined);
 
     // Idempotent: the automation may report it more than once.
     f.events.length = 0;
@@ -507,6 +519,68 @@ function loadEnd(cfg) {
 
     await f.mod.hideLookupAfterChallenge({ tab: { id: 100, windowId: 3 } });
     check('the user is handed back for the second check too', f.events.includes('restoreCallerTab'), true);
+  }
+
+  {
+    const session = {
+      promotedForChallenge: true,
+      challengeCleared: false,
+      challengeSeenInTab: false,
+      callerTabId: 9,
+      currentUrl: 'https://unmask.com/address/1'
+    };
+    const run = { mode: 'tab', tabId: 100, source: 'unmask.com', session };
+    const f = fake({ run });
+
+    await f.mod.hideLookupAfterChallenge({ tab: { id: 100, windowId: 3 } });
+
+    check('a tab with no challenge resumes the hidden runner', [run.mode, run.tabId], ['offscreen', null]);
+    check('the current URL is retried in the hidden runner', f.events.includes('prepare'), true);
+    check('the unused tab is closed', f.log.removedTabs, [100]);
+    check('the caller is restored', f.events.includes('restoreCallerTab'), true);
+  }
+
+  {
+    // If the hidden frame and top-level tab disagree twice, stop reopening tabs forever and keep
+    // the already-running tab as a background-only fallback.
+    const session = {
+      promotedForChallenge: true,
+      challengeCleared: false,
+      challengeSeenInTab: false,
+      callerTabId: 9,
+      currentUrl: 'https://unmask.com/address/1'
+    };
+    const run = { mode: 'tab', tabId: 100, source: 'unmask.com', session, challengePromotions: 2 };
+    const f = fake({ run });
+
+    await f.mod.hideLookupAfterChallenge({ tab: { id: 100, windowId: 3 } });
+
+    check('repeated mismatched challenge pages stop retrying the hidden frame', [run.mode, run.tabId], ['tab', 100]);
+    check('the existing tab stays available for reliability', f.log.removedTabs, []);
+    check('no endless handoff is started', f.events.includes('prepare'), false);
+  }
+
+  {
+    const session = {
+      promotedForChallenge: true,
+      challengeCleared: false,
+      challengeSeenInTab: true,
+      callerTabId: 9,
+      currentUrl: 'https://thatsthem.com/address/1'
+    };
+    const run = { mode: 'tab', tabId: 100, source: 'unmask.com', session, challengeSeenInTab: true };
+    const f = fake({ run, prepareOk: false });
+
+    await f.mod.hideLookupAfterChallenge({ tab: { id: 100, windowId: 3 } });
+
+    check('the current site stays in its background tab if hidden resume fails', [run.mode, run.tabId], ['tab', 100]);
+    check('failed hidden resume keeps the lookup tab id for recovery', session.dobTabId, 100);
+    check('the caller is restored after a failed hidden resume', f.events.includes('restoreCallerTab'), true);
+    check('the existing lookup tab remains open on failure', f.log.removedTabs, []);
+    check('the current site runner is selected for the resume attempt', f.log.storage.some((m) =>
+      m.__msg && m.__msg.action === 'PREPARE_RUNNER' &&
+      m.__msg.source === 'thatsthem.com'
+    ), true);
   }
 
   {
@@ -572,7 +646,11 @@ function loadEnd(cfg) {
     await f.end({ callerTabId: 9 }, 1500);
     check('an offscreen run closes no tab', f.log.removedTabs, []);
     check('an offscreen run never grabs the user', f.log.restoreCalls, 0);
-    check('an offscreen run parks the frame instead', f.log.messages.map((m) => m.action), ['RESET_RUNNER']);
+    check(
+      'an offscreen run parks both DOB frames',
+      f.log.messages.map((m) => [m.action, m.source]),
+      [['RESET_RUNNER', 'unmask.com'], ['RESET_RUNNER', 'thatsthem.com']]
+    );
     check('the pending session is dropped', f.log.storageRemoved[0].includes('unmask_pending_lookup'), true);
     check('both session keys are dropped', f.log.storageRemoved[0].includes('thatsthem_pending_lookup'), true);
   }
@@ -652,6 +730,7 @@ function loadEnd(cfg) {
   // come from cloudflare's own markup: <main class="challenge"> with challenge__* children.
   ok('the interstitial title is recognised', isChallenge({ title: 'Performing security verification' }) === true);
   ok('main.challenge is recognised', isChallenge({ present: ['main.challenge'] }) === true);
+  ok('the supplied challenge content wrapper is recognised', isChallenge({ present: ['.challenge__content-wrapper'] }) === true);
   ok('the challenge hero is recognised', isChallenge({ present: ['.challenge__hero'] }) === true);
   ok('the challenge title element is recognised', isChallenge({ present: ['.challenge__title'] }) === true);
   ok('the challenge-page script is recognised', isChallenge({ present: ["script[src*='chl_page']"] }) === true);
@@ -678,4 +757,3 @@ function loadEnd(cfg) {
   console.error('Harness error:', e);
   process.exit(1);
 });
-

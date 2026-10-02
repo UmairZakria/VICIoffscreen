@@ -47,7 +47,6 @@
   var TICK_MIN_GAP_MS = 60; // never step more than ~16x per second
   var SAFETY_TICK_MS = 400; // covers waiting that happens while the page sits still
   var MAX_RUNTIME_MS = 90000; // hard stop for the whole run
-  var ACTION_THROTTLE_MS = 350; // minimum gap between two page actions
 
   // A step of the funnel fires once and then waits for the page to move on. Clicking the same
   // button again on every tick queued duplicate quote requests that Amica answered slowly,
@@ -594,8 +593,8 @@
   // are tried one by one, and if every one of them is rejected Nominatim (through the
   // background worker) is asked for a validated address which is then tried too.
   // ---------------------------------------------------------------------------
-  var ADDRESS_SETTLE_MS = 400; // let the fields settle before submitting
-  var ADDRESS_VERDICT_MS = 1500; // time Amica needs to flag the field as invalid
+  var ADDRESS_SETTLE_MS = 150; // let input events settle before submitting
+  var ADDRESS_VERDICT_MS = 300; // briefly allow Amica's invalid marker to settle
   var ADDRESS_GIVE_UP_MS = 7000; // page neither moved on nor flagged -> treat as a dud
 
   function buildAddressCandidates(profile) {
@@ -704,7 +703,6 @@
           sendProgress(2, 6, "Retrying with the validated address: " + describeAddress(geo));
         }
       });
-      state.lastActionTime = now;
       return;
     }
 
@@ -733,7 +731,6 @@
       quoteButton.focus();
       quoteButton.click();
       state.addressClickedAt = now;
-      state.lastActionTime = now;
       sendProgress(2, 6, "Submitted address with Start Your Quote...");
       return;
     }
@@ -807,7 +804,6 @@
   function runAutomation(profile) {
     var state = {
       vehiclesFound: false,
-      lastActionTime: 0,
       startTime: Date.now(),
       clearedStorage: false,
       stopped: false,
@@ -897,11 +893,6 @@
         return;
       }
 
-      // Throttle form submissions
-      if (now - state.lastActionTime < ACTION_THROTTLE_MS) {
-        return;
-      }
-
       // ==========================================
       // STEP 5: Driver Information Form
       // ==========================================
@@ -951,7 +942,6 @@
         // per attempt: a second one while Amica is still answering queued a duplicate request.
         if (doneBtnStep5 && stepGate(state, "driver", now)) {
           clickElement(doneBtnStep5);
-          state.lastActionTime = now;
         }
         return;
       }
@@ -1040,7 +1030,6 @@
 
         if (continueBtnStep4 && stepGate(state, "contact", now)) {
           clickElement(continueBtnStep4);
-          state.lastActionTime = now;
         }
         return;
       }
@@ -1063,7 +1052,6 @@
 
         if (nextBtnStep3 && stepGate(state, "customer", now)) {
           clickElement(nextBtnStep3);
-          state.lastActionTime = now;
         }
         return;
       }
@@ -1171,7 +1159,6 @@
         sendProgress(1, 6, "Selecting auto product bundle...");
         if (stepGate(state, "bundle", now)) {
           clickElement(autoHomeBtn);
-          state.lastActionTime = now;
         }
         return;
       }
@@ -1238,7 +1225,6 @@
           } else {
             return;
           }
-          state.lastActionTime = now;
         }
         return;
       }
@@ -1258,7 +1244,6 @@
         );
         if (getQuoteBtn && stepGate(state, "zip", now)) {
           clickElement(getQuoteBtn);
-          state.lastActionTime = now;
         }
         return;
       }

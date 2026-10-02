@@ -497,8 +497,8 @@ frame is pointed at the first step, because the content script reads it exactly 
 
 ### A check is only seen when there really is one
 
-Promotion is expensive — it puts a tab in front of the user — so the detector behind it has to be
-precise. It used to treat anything Cloudflare-ish as a check, including
+Promotion is expensive — a real challenge should be the only thing that ever reaches the user's
+screen — so the detector behind it has to be precise. It used to treat anything Cloudflare-ish as a check, including
 `script[src*='challenge-platform']`, `script[src*='challenges.cloudflare.com']` and
 `iframe[src*='turnstile']`. A **normal** page behind Cloudflare carries the bot-management script,
 and can embed a Turnstile widget of its own, so ordinary results pages were mistaken for checks —
@@ -523,9 +523,10 @@ and only then is the user involved:
 
 | Moment | What happens |
 |---|---|
-| A Cloudflare / browser check appears in the hidden runner | the run is **promoted**: a tab is opened on the current step, activated, and its window focused (`PROMOTE_RUNNER_TO_TAB` via `FOCUS_LOOKUP_TAB`), and the offscreen frame is parked so only one runner stays live |
-| The check clears | the promoted tab **drops to the background** and the user is put back on the tab they started from, while the lookup carries on inside that tab out of sight |
-| The run ends (DOB found, nothing found, error, cancel) | the caller tab is activated again; the final line stays readable for **1.5 s**, then the lookup tab closes. Offscreen runs never opened a tab, so there is nothing to close and nowhere to send the user — the frame is simply parked back on `about:blank` |
+| A Cloudflare / browser check appears in the hidden runner | a temporary background tab is opened on the current step and the offscreen frame is parked; the tab is activated only if it independently detects the verification page |
+| The user clears the check in that tab | the current search URL is loaded into the hidden runner; the temporary tab closes and the user is returned to the tab they started from |
+| The handoff tab loads without a challenge | the step is retried in the hidden runner and the unused tab closes; after two mismatched handoffs, the background tab is retained to prevent an endless loop |
+| The run ends (DOB found, nothing found, error, cancel) | the caller tab is activated again; the final line stays readable for **1.5 s**, then any lookup tab closes. The offscreen frame is parked back on `about:blank` |
 
 ### A run is never sent to a tab just because the document was still booting
 
@@ -561,7 +562,7 @@ check promoted it — so every `DOB_LOOKUP_PROGRESS` line now ends with which on
 |---|---|
 | `· hidden` | the run is in the offscreen frame; no tab belongs to it |
 | `· tab (security check)` | it was promoted so a check in the frame could be solved |
-| `· tab (no hidden runner: <reason>)` | the offscreen prepare failed (`prepareRunner` reports the reason) and the run is in a background tab |
+| `· tab (no hidden runner: <reason>)` | legacy status from a run started by a previous version; new Unmask runs do not use a tab when hidden preparation fails |
 
 That is deliberately visible rather than console-only: "why is there a tab?" is then answerable from
 the widget itself. A run object rebuilt from a message has no `mode` and is left unlabelled rather
@@ -572,20 +573,23 @@ The tab id of a promoted or fallback tab is also written into the **persisted se
 service-worker restart mid-run orphans the tab (the in-memory run is gone, so nothing closes it) and
 the *next* search appears to be running in a tab that actually belongs to the previous one.
 
-### Why the promoted tab is not closed when the check clears
+### Returning to the hidden runner after verification
 
-Closing it there was tried and **reverted**. Whether a *hidden frame* gets challenged is a different
-question from whether a *top-level tab* does, and in practice the frame came back challenged
-straight after the user had cleared the check in the tab. The run was therefore handed back to the
-frame, the frame was challenged again, a second tab was opened, that tab loaded cleanly, reported
-*"cleared"* and was closed again — **a tab that opened and closed over and over**.
+After the user clears a challenge that was displayed in the promoted tab, the worker loads the
+session's current search URL into the hidden runner, persists the hidden-runner state, restores the
+caller tab, and closes the temporary tab. If the top-level page loads normally without a challenge,
+the worker retries the step in the hidden runner and closes the unused tab too. If the hidden frame
+and top-level page disagree twice, the verified tab is retained in the background to prevent an
+iframe-to-tab promotion/close loop. If the hidden runner cannot be prepared after verification, the
+verified tab is also retained in the background so the lookup can finish.
 
-So the run stays in the tab — the one context that reliably gets through the check — the tab goes to
-the background, and the user gets their own tab back. `endDobLookup()` closes it when the run
-finishes. A tab that quietly sits in the background for the length of one lookup is the lesser evil.
+The challenge detector recognizes the exact current shell, including
+`.challenge__content-wrapper` / `.challenge__title` and the "Performing security verification"
+heading, as well as older interstitial markers. Generic Cloudflare scripts and Turnstile widgets on
+ordinary result pages are not sufficient to show a tab.
 
-A later check in that same tab still hands the user back: `challengeCleared` is **reset** whenever a
-check appears, not merely set, so the flag can never belong to a previous check.
+A later check in the same tab still gets its own handoff: the persisted `challengeCleared` flag and
+each page's one-shot handback flag are reset when a new check appears.
 
 Promotion uses the URL the **background** recorded for the step (`session.currentUrl`), not the URL
 the check page reports. Cloudflare usually serves its interstitial on the same URL, but it can also
@@ -598,11 +602,11 @@ must never be the reason the user's view is taken away. The hand-back is reporte
 been left — that branch returns while a check is on screen, so a run can never claim "cleared" while
 the user is still looking at the check.
 
-If the offscreen document cannot be created the run **falls back to the old behaviour**: a real
-background tab, activated when a check appears and hidden again once it clears. Same hand-off either
-way.
+If the offscreen document cannot be created, the Unmask run now **fails explicitly without opening
+a browser tab**. This keeps ordinary searches truly offscreen and avoids a background fallback tab
+appearing in the tab strip. The widget receives the hidden-runner error so it does not stay stuck.
 
-Three safeguards keep that fallback from being a silent surprise:
+The hidden-runner setup still has three safeguards:
 
 * **A stale offscreen document is recreated.** An offscreen document from an earlier install has
   outlived the update and does not contain the runner frame, so it answers `no-frame` — or
@@ -616,9 +620,8 @@ Three safeguards keep that fallback from being a silent surprise:
   "there is no runner", so it is retried (3 attempts, 250 ms apart) rather than downgrading the
   run. This bites hardest right after an extension reload, when the offscreen document is gone and
   is recreated lazily by the first lookup — i.e. exactly when someone is testing this.
-* **A fallback announces itself** — the exact reason is logged, and the widget is told
-  *"Hidden runner unavailable - this lookup is using a background tab."* A tab appearing with no
-  explanation is the one thing this design exists to prevent.
+* **No silent tab fallback** — if both prepare attempts fail, the exact reason is logged and the
+  lookup reports an error. No tab is created unless the hidden page reports a security check.
 
 The return target is fixed when the run starts: the widget hands over its own page
 (`sender.tab`), while the popup and the standalone window are not tabs at all, so
@@ -763,14 +766,15 @@ now driven by the page instead of by a timer:
 | Safety timer (**400 ms**, the piece that is still clamped when hidden) | covers waits that happen while the page sits still |
 | `visibilitychange` / `focus` / `pageshow` / `popstate` / `hashchange` | step immediately |
 | Minimum gap between two steps | **60 ms**, and a burst of mutations is coalesced into a single follow-up |
-| Minimum gap between two page actions | **350 ms** (was a full second) |
 
 Everything that used to be repeated work happens once:
 
 * **One click per step** — the step keeps its form filled (`fillAndTypeInput` returns
   immediately when the value is already right), but the submit fires once and is only retried
   after **1.5 s** if the page truly did not move on; a button that has not rendered yet does not
-  consume the retry window. `clickElement()` now sends the pointer pair and **exactly one**
+  consume the retry window. There is no blanket delay between distinct form steps; the per-step
+  retry gate prevents duplicate submissions without slowing the next screen. `clickElement()` now
+  sends the pointer pair and **exactly one**
   `click` — it no longer dispatches a click *and* calls `targetBtn.click()`, which ran every
   Amica handler twice and queued duplicate quote requests. It also leaves
   `disabled`/`aria-disabled` buttons alone and jumps to the target instead of smooth-scrolling.
@@ -793,8 +797,9 @@ Everything that used to be repeated work happens once:
   answer first, and a screen that is not the vehicle-entry screen is not scanned at all.
 
 The run is still capped at **90 s**, with a further safety timeout that stops the observer and
-the timer, and the address-retry timings are unchanged: fill → ~0.4 s settle →
-**Start Your Quote** → ~1.5 s verdict.
+the timer. The address form now waits **150 ms** for input events to settle before submitting;
+an invalid-address marker is acted on after **300 ms**, while the **7 s** no-response safeguard
+remains unchanged.
 
 Regression harness: `node scratch/amica_speed_test.js`
 

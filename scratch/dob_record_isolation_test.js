@@ -197,7 +197,7 @@ console.log('\n== wiring inside the shipped files ==\n');
     // One per Unmask step (address, phone, name+city, name only), the session itself, and the line
     // the ThatSthem-only run announces when Unmask is switched off in Settings.
     (bgSrc.match(/record: recordSource/g) || []).length === 6 &&
-      /message: 'Hidden runner unavailable - this lookup is using a background tab\.',\s*\n\s*record: session\.record \|\| ''/.test(bgSrc)
+      /error: err\.message,\s*\n\s*record: err\.record \|\| recordSource/.test(bgSrc)
   );
   ok(
     'every broadcast DOB message is stamped before it goes out',

@@ -522,7 +522,11 @@ check('Google address autocomplete receives the street value', [
 check('the run is capped by MAX_RUNTIME_MS', tickBody.includes('now - state.startTime > MAX_RUNTIME_MS'), true);
 check('the old 90 s literal is gone', tickBody.includes('90000'), false);
 check('a stuck page cannot leave the ticker running', code.includes('}, MAX_RUNTIME_MS + 15000);'), true);
-check('actions are no longer a second apart', tickBody.includes('now - state.lastActionTime < ACTION_THROTTLE_MS'), true);
+check(
+  'a page transition is not delayed by a blanket action throttle',
+  !/now - state\.lastActionTime < ACTION_THROTTLE_MS/.test(tickBody),
+  true
+);
 check(
   'each funnel step acts once before retrying',
   ['driver', 'contact', 'customer', 'bundle', 'zip'].map((key) => code.includes(`stepGate(state, "${key}", now)`)),

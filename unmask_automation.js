@@ -221,7 +221,7 @@
     // The interstitial shell, plus the older challenge-page IDs Cloudflare still uses. `chl_page`
     // is the challenge-page script specifically - a normal page's bot-management script is not it.
     return !!document.querySelector(
-      "main.challenge, .challenge__hero, .challenge__title, .challenge__hero-image, " +
+      "main.challenge, .challenge__content-wrapper, .challenge__hero, .challenge__title, .challenge__hero-image, " +
         "#challenge-running, #challenge-stage, #challenge-form, script[src*='chl_page']"
     );
   }
@@ -1233,11 +1233,11 @@
       if (isChallengePresent) {
         // The check is left entirely to the user. The extension does not click it - not with a
         // recorded click, not with a measured one: Cloudflare only accepts a real hand, and every
-        // automated attempt only made the page start over. All that happens here is that the tab is
-        // brought to the front once, with a plain instruction, and the page is then watched - so the
-        // moment the user has solved it, the run carries on by itself.
+        // automated attempt only made the page start over. The background opens an inactive tab
+        // and only shows it if that tab confirms this challenge; the user alone clears the check.
         if (!state.challengeDetectedAt) {
           state.challengeDetectedAt = Date.now();
+          state.challengeClearedSent = false;
         }
 
         if (!state.challengePrompted) {
@@ -1246,7 +1246,7 @@
           sendProgress(
             1,
             4,
-            "Security check on Unmask - please tick the checkbox in the tab that just came forward. The lookup continues on its own once it clears."
+            "Security check on Unmask - please clear it in the verification tab when it appears. The lookup continues on its own once it clears."
           );
         }
 

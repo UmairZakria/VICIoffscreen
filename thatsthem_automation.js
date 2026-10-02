@@ -977,10 +977,11 @@
       // page here is not the same as "no records", so never advance past it.
       if (isBrowserCheckPage()) {
         // ThatSthem's check is the user's to solve. The extension does not click it - not with a
-        // recorded click, not with a measured one - it only brings the tab forward once and watches,
-        // so the run continues the moment the check is cleared.
+        // recorded click, not with a measured one - the background only shows a tab that confirms
+        // this challenge, then watches for the user's verification to finish.
         if (!state.checkedAt) {
           state.checkedAt = Date.now();
+          state.challengeClearedSent = false;
         }
 
         if (!state.challengePrompted) {
@@ -989,7 +990,7 @@
           sendProgress(
             5,
             6,
-            "ThatSthem asks for a human check - please clear it in the tab that just came forward. The lookup continues on its own once it clears."
+            "ThatSthem asks for a human check - please clear it in the verification tab when it appears. The lookup continues on its own once it clears."
           );
         }
 

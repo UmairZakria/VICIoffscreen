@@ -21,7 +21,7 @@ function slice(start, end) {
 const block =
   slice('  function isPoBox(addrStr) {', '  function setSelectValue(select, value) {') +
   slice('  function clickElement(el) {', '  function copyToClipboard(text) {') +
-  slice('  var ADDRESS_SETTLE_MS = 400;', '  // Automation Engine');
+  slice('  var ADDRESS_SETTLE_MS = 150;', '  // Automation Engine');
 
 let log = [];
 let geocodeResult = null;
@@ -57,7 +57,7 @@ const mod = new Function(
   'sendEmpty',
   'chrome',
   block +
-    '\nreturn { buildAddressCandidates, applyAddressTo, handleAddressStep, describeAddress, retryWithNextAddress };'
+    '\nreturn { buildAddressCandidates, applyAddressTo, handleAddressStep, describeAddress, retryWithNextAddress, ADDRESS_SETTLE_MS, ADDRESS_VERDICT_MS };'
 )(
   (step, total, message) => log.push('progress:' + message),
   (message) => log.push('empty:' + message),
@@ -129,7 +129,6 @@ function makeForm() {
 function makeState() {
   return {
     stopped: false,
-    lastActionTime: 0,
     addressCandidates: null,
     addressAttempt: 0,
     addressFilledAt: 0,
@@ -150,6 +149,9 @@ const PROFILE = {
 };
 
 console.log('\n== Amica address step ==\n');
+
+check('address fields settle only briefly before submission', mod.ADDRESS_SETTLE_MS, 150);
+check('address rejection is retried without an extra long wait', mod.ADDRESS_VERDICT_MS, 300);
 
 // ---- candidate list ---------------------------------------------------------
 check('primary address first, duplicates dropped', mod.buildAddressCandidates(PROFILE).length, 3);
@@ -211,11 +213,13 @@ check('address 1 typed', form.streetInput.value, '11 Bad Rd');
 check('city/state/zip typed', [form.cityInput.value, form.stateInput.value, form.zipAddrInput.value], ['Akron', 'OH', '44321']);
 check('nothing clicked before the fields settle', clicks, 0);
 
-tick(1000); // submit
+tick(mod.ADDRESS_SETTLE_MS - 1);
+check('submission waits for input events to settle', clicks, 0);
+tick(1); // submit
 check('address 1 submitted', clicks, 1);
 
 form.streetInput.markInvalid();
-tick(2000); // Amica flagged it -> move on
+tick(mod.ADDRESS_VERDICT_MS + 1); // Amica flagged it -> move on
 check('rejection of address 1 noticed', log.some((l) => l.includes('Amica rejected 11 Bad Rd')), true);
 
 tick(1000); // next attempt is typed
