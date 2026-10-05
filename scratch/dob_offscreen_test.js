@@ -5,9 +5,8 @@
 // user's tab strip while a DOB run works through its addresses.
 //
 // A Cloudflare / browser check cannot be solved in a hidden frame - nobody can see it - so the run
-// is PROMOTED into a real tab at that point: the user solves the check once, the tab is then
-// hidden again and they are returned to the tab they started from, while the run carries on in
-// the (now background) lookup tab until it finishes.
+// is PROMOTED into a real tab at that point: the user solves the check once, is returned to the
+// tab they started from, and the same lookup tab stays in the background for the rest of the run.
 
 const fs = require('fs');
 const path = require('path');
@@ -490,14 +489,9 @@ function loadEnd(cfg) {
 
     check('the user is sent back to the tab they started from', f.events.includes('restoreCallerTab'), true);
     check('the session records the hand-back', session.challengeCleared, true);
-    check('the real search URL is prepared in the hidden runner', f.log.storage.some((m) =>
-      m.__msg && m.__msg.action === 'PREPARE_RUNNER' &&
-      m.__msg.source === 'unmask.com' &&
-      m.__msg.url === session.currentUrl
-    ), true);
-    check('the completed challenge returns the run to offscreen mode', [run.mode, run.tabId], ['offscreen', null]);
-    check('the temporary challenge tab is closed', f.log.removedTabs, [100]);
-    check('the tab id is removed from the persisted session', session.dobTabId, undefined);
+    check('the cleared challenge keeps the existing tab for the run', [run.mode, run.tabId], ['tab', 100]);
+    check('the tab id is retained for later steps', session.dobTabId, 100);
+    check('the lookup tab is not closed after challenge clearance', f.log.removedTabs, []);
 
     // Idempotent: the automation may report it more than once.
     f.events.length = 0;
@@ -506,8 +500,7 @@ function loadEnd(cfg) {
   }
 
   {
-    // A second check later in the same tab must still hand the user back: the cleared flag belongs
-    // to the previous check, so it is reset whenever a new one appears.
+    // A second check later in the run reactivates the existing tab; it must not create another.
     const session = { promotedForChallenge: true, challengeCleared: true, callerTabId: 9 };
     const run = { mode: 'tab', tabId: 100, source: 'unmask.com', session };
     const f = fake({ run });
@@ -516,6 +509,7 @@ function loadEnd(cfg) {
 
     check('a new check clears the previous hand-back flag', session.challengeCleared, false);
     check('the tab is brought forward for the new check', f.log.activated, [100]);
+    check('the second check reuses the same tab', f.log.createdTabs.length, 0);
 
     await f.mod.hideLookupAfterChallenge({ tab: { id: 100, windowId: 3 } });
     check('the user is handed back for the second check too', f.events.includes('restoreCallerTab'), true);
@@ -534,9 +528,9 @@ function loadEnd(cfg) {
 
     await f.mod.hideLookupAfterChallenge({ tab: { id: 100, windowId: 3 } });
 
-    check('a tab with no challenge resumes the hidden runner', [run.mode, run.tabId], ['offscreen', null]);
-    check('the current URL is retried in the hidden runner', f.events.includes('prepare'), true);
-    check('the unused tab is closed', f.log.removedTabs, [100]);
+    check('a tab with no challenge remains the single background runner', [run.mode, run.tabId], ['tab', 100]);
+    check('no second runner is prepared', f.events.includes('prepare'), false);
+    check('the existing tab is not closed', f.log.removedTabs, []);
     check('the caller is restored', f.events.includes('restoreCallerTab'), true);
   }
 
@@ -558,29 +552,6 @@ function loadEnd(cfg) {
     check('repeated mismatched challenge pages stop retrying the hidden frame', [run.mode, run.tabId], ['tab', 100]);
     check('the existing tab stays available for reliability', f.log.removedTabs, []);
     check('no endless handoff is started', f.events.includes('prepare'), false);
-  }
-
-  {
-    const session = {
-      promotedForChallenge: true,
-      challengeCleared: false,
-      challengeSeenInTab: true,
-      callerTabId: 9,
-      currentUrl: 'https://thatsthem.com/address/1'
-    };
-    const run = { mode: 'tab', tabId: 100, source: 'unmask.com', session, challengeSeenInTab: true };
-    const f = fake({ run, prepareOk: false });
-
-    await f.mod.hideLookupAfterChallenge({ tab: { id: 100, windowId: 3 } });
-
-    check('the current site stays in its background tab if hidden resume fails', [run.mode, run.tabId], ['tab', 100]);
-    check('failed hidden resume keeps the lookup tab id for recovery', session.dobTabId, 100);
-    check('the caller is restored after a failed hidden resume', f.events.includes('restoreCallerTab'), true);
-    check('the existing lookup tab remains open on failure', f.log.removedTabs, []);
-    check('the current site runner is selected for the resume attempt', f.log.storage.some((m) =>
-      m.__msg && m.__msg.action === 'PREPARE_RUNNER' &&
-      m.__msg.source === 'thatsthem.com'
-    ), true);
   }
 
   {

@@ -2817,10 +2817,11 @@
     setZipFilter("");
     setLoading(true);
 
+    let timeoutId;
     try {
-      const timeoutPromise = new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("Lookup timed out. Please try again.")), 65000)
-      );
+      const timeoutPromise = new Promise((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error("Lookup timed out. Please try again.")), 65000);
+      });
 
       const response = await Promise.race([
         chrome.runtime.sendMessage({
@@ -2868,6 +2869,10 @@
       if (session !== currentSearchSession) return;
       if (activeResults.length === 0) {
         showError(err.message || "Error during parallel lookup.");
+      }
+    } finally {
+      clearTimeout(timeoutId);
+      if (session === currentSearchSession) {
         hideStatus();
         setLoading(false);
       }

@@ -56,18 +56,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return true;
     }
     const target = request.url || runner.url;
-    frame.src = `${target}${target.includes('?') ? '&' : '?'}_r=${Date.now()}`;
+    frame.src = target;
     sendResponse({ ok: true, frameId: runner.frameId });
     return true;
   }
 
-  // Park the runner back on about:blank once the run is over, so the finished quote is not
-  // left sitting in memory (it holds the person's name, address and vehicles).
+  // Reset the runner when a lookup completes or is cancelled.
+  // unmask.com and thatsthem.com are parked back on their homepages so their domain cookies
+  // and Cloudflare clearance remain active and warm for the next search.
   if (request.action === 'RESET_RUNNER') {
     const frame = getFrame(request.source);
     if (frame) {
       try {
-        frame.src = 'about:blank';
+        if (request.source === 'unmask.com') {
+          frame.src = 'https://unmask.com/';
+        } else if (request.source === 'thatsthem.com') {
+          frame.src = 'https://thatsthem.com/';
+        } else {
+          frame.src = 'about:blank';
+        }
       } catch (e) {
         /* the document is going away anyway */
       }
@@ -81,3 +88,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 });
+
+// Periodic keep-alive refresh: keep unmask.com and thatsthem.com active in offscreen
+// Every 20 minutes so Cloudflare clearance and sessions do not expire silently
+setInterval(() => {
+  try {
+    const unmask = document.getElementById('frame-unmask');
+    if (unmask && (unmask.src.includes('unmask.com') || unmask.src === 'about:blank')) {
+      unmask.src = 'https://unmask.com/';
+    }
+    const thatsthem = document.getElementById('frame-thatsthem');
+    if (thatsthem && (thatsthem.src.includes('thatsthem.com') || thatsthem.src === 'about:blank')) {
+      thatsthem.src = 'https://thatsthem.com/';
+    }
+  } catch (e) {}
+}, 20 * 60 * 1000);

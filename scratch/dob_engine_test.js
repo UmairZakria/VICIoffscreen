@@ -22,7 +22,7 @@ const engine = new Function(
   block +
     '\nreturn { extractDobFromText, collectDobCandidates, pickBestDobCandidate, getExpectedBirthYear,' +
     ' describeClosestRejectedDob, isProfileSummarySettled, cleanSummaryText,' +
-    ' DOB_YEAR_TOLERANCE, PROFILE_NO_DOB_SETTLE_MS };'
+    ' DOB_YEAR_TOLERANCE, PROFILE_NO_DOB_SETTLE_MS, CARDS_SETTLE_MS };'
 )();
 
 let passed = 0;
@@ -38,6 +38,7 @@ function check(label, actual, expected) {
 const NOW = new Date().getFullYear();
 const AGE_72 = 72;               // record: "72 yrs (1954)"
 const YEAR_1954 = NOW - AGE_72;  // 1954
+const AGE_74_WITH_YEAR = '74 yrs (1952)';
 
 console.log(`\n== DOB engine regression (current year ${NOW}, expected birth year ${YEAR_1954}) ==\n`);
 
@@ -106,22 +107,38 @@ check(
   'August 15, 1954'
 );
 
-// 8. Acceptable neighbours from the ticket: 1953 / 1956 / 1957 pass, 1958 does not.
+// 8. Only a one-year difference is acceptable.
 check('1953 accepted', engine.extractDobFromText('born on August 15, 1953', AGE_72, null), 'August 15, 1953');
-check('1956 accepted', engine.extractDobFromText('born on August 15, 1956', AGE_72, null), 'August 15, 1956');
-check('1957 accepted', engine.extractDobFromText('born on August 15, 1957', AGE_72, null), 'August 15, 1957');
+check('1955 accepted', engine.extractDobFromText('born on August 15, 1955', AGE_72, null), 'August 15, 1955');
+check('1956 rejected', engine.extractDobFromText('born on August 15, 1956', AGE_72, null), null);
 check('1958 rejected', engine.extractDobFromText('born on August 15, 1958', AGE_72, null), null);
 
 // 9. Explicit "born ..." wording beats an unrelated bare date that is closer.
 check(
   'explicit wording beats bare closer date',
   engine.extractDobFromText(
-    'Updated March 1955. Benita Lopez Cantu was born in August 1957.',
+    'Updated March 1954. Benita Lopez Cantu was born in August 1955.',
     AGE_72,
     null
   ),
-  'August 1957'
+  'August 1955'
 );
+
+check(
+  'Regina: reject October 6, 1954 for 74 yrs (1952)',
+  engine.extractDobFromText('Regina D Morris, 74 yrs (1952). Unmask October 6, 1954.', AGE_74_WITH_YEAR, null),
+  null
+);
+check(
+  'Regina: accept a one-year-neighbor DOB instead of the two-year mismatch',
+  engine.extractDobFromText(
+    'Regina D Morris, 74 yrs (1952). Unmask October 6, 1954. Born August 1951.',
+    AGE_74_WITH_YEAR,
+    null
+  ),
+  'August 1951'
+);
+check('DOB candidate tolerance is one year', engine.DOB_YEAR_TOLERANCE, 1);
 
 // 10. Explict year from the record drives the window even without an age.
 check(
@@ -212,6 +229,8 @@ check(
   true
 );
 check('skip happens well before the 12s timeout', engine.PROFILE_NO_DOB_SETTLE_MS <= 2000, true);
+check('missing-DOB profiles settle quickly', engine.PROFILE_NO_DOB_SETTLE_MS <= 500, true);
+check('non-matching card lists settle quickly', engine.CARDS_SETTLE_MS <= 400, true);
 check('summary text is whitespace collapsed', engine.cleanSummaryText('  Cristian   lives\n in Houston.  '), 'Cristian lives in Houston.');
 
 // ---------------------------------------------------------------------------
@@ -276,4 +295,3 @@ check('alias "Benita Cantu" @72 accepted', scoring.evaluateAliasMatch(TARGET, 'B
 
 console.log(`\n=== TOTAL: ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);
-

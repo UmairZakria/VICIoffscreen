@@ -128,8 +128,7 @@
     }
 
     // Cloudflare's *interstitial* markup only - never a turnstile widget or a cloudflare script on its
-    // own, because a normal page of this site carries those as well. (The same lesson the Unmask
-    // detector already learned: a page that embeds a widget is not a page that is being challenged.)
+    // own, because a normal page of this site carries those as well.
     if (
       document.querySelector(
         "#challenge-form, #challenge-running, #challenge-stage, #cf-challenge-running, #cf-please-wait, " +
@@ -870,6 +869,7 @@
     chrome.storage.local.get([SESSION_KEY], function (res) {
       var session = res ? res[SESSION_KEY] : null;
       if (!session || session.stage !== "thatsthem") return;
+      if (window.location.pathname === "/" || window.location.pathname === "") return;
       runThatsThem(session);
     });
   });

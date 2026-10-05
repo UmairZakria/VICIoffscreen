@@ -153,7 +153,7 @@
   // is already in front just stays there.
   //
   // Tells the background the check is done with: the tab it was solved in is put back into the
-  // background and the user is returned to where they started. The run itself carries on here.
+  // background and the user is returned to where they started. The run carries on in that tab.
   function notifyChallengeCleared() {
     try {
       chrome.runtime.sendMessage({ action: "CHALLENGE_CLEARED" });
@@ -206,7 +206,32 @@
   // page). The broad src markers are deliberately gone: /cdn-cgi/challenge-platform/scripts/jsd/...
   // and the Turnstile widget both appear on perfectly normal pages.
   function isCloudflareChallengePage() {
+    // If the page contains any Unmask search results, profile sections, or no-result dialogs,
+    // it is a real Unmask results page, NOT a Cloudflare interstitial blocking page.
+    // Note: Do NOT check header/footer/nav tags here because Cloudflare's custom
+    // branded challenge pages for Unmask embed Unmask's <header class="header">!
+    if (
+      document.querySelector(
+        "div.clickable.person, div[itemtype*='Person'].person, .person, " +
+          ".um-dialog__title, .tz-dialog h2, .tz-dialog__inner h2, " +
+          ".um-results__none, .no-results, .um-alert--warning, " +
+          "#summary, .um-profile-summary, .um-results-profile__section, h1.um-profile-summary__name, " +
+          "input[type='checkbox'][aria-label*='Search']"
+      )
+    ) {
+      return false;
+    }
+
     var title = (document.title || "").toLowerCase();
+    var rawText = "";
+    if (document.body) {
+      rawText = (document.body.innerText || document.body.textContent || "").toLowerCase().replace(/\s+/g, " ");
+    }
+
+    if (title.startsWith("unmask") && !rawText && !document.querySelector("main.challenge, .challenge__content-wrapper, .challenge__hero, .challenge__title, .challenge__hero-image, script[src*='chl_page']")) {
+      return false;
+    }
+
     if (
       title.includes("just a moment") ||
       title.includes("security check") ||
@@ -218,11 +243,20 @@
       return true;
     }
 
+    if (rawText) {
+      if (
+        rawText.includes("performing security verification") ||
+        (rawText.includes("uses a security service to protect against malicious bots") && rawText.includes("verifies you are not a bot")) ||
+        rawText.includes("verify you are human")
+      ) {
+        return true;
+      }
+    }
+
     // The interstitial shell, plus the older challenge-page IDs Cloudflare still uses. `chl_page`
     // is the challenge-page script specifically - a normal page's bot-management script is not it.
     return !!document.querySelector(
-      "main.challenge, .challenge__content-wrapper, .challenge__hero, .challenge__title, .challenge__hero-image, " +
-        "#challenge-running, #challenge-stage, #challenge-form, script[src*='chl_page']"
+      "main.challenge, .challenge__content-wrapper, .challenge__hero, .challenge__title, .challenge__hero-image, script[src*='chl_page']"
     );
   }
 
@@ -692,18 +726,17 @@
   //
   // The record tells us how old the person is (e.g. "72 yrs (1954)"), so the only
   // birth years we may report are the ones that truly belong to that person.
-  // A +/-3 year window absorbs off-by-one birthday / record lag while still
-  // rejecting a clearly different person: a 72 yr old record -> 1954, so 1958
-  // (age 68) is 4 years off and is never acceptable.
+  // DOB candidates may differ by one year from the record's birth year, but a
+  // two-year gap is too large to trust as the same person's date of birth.
   // ---------------------------------------------------------------------------
-  var DOB_YEAR_TOLERANCE = 3;
+  var DOB_YEAR_TOLERANCE = 1;
   var MIN_BIRTH_YEAR = 1912;
   var MAX_PLAUSIBLE_AGE = 110;
-  // A matched profile without a DOB is abandoned after this short settle time.
-  var PROFILE_NO_DOB_SETTLE_MS = 350;
+  // A matched profile without a DOB is abandoned after this settle time.
+  var PROFILE_NO_DOB_SETTLE_MS = 500;
   // A rendered card list is given this long (per unchanged render) before we accept
   // that none of its cards is our person and move on.
-  var CARDS_SETTLE_MS = 500;
+  var CARDS_SETTLE_MS = 400;
   // How often the page state is re-checked (every step reacts within one tick).
   var TICK_MS = 150;
   // How long a Cloudflare check is left to the user before the run gives up on this address.
@@ -1203,17 +1236,19 @@
     };
 
     var interval = null;
+    var watchdogTimer = null;
 
     function advanceToNextAddress(reason) {
       if (state.processed) return;
       state.processed = true;
       if (interval) clearInterval(interval);
+      if (watchdogTimer) clearTimeout(watchdogTimer);
 
       sendProgress(2, 4, reason || "Moving to next address...");
       try {
         chrome.runtime.sendMessage({ action: "DOB_LOOKUP_NEXT_ADDRESS", record: sessionRecord() }, function (res) {
           if (res && res.nextUrl && !res.exhausted) {
-            if (window.location.href !== res.nextUrl) {
+            if (window.location.href !== res.nextUrl && !window.location.href.startsWith(res.nextUrl)) {
               window.location.href = res.nextUrl;
             }
           }
@@ -1221,212 +1256,224 @@
       } catch (e) {}
     }
 
+    watchdogTimer = setTimeout(function () {
+      if (!state.processed) {
+        advanceToNextAddress("Address timed out (watchdog). Trying next address...");
+      }
+    }, 16000);
+
     sendProgress(1, 4, "Connecting to Unmask (" + (targetName || "Target") + ")...");
 
     interval = setInterval(async function () {
       if (state.processed) return;
-
-      // ==========================================
-      // SCENARIO 0: Cloudflare Turnstile Challenge Intercept
-      // ==========================================
-      var isChallengePresent = isCloudflareChallengePage() || isTurnstileChallengeActive(state);
-      if (isChallengePresent) {
-        // The check is left entirely to the user. The extension does not click it - not with a
-        // recorded click, not with a measured one: Cloudflare only accepts a real hand, and every
-        // automated attempt only made the page start over. The background opens an inactive tab
-        // and only shows it if that tab confirms this challenge; the user alone clears the check.
-        if (!state.challengeDetectedAt) {
-          state.challengeDetectedAt = Date.now();
-          state.challengeClearedSent = false;
-        }
-
-        if (!state.challengePrompted) {
-          state.challengePrompted = true;
-          focusThisTab();
-          sendProgress(
-            1,
-            4,
-            "Security check on Unmask - please clear it in the verification tab when it appears. The lookup continues on its own once it clears."
-          );
-        }
-
-        // The user may take as long as they like; only when they have clearly walked away does the
-        // run give up on this address. Nothing is ever clicked, reloaded or fought with.
-        if (Date.now() - state.challengeDetectedAt > CHALLENGE_WAIT_MS) {
-          advanceToNextAddress("Security check was not cleared. Trying next address...");
-          return;
-        }
-
-        return; // watch the page: the token (or the page going away) is what ends this branch
-      }
-
-      // If challenge cleared on this same page, reset challenge state so search gets a fresh window
-      if (state.challengeDetectedAt && !isChallengePresent) {
-        state.challengeDetectedAt = 0;
-        state.challengePrompted = false;
-        state.startedAt = Date.now();
-        sendProgress(2, 4, "Security check passed. Reading Unmask results...");
-      }
-
-      // The run may have been promoted into this tab so the user could clear a check. Once there
-      // is no check on the page any more, they are handed back to their own tab: the promoted tab
-      // is sent to the background and this run carries on inside it. Reaching this line at all
-      // means no challenge is present, so it covers both "cleared in place" and "the promoted tab
-      // landed straight on the results" - the latter never sees a challenge to begin with.
-      if (session.promotedForChallenge && !state.challengeClearedSent) {
-        state.challengeClearedSent = true;
-        notifyChallengeCleared();
-      }
-
-      // ==========================================
-      // SCENARIO 1: On Profile Page
-      // ==========================================
-      if (isProfilePage || document.getElementById("summary") || document.querySelector(".um-profile-summary")) {
-        var summarySec =
-          document.getElementById("summary") ||
-          document.querySelector(".um-profile-summary, .um-results-profile__section");
-
-        var profileNameEl = summarySec
-          ? summarySec.querySelector(".um-profile-summary__name, h1.um-profile-summary__name, h1")
-          : document.querySelector(".um-profile-summary__name, h1");
-        var profileName = profileNameEl ? profileNameEl.textContent.trim() : "";
-
-        var summaryTextEl = summarySec
-          ? summarySec.querySelector(".um-profile-summary__text, .um-profile-summary__footer p")
-          : null;
-        var summaryText = summaryTextEl
-          ? summaryTextEl.textContent
-          : (summarySec ? summarySec.textContent : (document.body ? document.body.innerText : ""));
-
-        // Check if this profile belongs to our target person
-        var targetSlug = (targetName || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-        var isSlugMatch = targetSlug && pathname.toLowerCase().includes("/" + targetSlug + "/");
-        var isTargetProfile =
-          session.status === "on_target_profile" || isSlugMatch || isNameMatch(targetName, profileName);
-
-        if (isTargetProfile) {
-          if (!state.dobExtractLogged) {
-            state.dobExtractLogged = true;
-            sendProgress(4, 4, "Extracting DOB & Emails from profile...");
+      try {
+        // ==========================================
+        // SCENARIO 0: Cloudflare Turnstile Challenge Intercept
+        // ==========================================
+        var isChallengePresent = isCloudflareChallengePage();
+        if (isChallengePresent) {
+          // The check is left entirely to the user. The extension does not click it - not with a
+          // recorded click, not with a measured one: Cloudflare only accepts a real hand, and every
+          // automated attempt only made the page start over. The background opens an inactive tab
+          // and only shows it if that tab confirms this challenge; the user alone clears the check.
+          if (!state.challengeDetectedAt) {
+            state.challengeDetectedAt = Date.now();
+            state.challengeClearedSent = false;
           }
 
-          var profileBodyText = document.body ? document.body.innerText : "";
-          var dob =
-            extractDobFromText(summaryText, targetAge, targetYear) ||
-            extractDobFromText(profileBodyText, targetAge, targetYear);
-
-          if (dob) {
-            var emails = extractEmailsFromPage(targetName);
-            var isPlaceholder = isPlaceholderDob(dob);
-            state.processed = true;
-            clearInterval(interval);
-            copyToClipboard(dob);
-            sendSuccess(dob, session.person, emails, {
-              placeholder: isPlaceholder,
-              // A January date is a 50/50 placeholder: report it right away, but keep
-              // the run alive so ThatSthem can answer with a second, independent DOB.
-              continueSearch: isPlaceholder
-            });
-            if (isPlaceholder) {
-              sendProgress(5, 6, "Placeholder DOB " + dob + " found - checking ThatSthem for a second date...");
-            } else {
-              chrome.storage.local.remove("unmask_pending_lookup").catch(function () {});
-            }
-            return;
-          }
-
-          // A matched profile that shows no birth date is a dead end. The summary is
-          // server rendered, so once the page has loaded and the text stopped growing
-          // there is nothing left to wait for - move to the next fallback straight
-          // away instead of burning the 12s profile timeout. Any date that contradicts
-          // the record's age is named in the message so the skip stays visible.
-          var profileSnapshot = cleanSummaryText(summaryText) + "|" + (profileBodyText || "").length;
-          if (isProfileSummarySettled(profileSnapshot)) {
-            if (state.profileSnapshot !== profileSnapshot) {
-              // Still rendering: restart the short grace period
-              state.profileSnapshot = profileSnapshot;
-              state.profileReadyAt = Date.now();
-              return;
-            }
-            if (Date.now() - state.profileReadyAt > PROFILE_NO_DOB_SETTLE_MS) {
-              var noDobReason = "No DOB on " + (profileName || targetName || "this") + "'s profile";
-              var rejected =
-                describeClosestRejectedDob(summaryText, targetAge, targetYear) ||
-                describeClosestRejectedDob(profileBodyText, targetAge, targetYear);
-              if (rejected && rejected.diff > DOB_YEAR_TOLERANCE) {
-                noDobReason +=
-                  " (ignored " + rejected.text + ", expected around " +
-                  getExpectedBirthYear(targetAge, targetYear) + " for age " +
-                  (targetAge || "?") + ")";
-              }
-              advanceToNextAddress(noDobReason + ". Trying next...");
-              return;
-            }
-          }
-        }
-
-        // The target profile's own DOB is read to completion first. While that read is in
-        // flight nothing else happens on this page - no scrolling, no relative-card scan, no
-        // navigation - so a relative or footer link can never cut the DOB extraction short.
-        if (!isTargetProfile) {
-          sendProgress(3, 4, "Checking relatives for " + targetName + "...");
-
-          // 1. Scroll down to relatives section so it renders into DOM
-          var relativesSec =
-            document.getElementById("relatives") ||
-            document.querySelector(".um-results-profile__section#relatives, .wl-card#relatives, [data-section='relatives'], #relatives");
-
-          if (relativesSec) {
-            try {
-              relativesSec.scrollIntoView({ behavior: "smooth", block: "center" });
-            } catch (e) {}
-
-            // Expand "See all relatives" if button present. A control that is an anchor to
-            // another site is never clicked - the click itself would be a navigation.
-            var seeAllBtn = relativesSec.querySelector(
-              ".wl-card__cta-link, button.wl-card__cta-link, .um-btn-more, button[class*='more'], a[class*='more']"
+          if (!state.challengePrompted) {
+            state.challengePrompted = true;
+            focusThisTab();
+            sendProgress(
+              1,
+              4,
+              "Security check on Unmask - please clear it in the verification tab when it appears. The lookup continues on its own once it clears."
             );
-            if (seeAllBtn && !seeAllBtn.dataset.clicked && !isExternalAnchor(seeAllBtn)) {
-              seeAllBtn.dataset.clicked = "true";
-              seeAllBtn.click();
+          }
+
+          // The user may take as long as they like; only when they have clearly walked away does the
+          // run give up on this address. Nothing is ever clicked, reloaded or fought with.
+          if (Date.now() - state.challengeDetectedAt > CHALLENGE_WAIT_MS) {
+            advanceToNextAddress("Security check was not cleared. Trying next address...");
+            return;
+          }
+
+          return; // watch the page: the token (or the page going away) is what ends this branch
+        }
+
+        // If challenge cleared on this same page, reset challenge state so search gets a fresh window
+        if (state.challengeDetectedAt && !isChallengePresent) {
+          state.challengeDetectedAt = 0;
+          state.challengePrompted = false;
+          state.startedAt = Date.now();
+          sendProgress(2, 4, "Security check passed. Reading Unmask results...");
+        }
+
+        // The run may have been promoted into this tab so the user could clear a check. Once there
+        // is no check on the page any more, notify the background to return the user to their tab.
+        if (session.promotedForChallenge && !state.challengeClearedSent) {
+          state.challengeClearedSent = true;
+          notifyChallengeCleared();
+        }
+
+        // ==========================================
+        // SCENARIO 1: On Profile Page
+        // ==========================================
+        if (isProfilePage || document.getElementById("summary") || document.querySelector(".um-profile-summary")) {
+          var summarySec =
+            document.getElementById("summary") ||
+            document.querySelector(".um-profile-summary, .um-results-profile__section");
+
+          var profileNameEl = summarySec
+            ? summarySec.querySelector(".um-profile-summary__name, h1.um-profile-summary__name, h1")
+            : document.querySelector(".um-profile-summary__name, h1");
+          var profileName = profileNameEl ? profileNameEl.textContent.trim() : "";
+
+          var summaryTextEl = summarySec
+            ? summarySec.querySelector(".um-profile-summary__text, .um-profile-summary__footer p")
+            : null;
+          var summaryText = summaryTextEl
+            ? summaryTextEl.textContent
+            : (summarySec ? summarySec.textContent : (document.body ? document.body.innerText : ""));
+
+          // Check if this profile belongs to our target person
+          var targetSlug = (targetName || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
+          var isSlugMatch = targetSlug && pathname.toLowerCase().includes("/" + targetSlug + "/");
+          var isTargetProfile =
+            session.status === "on_target_profile" || isSlugMatch || isNameMatch(targetName, profileName);
+
+          if (isTargetProfile) {
+            if (!state.dobExtractLogged) {
+              state.dobExtractLogged = true;
+              sendProgress(4, 4, "Extracting DOB & Emails from profile...");
+            }
+
+            var profileBodyText = document.body ? document.body.innerText : "";
+            var dob =
+              extractDobFromText(summaryText, targetAge, targetYear) ||
+              extractDobFromText(profileBodyText, targetAge, targetYear);
+
+            if (dob) {
+              var emails = extractEmailsFromPage(targetName);
+              var isPlaceholder = isPlaceholderDob(dob);
+              state.processed = true;
+              clearInterval(interval);
+              if (watchdogTimer) clearTimeout(watchdogTimer);
+              copyToClipboard(dob);
+              sendSuccess(dob, session.person, emails, {
+                placeholder: isPlaceholder,
+                // A January date is a 50/50 placeholder: report it right away, but keep
+                // the run alive so ThatSthem can answer with a second, independent DOB.
+                continueSearch: isPlaceholder
+              });
+              if (isPlaceholder) {
+                sendProgress(5, 6, "Placeholder DOB " + dob + " found - checking ThatSthem for a second date...");
+              } else {
+                chrome.storage.local.remove("unmask_pending_lookup").catch(function () {});
+              }
+              return;
+            }
+
+            // A matched profile that shows no birth date is a dead end. The summary is
+            // server rendered, so once the page has loaded and the text stopped growing
+            // there is nothing left to wait for - move to the next fallback straight
+            // away instead of burning the 12s profile timeout. Any date that contradicts
+            // the record's age is named in the message so the skip stays visible.
+            var profileSnapshot = cleanSummaryText(summaryText) + "|" + (profileBodyText || "").length;
+            if (isProfileSummarySettled(profileSnapshot)) {
+              if (state.profileSnapshot !== profileSnapshot) {
+                // Still rendering: restart the short grace period
+                state.profileSnapshot = profileSnapshot;
+                state.profileReadyAt = Date.now();
+                return;
+              }
+              if (Date.now() - state.profileReadyAt > PROFILE_NO_DOB_SETTLE_MS) {
+                var noDobReason = "No DOB on " + (profileName || targetName || "this") + "'s profile";
+                var rejected =
+                  describeClosestRejectedDob(summaryText, targetAge, targetYear) ||
+                  describeClosestRejectedDob(profileBodyText, targetAge, targetYear);
+                if (rejected && rejected.diff > DOB_YEAR_TOLERANCE) {
+                  noDobReason +=
+                    " (ignored " + rejected.text + ", expected around " +
+                    getExpectedBirthYear(targetAge, targetYear) + " for age " +
+                    (targetAge || "?") + ")";
+                }
+                advanceToNextAddress(noDobReason + ". Trying next...");
+                return;
+              }
             }
           }
 
-          // 2. Scan the relative cards (#relatives, .wl-card-items, .wl-card-item). Every
-          //    candidate is resolved first and only an internal person profile can win, so a
-          //    social or footer anchor is never matched, scrolled to or loaded.
-          var relativeLinks = Array.from(
-            document.querySelectorAll("#relatives a, .wl-card-items a, a.wl-card-item, a[href]")
-          );
+          // The target profile's own DOB is read to completion first. While that read is in
+          // flight nothing else happens on this page - no scrolling, no relative-card scan, no
+          // navigation - so a relative or footer link can never cut the DOB extraction short.
+          if (!isTargetProfile) {
+            sendProgress(3, 4, "Checking relatives for " + targetName + "...");
 
-          var relativeMatch = pickRelativeProfileLink(relativeLinks, targetName, currentUrl);
-          if (relativeMatch) {
-            state.processed = true;
-            clearInterval(interval);
-            session.status = "on_target_profile";
-            chrome.storage.local.set({ unmask_pending_lookup: session }).catch(function () {});
-            sendProgress(4, 4, "Found " + relativeMatch.name + " in relatives list. Loading profile...");
-            window.location.href = relativeMatch.url;
+            // 1. Scroll down to relatives section so it renders into DOM
+            var relativesSec =
+              document.getElementById("relatives") ||
+              document.querySelector(".um-results-profile__section#relatives, .wl-card#relatives, [data-section='relatives'], #relatives");
+
+            if (relativesSec) {
+              try {
+                relativesSec.scrollIntoView({ behavior: "smooth", block: "center" });
+              } catch (e) {}
+
+              // Expand "See all relatives" if button present. A control that is an anchor to
+              // another site is never clicked - the click itself would be a navigation.
+              var seeAllBtn = relativesSec.querySelector(
+                ".wl-card__cta-link, button.wl-card__cta-link, .um-btn-more, button[class*='more'], a[class*='more']"
+              );
+              if (seeAllBtn && !seeAllBtn.dataset.clicked && !isExternalAnchor(seeAllBtn)) {
+                seeAllBtn.dataset.clicked = "true";
+                seeAllBtn.click();
+              }
+            }
+
+            // 2. Scan the relative cards (#relatives, .wl-card-items, .wl-card-item). Every
+            //    candidate is resolved first and only an internal person profile can win, so a
+            //    social or footer anchor is never matched, scrolled to or loaded.
+            var relativeLinks = Array.from(
+              document.querySelectorAll("#relatives a, .wl-card-items a, a.wl-card-item, a[href]")
+            );
+
+            var relativeMatch = pickRelativeProfileLink(relativeLinks, targetName, currentUrl);
+            if (relativeMatch) {
+              state.processed = true;
+              clearInterval(interval);
+              if (watchdogTimer) clearTimeout(watchdogTimer);
+              session.status = "on_target_profile";
+              chrome.storage.local.set({ unmask_pending_lookup: session }).catch(function () {});
+              sendProgress(4, 4, "Found " + relativeMatch.name + " in relatives list. Loading profile...");
+              window.location.href = relativeMatch.url;
+              return;
+            }
+          }
+
+          // Profile safety timeout after 9 seconds if DOB could not be extracted.
+          if (Date.now() - state.startedAt > 9000) {
+            advanceToNextAddress("Could not extract DOB from profile. Trying next address...");
+            return;
+          }
+
+          return; // Stay on profile page while extracting
+        }
+
+        // Overall safety timeout per address (12 seconds).
+        if (Date.now() - state.startedAt > 12000) {
+          advanceToNextAddress("Address timed out. Trying next address...");
+          return;
+        }
+
+        if (!isAddressPage && !isPhonePage && !isNameSearchPage && !isProfilePage) {
+          if (Date.now() - state.startedAt > 4000) {
+            advanceToNextAddress("Unrecognized search page. Trying next address...");
             return;
           }
         }
 
-        // Profile timeout after 12 seconds if DOB could not be extracted
-        if (Date.now() - state.startedAt > 9000) {
-          advanceToNextAddress("Could not extract DOB from profile. Trying next address...");
-          return;
-        }
-
-        return; // Stay on profile page while extracting
-      }
-
-      // Overall safety timeout per address (22 seconds)
-      if (Date.now() - state.startedAt > 12000) {
-        advanceToNextAddress("Address timed out. Trying next address...");
-        return;
-      }
-
-      if (isAddressPage || isPhonePage || isNameSearchPage) {
+        if (isAddressPage || isPhonePage || isNameSearchPage) {
         // Priority 1: Look for person cards in DOM
         var personCards = Array.from(
           document.querySelectorAll('div.clickable.person, div[itemtype*="Person"].person, .person')
@@ -1674,6 +1721,7 @@
           if (bestCandidate && bestCandidate.score >= 80 && bestCandidate.reportUrl) {
             state.processed = true;
             clearInterval(interval);
+            if (watchdogTimer) clearTimeout(watchdogTimer);
             session.status = bestCandidate.isDirect ? "on_target_profile" : "on_relative_profile";
             chrome.storage.local.set({ unmask_pending_lookup: session }).catch(function () {});
 
@@ -1738,20 +1786,27 @@
             return;
           }
 
-          // Priority 4: nothing rendered at all. Move on quickly once the document has
-          // finished loading (a still-loading page keeps a longer grace window so a
-          // slow page is never skipped early).
+          // Priority 4: nothing rendered at all. Give sufficient grace time for AJAX
+          // responses to complete and render person cards into the DOM.
           var elapsedSinceCheck = state.checkboxClickedAt ? (Date.now() - state.checkboxClickedAt) : (Date.now() - state.startedAt);
           var maxWait = document.readyState === "complete"
-            ? (state.checkboxClickedAt ? 2000 : 2500)
-            : 6000;
+            ? (state.checkboxClickedAt ? 3500 : 4500)
+            : 8000;
           if (elapsedSinceCheck > maxWait) {
             advanceToNextAddress("No records found on " + pageTypeLabel + " search. Checking next...");
             return;
           }
         }
       }
-    }, TICK_MS);
+    } catch (err) {
+      console.error("[Unmask Automation] Tick error:", err);
+      if (!state.tickErrors) state.tickErrors = 0;
+      state.tickErrors++;
+      if (state.tickErrors > 15) {
+        advanceToNextAddress("Search error. Trying next fallback...");
+      }
+    }
+  }, TICK_MS);
   }
 
   // Initialize. The runner check is a message round-trip, so the whole start is deferred until the
@@ -1763,6 +1818,8 @@
     chrome.storage.local.get(["unmask_pending_lookup"], function (res) {
       var session = res ? res.unmask_pending_lookup : null;
       if (!session) return;
+      // Do not run automation on the warm-up homepage runner
+      if (window.location.pathname === "/" || window.location.pathname === "") return;
       runUnmaskAutomation(session);
     });
   });

@@ -2025,9 +2025,9 @@ async function bringLookupIntoView(sender) {
   }
 }
 
-// Once a real challenge has been cleared in the promoted tab, resume that exact search URL in the
-// hidden runner and close the temporary tab. A tab promoted because the iframe was challenged but
-// loaded without showing a challenge remains in the background instead, avoiding a promote/close loop.
+// Once a real challenge has been cleared, return focus to the caller but keep this single lookup
+// tab in the background. The run continues there and reuses the same tab for later search steps or
+// challenges, avoiding repeated tab creation and teardown.
 async function hideLookupAfterChallenge(sender) {
   const run = activeDobLookup;
   if (!run || run.mode !== 'tab' || !run.tabId) return;
@@ -2039,64 +2039,19 @@ async function hideLookupAfterChallenge(sender) {
   const session = run.session || (await storedDobSession());
   if (session && session.challengeCleared) return;
   const tabId = run.tabId;
-  const sawChallenge = !!(run.challengeSeenInTab || (session && session.challengeSeenInTab));
-  if (session) {
-    session.challengeCleared = true;
-  }
-
-  if (
-    !session ||
-    !session.currentUrl ||
-    (!sawChallenge && (run.challengePromotions || 0) >= 2)
-  ) {
-    run.promotedForCheck = false;
-    if (session) {
-      session.promotedForChallenge = false;
-      session.challengeSeenInTab = false;
-      await persistDobSession(session);
-    }
-    await restoreCallerTab(session, tabId);
-    return;
-  }
-
-  const runnerSource = session.currentUrl.includes('thatsthem.com')
-    ? 'thatsthem.com'
-    : 'unmask.com';
-  run.returningOffscreen = true;
-  run.challengeDuringReturn = false;
-  session.promotedForChallenge = false;
-  session.challengeSeenInTab = false;
-  delete session.dobTabId;
-  await persistDobSession(session);
-  if (activeDobLookup !== run) return;
-  const prepared = await prepareRunner(runnerSource, session.currentUrl);
-  if (activeDobLookup !== run) return;
-
-  run.returningOffscreen = false;
-  if (!prepared.ok) {
-    run.promotedForCheck = false;
-    run.challengeSeenInTab = false;
-    session.dobTabId = tabId;
-    await persistDobSession(session);
-    await restoreCallerTab(session, tabId);
-    return;
-  }
-
-  run.mode = 'offscreen';
-  run.tabId = null;
-  run.currentRunnerSource = runnerSource;
   run.promotedForCheck = false;
   run.challengeSeenInTab = false;
-  await persistDobSession(session);
-  await restoreCallerTab(session, tabId);
-  chrome.tabs.remove(tabId).catch(() => {});
-
-  // The iframe may still be challenged even though the top-level page was cleared. If it reports
-  // that during the handoff, promote again only after the temporary tab is gone.
-  if (run.challengeDuringReturn && activeDobLookup === run) {
-    run.challengeDuringReturn = false;
-    await promoteDobRunToTab(session.currentUrl);
+  if (session) {
+    session.challengeCleared = true;
+    session.promotedForChallenge = false;
+    session.challengeSeenInTab = false;
+    session.dobTabId = tabId;
+    await persistDobSession(session);
   }
+
+  // Keep tab mode so all remaining Unmask / ThatSthem fallbacks run in this same
+  // background tab. A later challenge reactivates this tab rather than creating one.
+  await restoreCallerTab(session, tabId);
 }
 
 // Ends a DOB run: the user is taken back to where they started, the lookup tab closes (after a
@@ -2320,10 +2275,8 @@ async function startGoogleDobLookup(person, record) {
       const tab = await openGoogleDebugTab(GOOGLE_HOME_URL);
       run.mode = 'tab';
       run.tabId = tab.id;
-    } else if (!(await startDobInOffscreen(GOOGLE_RUNNER_FRAME, GOOGLE_HOME_URL)).ok) {
-      const tab = await chrome.tabs.create({ url: GOOGLE_HOME_URL, active: false });
-      run.mode = 'tab';
-      run.tabId = tab.id;
+    } else {
+      await startDobInOffscreen(GOOGLE_RUNNER_FRAME, GOOGLE_HOME_URL);
     }
 
     activeGoogleLookup = run;
@@ -2956,7 +2909,7 @@ async function startDobLookup(person, phone, sendResponse, sender, record, sourc
 
     // Which record card asked for this run. Every message the run produces carries it back, so a
     // press on the other card can never show this record's DOB (and the other way round).
-    const rawPhone = phone || person?.phone || person?.phoneNumber || (person?.phones && person.phones[0]) || '';
+    const rawPhone = phone || person?.phone || person?.phoneNumber || (person?.phones && person.phones[0]) || (person?.phoneNumbers && person.phoneNumbers[0]) || '';
 
     // normalizeAddressList drops addresses without a city/zip, so complete the
     // street-only infolookupp.com records before the Unmask URLs are built.
@@ -2986,6 +2939,10 @@ async function startDobLookup(person, phone, sendResponse, sender, record, sourc
         if (!defaultState && addr.state) defaultState = addr.state;
         if (!defaultCity && addr.city) defaultCity = addr.city;
       }
+    }
+    if ((!defaultState || !defaultCity) && addresses.length > 0) {
+      if (!defaultState && addresses[0].state) defaultState = addresses[0].state;
+      if (!defaultCity && addresses[0].city) defaultCity = addresses[0].city;
     }
     if (defaultState && defaultState.length > 2) {
       defaultState = STATE_NAME_TO_CODE[defaultState.toLowerCase()] || defaultState;
@@ -3266,29 +3223,30 @@ async function goToThatsThemStep(session, tabId, index, sendResponse) {
   if (activeDobLookup) {
     activeDobLookup.session = session;
     if (tabId) activeDobLookup.tabId = tabId;
-  } else if (tabId) {
-    activeDobLookup = { tabId, session, startTime: Date.now() };
+  } else {
+    activeDobLookup = {
+      mode: tabId ? 'tab' : 'offscreen',
+      tabId: tabId || null,
+      source: 'thatsthem.com',
+      session,
+      startTime: Date.now()
+    };
   }
 
   broadcastDobMessage({
     action: 'DOB_LOOKUP_PROGRESS',
     step: 5,
     totalSteps: 6,
+    record: session.record || '',
     message: `ThatSthem ${index + 1}/${steps.length}: searching by ${step.label}...`
   });
 
-  if (tabId) {
-    chrome.tabs.update(tabId, { url: step.url }).catch(() => {
-      chrome.tabs
-        .create({ url: step.url, active: false })
-        .then((newTab) => {
-          if (activeDobLookup) activeDobLookup.tabId = newTab.id;
-        })
-        .catch(() => {});
-    });
-  } else if (activeDobLookup && activeDobLookup.mode === 'offscreen') {
+  if (activeDobLookup.mode === 'tab' && activeDobLookup.tabId) {
+    chrome.tabs.update(activeDobLookup.tabId, { url: step.url }).catch(() => {});
+  } else {
+    activeDobLookup.source = 'thatsthem.com';
     prepareRunner('thatsthem.com', step.url).catch(() => {});
-    prepareRunner('unmask.com', step.url).catch(() => {});
+    chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: 'unmask.com' }).catch(() => {});
   }
 
   if (sendResponse) sendResponse({ success: true, nextUrl: step.url, exhausted: false });
@@ -3351,13 +3309,19 @@ async function advanceDobNextAddress(senderTabId, sendResponse, record, force) {
     // Recorded so a Cloudflare check on this step can be promoted into a tab on the real step
     // URL rather than on whatever interstitial Cloudflare happened to serve.
     session.currentUrl = newUrl;
-    chrome.storage.local.set({ unmask_pending_lookup: session });
+    persistDobSession(session);
 
     if (activeDobLookup) {
       activeDobLookup.session = session;
       if (tabId) activeDobLookup.tabId = tabId;
-    } else if (tabId) {
-      activeDobLookup = { tabId, session, startTime: Date.now() };
+    } else {
+      activeDobLookup = {
+        mode: tabId ? 'tab' : 'offscreen',
+        tabId: tabId || null,
+        source: 'unmask.com',
+        session,
+        startTime: Date.now()
+      };
     }
 
     broadcastDobMessage({
@@ -3367,13 +3331,9 @@ async function advanceDobNextAddress(senderTabId, sendResponse, record, force) {
       message: progressMsg
     });
 
-    if (tabId) {
-      chrome.tabs.update(tabId, { url: newUrl }).catch(() => {
-        chrome.tabs.create({ url: newUrl, active: false }).then((newTab) => {
-          if (activeDobLookup) activeDobLookup.tabId = newTab.id;
-        });
-      });
-    } else if (activeDobLookup && activeDobLookup.mode === 'offscreen') {
+    if (activeDobLookup.mode === 'tab' && activeDobLookup.tabId) {
+      chrome.tabs.update(activeDobLookup.tabId, { url: newUrl }).catch(() => {});
+    } else {
       prepareRunner(activeDobLookup.source || 'unmask.com', newUrl).catch(() => {});
     }
 

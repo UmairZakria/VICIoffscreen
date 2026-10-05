@@ -85,12 +85,13 @@ year is what every candidate is validated against:
 * A card/profile is only used when its age is within **±3 years** of the record's age
   (`72 yrs` → accepts 1951‑1957, rejects 1958 because it is 4 years off).
 * On a profile page every date is collected (born on … / DOB: … / month day, year /
-  month year) and the **closest** year to the expected birth year wins — not the first
-  date on the page — so a relative's birth year can never leak into the result.
+  month year) and only dates within **±1 year** of the expected birth year are eligible;
+  the **closest** eligible year wins — not the first date on the page — so a two-year
+  mismatch or a relative's birth year can never leak into the result.
 * If a profile only shows dates that contradict the record's age, the extension
   reports **no DOB** and keeps searching instead of reporting a wrong date.
 * A matched profile whose summary has **no birth date at all** (e.g. Unmask shows only
-  *"Cristian currently lives in Houston, TX"* plus the address) is abandoned ~1.2 s after
+  *"Cristian currently lives in Houston, TX"* plus the address) is abandoned ~0.5 s after
   the summary stops rendering — the run moves straight to the next fallback instead of
   waiting out the 12 s profile timeout.
 * **Placeholder / partial dates are never trusted alone.** When a source only offers a
@@ -523,10 +524,10 @@ and only then is the user involved:
 
 | Moment | What happens |
 |---|---|
-| A Cloudflare / browser check appears in the hidden runner | a temporary background tab is opened on the current step and the offscreen frame is parked; the tab is activated only if it independently detects the verification page |
-| The user clears the check in that tab | the current search URL is loaded into the hidden runner; the temporary tab closes and the user is returned to the tab they started from |
-| The handoff tab loads without a challenge | the step is retried in the hidden runner and the unused tab closes; after two mismatched handoffs, the background tab is retained to prevent an endless loop |
-| The run ends (DOB found, nothing found, error, cancel) | the caller tab is activated again; the final line stays readable for **1.5 s**, then any lookup tab closes. The offscreen frame is parked back on `about:blank` |
+| A Cloudflare / browser check appears in the hidden runner | one background lookup tab is opened on the current step and the offscreen frame is parked; the tab is activated only if it independently detects the verification page |
+| The user clears the check in that tab | the caller tab is restored; the same lookup tab remains in the background and continues the search |
+| Another check or fallback step occurs | the existing lookup tab is reused; no additional lookup tab is created |
+| The run ends (DOB found, nothing found, error, cancel) | the caller tab is activated again; the final line stays readable for **1.5 s**, then the single lookup tab closes. The offscreen frame is parked back on `about:blank` |
 
 ### A run is never sent to a tab just because the document was still booting
 
@@ -573,15 +574,12 @@ The tab id of a promoted or fallback tab is also written into the **persisted se
 service-worker restart mid-run orphans the tab (the in-memory run is gone, so nothing closes it) and
 the *next* search appears to be running in a tab that actually belongs to the previous one.
 
-### Returning to the hidden runner after verification
+### Continuing the lookup after verification
 
-After the user clears a challenge that was displayed in the promoted tab, the worker loads the
-session's current search URL into the hidden runner, persists the hidden-runner state, restores the
-caller tab, and closes the temporary tab. If the top-level page loads normally without a challenge,
-the worker retries the step in the hidden runner and closes the unused tab too. If the hidden frame
-and top-level page disagree twice, the verified tab is retained in the background to prevent an
-iframe-to-tab promotion/close loop. If the hidden runner cannot be prepared after verification, the
-verified tab is also retained in the background so the lookup can finish.
+After the user clears a challenge shown in the promoted tab, the worker restores the caller tab and
+keeps the lookup tab in the background. All remaining Unmask and ThatSthem steps reuse this same
+tab, so another challenge or fallback does not create a new tab. The single lookup tab closes when
+the run ends.
 
 The challenge detector recognizes the exact current shell, including
 `.challenge__content-wrapper` / `.challenge__title` and the "Performing security verification"
