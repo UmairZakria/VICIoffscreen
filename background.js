@@ -325,6 +325,8 @@ const GOOGLE_MAX_ADDRESSES = 4;
 // answer is what the email query's month comes from, so they are meant to be run in turn).
 const GOOGLE_EMAIL_STORAGE_KEY = 'google_email_pending_lookup';
 let activeGoogleEmailLookup = null; // { tabId, mode, source, session, startTime }
+const THATSTHEM_EMAIL_STORAGE_KEY = 'thatsthem_email_pending_lookup';
+let activeThatsThemEmailLookup = null;
 // Google's *gender* run is the third AI Mode job on the same runner:
 //
 //   "{name} is male or female?"
@@ -364,7 +366,7 @@ const AMICA_WARM_FALLBACK_MS = 4000;
 // Fire-and-forget beside the Unmask run, so it needs its own stop: a page that never answers (a
 // consent wall, a script that never loads) must not leave the runner loaded for ever.
 const GOOGLE_RUN_BUDGET_MS = 150000;
-const GOOGLE_EMAIL_RUN_BUDGET_MS = 150000;
+const GOOGLE_EMAIL_RUN_BUDGET_MS = 300000;
 const GOOGLE_GENDER_RUN_BUDGET_MS = 150000;
 const GOOGLE_ADDRESS_RUN_BUDGET_MS = 150000;
 
@@ -477,6 +479,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
   if (request.action === 'CANCEL_DOB_LOOKUP') {
+    finishThatsThemEmailLookup(true);
     cancelDobLookup(sendResponse);
     return true;
   }
@@ -484,6 +487,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // runner frame as the DOB run.
   if (request.action === 'START_GOOGLE_EMAIL_LOOKUP') {
     startGoogleEmailLookupWithSettings(request, sendResponse);
+    return true;
+  }
+  if (request.action === 'THATSTHEM_EMAIL_NEXT') {
+    advanceThatsThemEmailLookup(request, sendResponse);
     return true;
   }
 
@@ -573,8 +580,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   if (request.action === 'GOOGLE_EMAIL_RESULT') {
     broadcastDobMessage(request);
-    // The email is on the card: park the runner and drop the pending session.
-    finishGoogleEmailLookup(true);
+    // A low-confidence address is shown provisionally while the runner continues its query plan.
+    if (!request.continueSearch) finishGoogleEmailLookup(true);
   }
   if (request.action === 'GOOGLE_EMAIL_NEXT_ADDRESS') {
     nextGoogleEmailAddress(sendResponse);
@@ -582,6 +589,40 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
   if (request.action === 'GOOGLE_EMAIL_EMPTY') {
     broadcastDobMessage(request);
+    if (request.terminal) finishGoogleEmailLookup(true);
+  }
+  if (request.action === 'THATSTHEM_EMAIL_PROGRESS') {
+    if (!activeThatsThemEmailLookup || request.runId === activeThatsThemEmailLookup.session.runId) {
+      broadcastDobMessage(request);
+    }
+  }
+  if (request.action === 'THATSTHEM_EMAIL_RESULT') {
+    if (!activeThatsThemEmailLookup || request.runId === activeThatsThemEmailLookup.session.runId) {
+      broadcastDobMessage(request);
+      const foundEmailCount = uniqueEmailAddressCount(request.emails);
+      const googleRun = activeGoogleEmailLookup;
+      if (
+        foundEmailCount > 2 &&
+        googleRun &&
+        googleRun.session &&
+        googleRun.session.record === String(request.record || '')
+      ) {
+        finishGoogleEmailLookup(true);
+        broadcastDobMessage({
+          action: 'GOOGLE_EMAIL_EMPTY',
+          terminal: true,
+          record: request.record || '',
+          message: `Google search stopped because ThatSthem found ${foundEmailCount} email addresses.`
+        });
+      }
+      if (request.done) finishThatsThemEmailLookup(true);
+    }
+  }
+  if (request.action === 'THATSTHEM_EMAIL_EMPTY') {
+    if (!activeThatsThemEmailLookup || request.runId === activeThatsThemEmailLookup.session.runId) {
+      broadcastDobMessage(request);
+      finishThatsThemEmailLookup(true);
+    }
   }
 
   // The Google AI Mode gender run: the icon beside a person's name. Its messages carry the record too,
@@ -1464,6 +1505,7 @@ function stopEveryRun() {
   if (activeDobLookup) cancelDobLookup();
   finishGoogleLookup(true);
   finishGoogleEmailLookup(true);
+  finishThatsThemEmailLookup(true);
   finishGoogleGenderLookup(true);
   finishGoogleAddressLookup(true);
   setAmicaWarm(false);
@@ -1701,6 +1743,36 @@ function buildThatsThemAddressUrl(addr) {
   const locationSlug = thatStemLocationSlug(parsed.city, parsed.state, parsed.zip);
   if (!streetSlug || !locationSlug) return null;
   return `https://thatsthem.com/address/${streetSlug}-${locationSlug}`;
+}
+
+function buildThatsThemAddressVariants(addr) {
+  const source = String((addr && (addr.full || addr.street)) || '');
+  const parts = source.split(',').map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 4) return [];
+
+  const street = parts.slice(0, -3).join(', ').trim();
+  const cityWithUnit = parts[parts.length - 3];
+  const city = parts[parts.length - 2];
+  const stateZip = parts[parts.length - 1].match(/^(.+?)\s+(\d{5})(?:-\d{4})?$/);
+  const possibleUnit = cityWithUnit.match(/^(.+?)\s+(\d+)$/);
+  if (!street || !stateZip || !possibleUnit) return [];
+
+  const embeddedCity = possibleUnit[1].replace(/[^a-z0-9]/gi, '').toLowerCase();
+  const normalizedCity = city.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  if (!embeddedCity || embeddedCity !== normalizedCity) return [];
+
+  let state = stateZip[1].trim();
+  if (state.length > 2) {
+    state = STATE_NAME_TO_CODE[state.toLowerCase()] || '';
+  }
+  if (!/^[A-Za-z]{2}$/.test(state)) return [];
+
+  return [{
+    street: `${street} Trlr ${possibleUnit[2]}`,
+    city,
+    state: state.toUpperCase(),
+    zip: stateZip[2]
+  }];
 }
 
 function buildThatsThemPhoneUrl(phoneStr) {
@@ -2140,7 +2212,9 @@ function buildGoogleQueries(person) {
       .replace(/\s+/g, ' ')
       .trim();
 
-    if (line && addresses.indexOf(line) < 0) addresses.push(line);
+    if (line && !addresses.some((existing) => existing.line === line)) {
+      addresses.push({ line, street: addr.street, city: addr.city, state: addr.state, zip: addr.zip });
+    }
     if (addresses.length >= GOOGLE_MAX_ADDRESSES) break;
   }
 
@@ -2347,17 +2421,9 @@ function birthYearForQuery(person, knownDob) {
   return fromDob ? fromDob[1] : '';
 }
 
-// What the email run actually asks Google, one query per known address, primary address first:
-//
-//   "{name} lives at {address} born in {year} any public available primary email .
-//    gmail hotmail yahoo icloud are prefered"
-//
-// `knownDob` is whatever the card already holds - the Google row first, then Unmask's, then
-// ThatSthem's - and its month is used where it names one. The birth year comes from the record's age
-// ("71 yrs (1955)"), or from that same DOB when the record names no age; a card being typed in by hand
-// has neither, and the question is asked without it rather than not at all. Nothing else is added: the
-// last part of the query is the instruction that makes the answer come back as the one primary
-// address's owner rather than a list of lookalikes.
+// For each known address, search ordinary Google results with three complementary, evidence-rich
+// queries before asking AI Mode. Each web query is inspected result-by-result; the result must name
+// the person and corroborate the location or birth year before its email is accepted.
 function buildGoogleEmailQueries(person, knownDob) {
   if (!person) return [];
 
@@ -2381,14 +2447,50 @@ function buildGoogleEmailQueries(person, knownDob) {
       .replace(/\s+/g, ' ')
       .trim();
 
-    if (line && addresses.indexOf(line) < 0) addresses.push(line);
+    if (line && !addresses.some((existing) => existing.line === line)) {
+      addresses.push({ line, street: addr.street, city: addr.city, state: addr.state, zip: addr.zip });
+    }
     if (addresses.length >= GOOGLE_MAX_ADDRESSES) break;
   }
 
-  return addresses.map(
-    (address) =>
-      `${name} lives at ${address}${bornClause} any public available primary email . gmail hotmail yahoo icloud are prefered`
-  );
+  const year = targetYear;
+  const monthYear = [month, year].filter(Boolean).join(' ');
+  const plan = [];
+
+  for (const address of addresses) {
+    const place = [address.city, address.state, address.zip].filter(Boolean).join(' ');
+    const location = place || address.line;
+    const variants = [
+      {
+        mode: 'web',
+        query: `"${name}" "${address.street}" "${location}" email`
+      },
+      {
+        mode: 'web',
+        query: `"${name}" "${location}" ${monthYear ? `"${monthYear}"` : ''} email`.replace(/\s+/g, ' ').trim()
+      },
+      {
+        mode: 'web',
+        query: `"${name}" "${location}" ("email" OR "contact")`
+      },
+      {
+        mode: 'ai',
+        query: `${name} lives at ${address.line}${bornClause} any public available primary email . gmail hotmail yahoo icloud are prefered`
+      }
+    ];
+    for (const variant of variants) {
+      plan.push({
+        ...variant,
+        street: address.street,
+        city: address.city,
+        state: address.state,
+        zip: address.zip,
+        year: year || ''
+      });
+    }
+  }
+
+  return plan;
 }
 
 // The email run is asked for by a button on the card. Google AI Mode is the one switch that governs
@@ -2406,7 +2508,7 @@ async function startGoogleEmailLookupWithSettings(request, sendResponse) {
     return;
   }
 
-  await startGoogleEmailLookup(request, sendResponse);
+  await startGoogleEmailLookup(request, sendResponse, sources.thatsthem);
 }
 
 // Stops the Google email run. The runner frame is parked again; the visible debug tab (only ever there
@@ -2423,9 +2525,14 @@ function finishGoogleEmailLookup(silent) {
   }
 
   if (silent || !run || !run.session) return;
+  const possible = Array.isArray(run.session.possibleEmails)
+    ? run.session.possibleEmails.filter(Boolean)
+    : [];
   broadcastDobMessage({
     action: 'GOOGLE_EMAIL_EMPTY',
-    message: 'AI found no public email address for any known address.',
+    message: possible.length
+      ? `Only possible email${possible.length === 1 ? '' : 's'} found: ${possible.join(', ')}. No stronger match found.`
+      : 'Google Search and AI found no public email address for any known address.',
     record: run.session.record || ''
   });
 }
@@ -2445,8 +2552,7 @@ async function googlePendingSession(storageKey) {
   }
 }
 
-// The AI Mode page asks what to ask next once an address has produced nothing. The address list lives
-// here, exactly as it does for the DOB run, and the answer is navigated to a new page load either way.
+// The Google runner asks for its next query after a search result had no attributable email.
 async function nextGoogleEmailAddress(sendResponse) {
   let session = (activeGoogleEmailLookup && activeGoogleEmailLookup.session) || null;
 
@@ -2469,9 +2575,20 @@ async function nextGoogleEmailAddress(sendResponse) {
     return;
   }
 
-  chrome.storage.local.set({ [GOOGLE_EMAIL_STORAGE_KEY]: session }).catch(() => {});
+  try {
+    await chrome.storage.local.set({ [GOOGLE_EMAIL_STORAGE_KEY]: session });
+  } catch (e) {
+    console.error('[Background] Could not persist the next email query:', e);
+    if (sendResponse) sendResponse({ error: 'Could not continue the email search.' });
+    return;
+  }
   if (sendResponse) {
-    sendResponse({ nextQuery: session.queries[session.queryIndex], index: session.queryIndex });
+    const next = session.queries[session.queryIndex];
+    sendResponse({
+      nextQuery: typeof next === 'string' ? next : next.query,
+      index: session.queryIndex,
+      mode: typeof next === 'string' ? 'ai' : next.mode
+    });
   }
 }
 
@@ -2479,7 +2596,7 @@ async function nextGoogleEmailAddress(sendResponse) {
 // supersedes a DOB run in flight - and `startGoogleDobLookup` supersedes this one in turn. One Google
 // page, one job: two AI Mode runs in one frame would fight over the same search box, and the sweep
 // that takes the query back out of Google's history needs the box to itself.
-async function startGoogleEmailLookup(request, sendResponse) {
+async function startGoogleEmailLookup(request, sendResponse, allowThatsThem) {
   try {
     const person = request ? request.person : null;
     const record = request && request.record ? String(request.record) : '';
@@ -2502,6 +2619,18 @@ async function startGoogleEmailLookup(request, sendResponse) {
       }
     }
 
+    if (allowThatsThem) {
+      startThatsThemEmailLookup(request).catch((error) => {
+        console.warn('[Background] Could not start the ThatSthem email search:', error.message);
+        finishThatsThemEmailLookup(true).catch(() => {});
+        broadcastDobMessage({
+          action: 'THATSTHEM_EMAIL_EMPTY',
+          message: 'ThatSthem email lookup could not be started.',
+          record
+        });
+      });
+    }
+
     const queries = buildGoogleEmailQueries(person, knownDob);
     if (queries.length === 0) {
       // The two reasons a card can have no question worth asking, told apart: a card being typed in has
@@ -2510,8 +2639,12 @@ async function startGoogleEmailLookup(request, sendResponse) {
       const message = String((person && person.name) || '').trim()
         ? 'This record has no address with a city and ZIP to ask Google about.'
         : 'This card has no name to ask Google about yet - type one in first.';
-      broadcastDobMessage({ action: 'GOOGLE_EMAIL_EMPTY', message, record });
-      if (sendResponse) sendResponse({ success: false, error: message });
+      broadcastDobMessage({ action: 'GOOGLE_EMAIL_EMPTY', message, record, terminal: true });
+      if (sendResponse) {
+        sendResponse(allowThatsThem
+          ? { success: true, message: 'Google has no usable address; ThatSthem is searching.' }
+          : { success: false, error: message });
+      }
       return;
     }
 
@@ -2928,6 +3061,19 @@ async function startDobLookup(person, phone, sendResponse, sender, record, sourc
     // guessing. The same values drive the parallel Google AI Mode search.
     const { targetAge, targetYear } = parseTargetAgeAndYear(person);
 
+    // The independent ThatSthem runner can read DOB and email addresses from the same identity-matched
+    // result card. Start it alongside Unmask so neither site has to wait for the other's fallback chain.
+    if (sources && sources.thatsthem) {
+      startThatsThemEmailLookup({
+        person,
+        record: recordSource,
+        phone: rawPhone,
+        dob: person && (person.dob1 || person.dob2 || person.dob3 || person.dob) || ''
+      }).catch((error) => {
+        console.warn('[Background] Could not start the parallel ThatSthem DOB/email search:', error.message);
+      });
+    }
+
     let defaultState = '';
     let defaultCity = '';
     if (person?.address) {
@@ -3124,6 +3270,7 @@ function buildThatsThemPlan(session) {
   }
 
   const addresses = session.addresses || [];
+  const seenAddressUrls = new Set();
   addresses.forEach((addr, index) => {
     const url = buildThatsThemAddressUrl(addr);
     if (url) {
@@ -3132,7 +3279,19 @@ function buildThatsThemPlan(session) {
         kind: 'address',
         label: `address ${index + 1} of ${addresses.length} (${addr.street || addr.full || ''})`
       });
+      seenAddressUrls.add(url);
     }
+
+    buildThatsThemAddressVariants(addr).forEach((variant, variantIndex) => {
+      const variantUrl = buildThatsThemAddressUrl(variant);
+      if (!variantUrl || seenAddressUrls.has(variantUrl)) return;
+      seenAddressUrls.add(variantUrl);
+      steps.push({
+        url: variantUrl,
+        kind: 'address',
+        label: `address ${index + 1} format ${variantIndex + 2} of ${addresses.length} (${variant.street})`
+      });
+    });
   });
 
   const phoneUrl = buildThatsThemPhoneUrl(session.phone);
@@ -3141,6 +3300,158 @@ function buildThatsThemPlan(session) {
   }
 
   return steps;
+}
+
+function uniqueEmailAddressCount(emails) {
+  if (!Array.isArray(emails)) return 0;
+  return new Set(
+    emails
+      .map((email) => String(email || '').trim().toLowerCase())
+      .filter(Boolean)
+  ).size;
+}
+
+async function startThatsThemEmailLookup(request) {
+  await finishThatsThemEmailLookup(true);
+  const person = request && request.person ? request.person : null;
+  const addresses = normalizeAddressList(person);
+  const personWithDob = person ? { ...person, age: person.age || (request && request.dob) || '' } : null;
+  const { targetAge, targetYear } = parseTargetAgeAndYear(personWithDob);
+  const primary = addresses[0] || {};
+  const session = {
+    runId: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    record: request && request.record ? String(request.record) : '',
+    targetName: person && person.name ? String(person.name) : '',
+    targetAge,
+    targetYear,
+    city: primary.city || '',
+    state: primary.state || '',
+    addresses,
+    phone: person && (person.phone || person.phoneNumber || (person.phones && person.phones[0])) || '',
+    stepIndex: 0,
+    status: 'searching',
+    bestDob: ''
+  };
+  session.steps = buildThatsThemPlan(session);
+  if (!session.steps.length) {
+    broadcastDobMessage({
+      action: 'THATSTHEM_EMAIL_EMPTY',
+      message: 'ThatSthem needs a name, usable address, or phone number to search.',
+      record: session.record
+    });
+    return false;
+  }
+
+  activeThatsThemEmailLookup = { session, startedAt: Date.now() };
+  await chrome.storage.local.set({ [THATSTHEM_EMAIL_STORAGE_KEY]: session });
+  broadcastDobMessage({
+    action: 'THATSTHEM_EMAIL_PROGRESS',
+    step: 1,
+    totalSteps: session.steps.length,
+    message: `Searching ThatSthem ${session.steps[0].label} for email...`,
+    record: session.record,
+    runId: session.runId
+  });
+
+  const firstUrl = thatsThemEmailRunnerUrl(session.steps[0].url);
+  const prepared = await startDobInOffscreen('thatsthem-email.com', firstUrl);
+  if (!prepared.ok) {
+    await finishThatsThemEmailLookup(true);
+    broadcastDobMessage({
+      action: 'THATSTHEM_EMAIL_EMPTY',
+      message: 'ThatSthem hidden email runner is unavailable.',
+      record: session.record
+    });
+    return false;
+  }
+
+  setTimeout(() => {
+    if (activeThatsThemEmailLookup && activeThatsThemEmailLookup.session.runId === session.runId) {
+      finishThatsThemEmailLookup(false, 'ThatSthem email search timed out.');
+    }
+  }, 180000);
+  return true;
+}
+
+function thatsThemEmailRunnerUrl(url) {
+  const marked = new URL(url);
+  marked.searchParams.set('__vici_email_runner', '1');
+  return marked.toString();
+}
+
+async function finishThatsThemEmailLookup(silent, message) {
+  const run = activeThatsThemEmailLookup;
+  activeThatsThemEmailLookup = null;
+  await chrome.storage.local.remove(THATSTHEM_EMAIL_STORAGE_KEY).catch((error) => {
+    console.error('[Background] Could not clear the ThatSthem email session:', error);
+  });
+  chrome.runtime.sendMessage({ action: 'RESET_RUNNER', source: 'thatsthem-email.com' }).catch(() => {});
+  if (silent || !run || !run.session) return;
+  broadcastDobMessage({
+    action: 'THATSTHEM_EMAIL_EMPTY',
+    message: message || 'ThatSthem found no matching email address.',
+    dob: run.session.bestDob || '',
+    record: run.session.record || ''
+  });
+}
+
+async function advanceThatsThemEmailLookup(request, sendResponse) {
+  let session = activeThatsThemEmailLookup && activeThatsThemEmailLookup.session;
+  if (!session) {
+    const stored = await chrome.storage.local.get(THATSTHEM_EMAIL_STORAGE_KEY).catch(() => ({}));
+    session = stored[THATSTHEM_EMAIL_STORAGE_KEY] || null;
+    if (session) activeThatsThemEmailLookup = { session, startedAt: Date.now() };
+  }
+
+  if (!session || session.runId !== request.runId || session.record !== String(request.record || '')) {
+    if (sendResponse) sendResponse({ exhausted: true, stale: true });
+    return;
+  }
+  if (request.bestDob && !session.bestDob) session.bestDob = String(request.bestDob);
+
+  const nextIndex = session.stepIndex + 1;
+  const nextStep = session.steps[nextIndex];
+  if (!nextStep) {
+    if (request.bestDob && !session.bestDob) session.bestDob = String(request.bestDob);
+    activeThatsThemEmailLookup = { session, startedAt: Date.now() };
+    await finishThatsThemEmailLookup(true);
+    broadcastDobMessage({
+      action: 'THATSTHEM_EMAIL_EMPTY',
+      message: 'ThatSthem found the matching record but no usable email address.',
+      dob: session.bestDob || '',
+      record: session.record
+    });
+    if (sendResponse) sendResponse({ exhausted: true });
+    return;
+  }
+
+  session.stepIndex = nextIndex;
+  session.status = 'searching';
+  activeThatsThemEmailLookup = { session, startedAt: Date.now() };
+  try {
+    await chrome.storage.local.set({ [THATSTHEM_EMAIL_STORAGE_KEY]: session });
+  } catch (error) {
+    console.error('[Background] Could not persist the next ThatSthem email step:', error);
+    await finishThatsThemEmailLookup(true);
+    broadcastDobMessage({
+      action: 'THATSTHEM_EMAIL_EMPTY',
+      message: 'ThatSthem could not continue the email search.',
+      dob: session.bestDob || '',
+      record: session.record
+    });
+    if (sendResponse) sendResponse({ error: 'Could not continue the ThatSthem email search.' });
+    return;
+  }
+  broadcastDobMessage({
+    action: 'THATSTHEM_EMAIL_PROGRESS',
+    step: nextIndex + 1,
+    totalSteps: session.steps.length,
+    message: `ThatSthem: checking ${nextStep.label} for a matching person...`,
+    record: session.record,
+    runId: session.runId
+  });
+
+  if (sendResponse) sendResponse({ nextUrl: thatsThemEmailRunnerUrl(nextStep.url) });
 }
 
 // Everything on both sites failed - this is the "let the user know" step.

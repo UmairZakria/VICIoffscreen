@@ -96,9 +96,31 @@ const FOUND_PERSON = {
 };
 
 // 1. A record the lookup answered for: the year is the record's own age.
-check('a found record is asked with its own birth year', background.buildGoogleEmailQueries(FOUND_PERSON, ''), [
-  'Kevin Scott McQue lives at 1215 W Pleasant Run Rd, DeSoto, TX 75115 born in 1955 any public available primary email . gmail hotmail yahoo icloud are prefered'
+const foundPlan = background.buildGoogleEmailQueries(FOUND_PERSON, '');
+check('a found record gets three regular searches then AI Mode', foundPlan.map((q) => q.mode), [
+  'web', 'web', 'web', 'ai'
 ]);
+check('the first regular search anchors the exact name, street, and full place', foundPlan[0].query,
+  '"Kevin Scott McQue" "1215 W Pleasant Run Rd" "DeSoto TX 75115" email');
+check('the second regular search includes the record birth year', foundPlan[1].query,
+  '"Kevin Scott McQue" "DeSoto TX 75115" "1955" email');
+check('the AI fallback remains the final query for that address', foundPlan[3].query,
+  'Kevin Scott McQue lives at 1215 W Pleasant Run Rd, DeSoto, TX 75115 born in 1955 any public available primary email . gmail hotmail yahoo icloud are prefered');
+check('query evidence carries address and birth year', [foundPlan[0].street, foundPlan[0].zip, foundPlan[0].year],
+  ['1215 W Pleasant Run Rd', '75115', '1955']);
+const secondAddressPerson = {
+  ...FOUND_PERSON,
+  allAddresses: [
+    FOUND_PERSON.address,
+    { street: '4821 Maple Grove Ln', city: 'Canton', state: 'OH', zip: '44718' }
+  ]
+};
+const twoAddressPlan = background.buildGoogleEmailQueries(secondAddressPerson, '');
+check('each known address gets its own three-web-plus-AI sequence',
+  twoAddressPlan.map((q) => q.mode),
+  ['web', 'web', 'web', 'ai', 'web', 'web', 'web', 'ai']);
+check('the next address starts with its exact street query', twoAddressPlan[4].query,
+  '"Kevin Scott McQue" "4821 Maple Grove Ln" "Canton OH 44718" email');
 
 
 // 2. The card from the bug report: typed in, no age on the record, and the DOB the DOB run has already
@@ -116,16 +138,24 @@ check('the typed address keeps its city', manual.address, {
 });
 check("...and is on the card's address list for the other runs", manual.allAddresses.length, 1);
 
-check('a manual card is asked with the DOB on the card', background.buildGoogleEmailQueries(manual, 'September 16, 1963'), [
-  'Kevin Scott McQue lives at 1215 W Pleasant Run Rd, DeSoto, TX 75115 born in September 1963 any public available primary email . gmail hotmail yahoo icloud are prefered'
-]);
+const manualPlan = background.buildGoogleEmailQueries(manual, 'September 16, 1963');
+check('a manual card with DOB gets all three query modes', manualPlan.map((q) => q.mode), ['web', 'web', 'web', 'ai']);
+check('a manual card query uses its DOB month and year', manualPlan[1].query,
+  '"Kevin Scott McQue" "DeSoto TX 75115" "September 1963" email');
+check('manual card AI query uses its DOB month and year', manualPlan[3].query,
+  'Kevin Scott McQue lives at 1215 W Pleasant Run Rd, DeSoto, TX 75115 born in September 1963 any public available primary email . gmail hotmail yahoo icloud are prefered');
 
 // 3. The same card before any DOB run has answered: there is no year anywhere, and the question is
 //    still asked. This is the case that reported "no address with a city and ZIP" about a card that had
 //    one, and returned no query at all.
-check('no birth year anywhere still asks the question', background.buildGoogleEmailQueries(manual, ''), [
-  'Kevin Scott McQue lives at 1215 W Pleasant Run Rd, DeSoto, TX 75115 any public available primary email . gmail hotmail yahoo icloud are prefered'
+const noYearPlan = background.buildGoogleEmailQueries(manual, '');
+check('no birth year still gets three regular queries and an AI query', noYearPlan.map((q) => q.mode), [
+  'web', 'web', 'web', 'ai'
 ]);
+check('a query without known DOB omits the birth-year constraint', noYearPlan[1].query,
+  '"Kevin Scott McQue" "DeSoto TX 75115" email');
+check('the AI query remains useful without a DOB', noYearPlan[3].query,
+  'Kevin Scott McQue lives at 1215 W Pleasant Run Rd, DeSoto, TX 75115 any public available primary email . gmail hotmail yahoo icloud are prefered');
 
 // 4. The year, and where it comes from: the record's own birth year first, then the card's DOB, then
 //    nothing at all - which is a question without a year, not an error.
@@ -160,4 +190,3 @@ check('the city that is named is still read', named.address, {
 
 console.log(failures === 0 ? '\nall checks passed' : `\n${failures} check(s) failed`);
 process.exit(failures === 0 ? 0 : 1);
-

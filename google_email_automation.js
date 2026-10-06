@@ -1,21 +1,19 @@
-// Content script for the Google AI Mode email lookup.
+// Content script for the Google Search email lookup.
 //
 // Runs on https://www.google.com/* - in a background tab, or in the extension's hidden offscreen
-// runner. It is a separate AI Mode job from the birth-month run, started by the Email button on a
-// record card (after a DOB search has put a birth month on the card, if it found one) and asks
-// Google AI Mode
+// runner. It is a separate search job from the birth-month run, started by the Email button on a
+// record card (after a DOB search has put a birth month on the card, if it found one).
 //
 //   "{name} lives at {address} born in {year} any public available primary email .
 //    gmail hotmail yahoo icloud are prefered"
 //
-// for the record's primary address first and then, one at a time, for its other addresses. What it
+// For each address it tries three targeted ordinary Google searches, then an AI Mode question. A web
+// result only counts when it names the person and corroborates their location or birth year. What it
 // finds is reported as GOOGLE_EMAIL_RESULT and drawn in the card's Email Addresses box beside the
 // addresses Unmask / ThatSthem found.
 //
-// The page is opened at google.com, the query is typed into the search box and submitted with
-// Enter, and the results page is then switched into AI Mode (the "AI Mode" control, which is the
-// same thing as adding udm=50 to the search URL). AI Mode is the only part of Google that answers
-// this question - the ordinary results page does not.
+// Each query is typed into the search box and submitted with Enter. The ordinary results page is
+// inspected first; only the final query for an address switches into AI Mode.
 //
 // The typed query is also a Google search-history entry, and Google offers that string straight
 // back in the box's suggestion list - which is exactly where it can be taken out again. Before
@@ -55,6 +53,8 @@
   // answered this address with "nothing": the run moves on, and closes once there is no address
   // left to ask.
   var ANSWER_APPEAR_MS = 25000;
+  var WEB_RESULTS_MAX_MS = 8000;
+  var WEB_RESULTS_STABLE_MS = 500;
   // How long the box's suggestion list may take to open once the run asks for it.
   var LIST_OPEN_MAX_MS = 1200;
   // After the row's Delete control is clicked, the row is given this long to disappear.
@@ -115,7 +115,14 @@
 
   function currentQuery(session) {
     if (!session || !session.queries) return "";
-    return session.queries[session.queryIndex || 0] || "";
+    var entry = session.queries[session.queryIndex || 0] || "";
+    return typeof entry === "string" ? entry : String(entry.query || "");
+  }
+
+  function currentQueryMode(session) {
+    if (!session || !session.queries) return "ai";
+    var entry = session.queries[session.queryIndex || 0];
+    return entry && typeof entry === "object" ? entry.mode || "ai" : "ai";
   }
 
   function sendProgress(step, total, message) {
@@ -137,7 +144,9 @@
         emails: found.emails || [],
         primary: found.primary || "",
         note: found.note || "",
-        source: "google.ai",
+        source: found.source || "google.ai",
+        provisional: !!found.provisional,
+        continueSearch: !!found.continueSearch,
         query: query,
         record: sessionRecord()
       });
@@ -280,15 +289,28 @@
     return false;
   }
 
-  // The URL that opens the query directly in AI Mode. Used when the typed query did not leave the
-  // homepage, when the "AI Mode" control was not found, and for every address after the first.
+  // Direct search URLs are the fallback when submitting the query from the homepage did not navigate.
   function aiResultsUrl(query) {
     return "https://www.google.com/search?q=" + encodeURIComponent(query) + "&udm=50";
+  }
+
+  function searchResultsUrl(query) {
+    return "https://www.google.com/search?q=" + encodeURIComponent(query);
+  }
+
+  function queryResultsUrl(query, mode) {
+    return mode === "web" ? searchResultsUrl(query) : aiResultsUrl(query);
   }
 
   function goToAiResults(query) {
     try {
       window.location.href = aiResultsUrl(query);
+    } catch (e) {}
+  }
+
+  function goToQueryResults(query, mode) {
+    try {
+      window.location.href = queryResultsUrl(query, mode);
     } catch (e) {}
   }
 
@@ -381,6 +403,16 @@
   var PREFERRED_EMAIL_RE =
     /@(?:gmail|googlemail|hotmail|outlook|live|msn|yahoo|ymail|rocketmail|icloud|me|mac|aol)\.[a-z.]{2,}$/i;
 
+  // Syntax alone cannot prove that an address is deliverable. These patterns are only strong
+  // warning signs of placeholders or junk (e.g. xxxxxxxxxx@gmail.com or yr@aol.com), so retain
+  // and display the address but keep looking for a better-supported result.
+  function isLowConfidenceEmail(email) {
+    var local = String(email || "").split("@")[0].toLowerCase();
+    if (local.length <= 2) return true;
+    if (/^(.)\1{4,}$/.test(local)) return true;
+    return /^(?:x{4,}|test|example|unknown|noemail|none|null|noreply|notavailable|yourname|email)$/i.test(local);
+  }
+
   // The address the answer is actually about.
   //
   // The answer is prose and the addresses are stated in it in order: the first one is the address the
@@ -431,6 +463,9 @@
           break;
         }
       }
+      if (!namesThePerson && resultMiddleNameMatches(text, expectedName)) {
+        namesThePerson = true;
+      }
       if (!namesThePerson) return null;
     }
 
@@ -454,6 +489,90 @@
       note: primary.length === 0 ? "household address" : ""
     };
   }
+
+  function searchResultBlocks() {
+    var blocks = Array.prototype.slice.call(
+      document.querySelectorAll("div.MjjYud, div.g, [data-sokoban-container]")
+    );
+    var seen = [];
+    return blocks.filter(function (block) {
+      if (!isVisible(block)) return false;
+      var text = String(block.innerText || "").trim();
+      if (!text || seen.indexOf(text) >= 0) return false;
+      seen.push(text);
+      return true;
+    });
+  }
+
+  function searchResultText(block) {
+    var parts = [String(block.innerText || "")];
+    Array.prototype.forEach.call(block.querySelectorAll('a[href^="mailto:"]'), function (link) {
+      parts.push(String(link.getAttribute("href") || "").replace(/^mailto:/i, ""));
+    });
+    Array.prototype.forEach.call(block.querySelectorAll('meta[content], [itemprop="description"][content]'), function (meta) {
+      parts.push(String(meta.getAttribute("content") || ""));
+    });
+    return parts.join(" ");
+  }
+
+  function hasLocationEvidence(text, entry) {
+    var lower = String(text || "").toLowerCase();
+    if (entry.zip && new RegExp("\\b" + String(entry.zip).replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "\\b").test(lower)) {
+      return true;
+    }
+    var compact = lower.replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+    if (entry.city && entry.state &&
+        compact.indexOf(String(entry.city).toLowerCase()) >= 0 &&
+        compact.indexOf(String(entry.state).toLowerCase()) >= 0) {
+      return true;
+    }
+    if (entry.street) {
+      var street = String(entry.street).toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+      var match = street.match(/^(\d+)\s+([a-z0-9]+)/);
+      if (match && compact.indexOf(match[1] + " " + match[2]) >= 0) return true;
+    }
+    return !!(entry.year && new RegExp("\\b" + String(entry.year) + "\\b").test(lower) &&
+      ((entry.city && compact.indexOf(String(entry.city).toLowerCase()) >= 0) ||
+       (entry.state && compact.indexOf(String(entry.state).toLowerCase()) >= 0)));
+  }
+
+  function resultMiddleNameMatches(text, expectedName) {
+    var tokens = String(expectedName || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/);
+    if (tokens.length !== 3 || tokens[1].length !== 1) return false;
+
+    var words = String(text || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/);
+    var firstAt = words.indexOf(tokens[0]);
+    if (firstAt < 0) return false;
+
+    for (var i = firstAt + 1; i < words.length - 1; i++) {
+      if (words[i] === tokens[2] &&
+          words.slice(firstAt + 1, i).some(function (word) {
+            return word.charAt(0) === tokens[1];
+          })) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function extractEmailFromSearchResults(expectedName, entry) {
+    var blocks = searchResultBlocks();
+    for (var i = 0; i < blocks.length; i++) {
+      var text = searchResultText(blocks[i]);
+      if (!hasLocationEvidence(text, entry)) continue;
+      var found = extractEmail(text, expectedName);
+      if (found && found.note !== "household address") {
+        found.note = "Google Search result";
+        return found;
+      }
+    }
+    return null;
+  }
+
+  function searchResultsSnapshot() {
+    return searchResultBlocks().map(searchResultText).join(" | ");
+  }
+
   // ------------------------------------------------------------- removing the search-history entry
   //
   // Google remembers the query the run typed and offers that string straight back in the box's
@@ -1004,8 +1123,17 @@
         { action: "GOOGLE_EMAIL_NEXT_ADDRESS", record: sessionRecord(), reason: reason },
         function (res) {
           if (chrome.runtime.lastError) return;
+          if (res && res.error) {
+            chrome.runtime.sendMessage({
+              action: "GOOGLE_EMAIL_EMPTY",
+              message: res.error,
+              record: sessionRecord(),
+              terminal: true
+            });
+            return;
+          }
           if (!res || res.exhausted || !res.nextQuery) return;
-          goToAiResults(res.nextQuery);
+          window.location.href = GOOGLE_HOME_URL;
         }
       );
     } catch (e) {}
@@ -1015,6 +1143,43 @@
     state.reported = true;
     if (state.interval) clearInterval(state.interval);
     sendResult(found, query);
+  }
+
+  function reportPossibleEmail(found, query, mode) {
+    if (!currentSession) return;
+    var possible = currentSession.possibleEmails || [];
+    var email = found && found.primary;
+    if (email && possible.indexOf(email) < 0) {
+      possible.push(email);
+      currentSession.possibleEmails = possible;
+      saveSession();
+      sendResult({
+        emails: [email],
+        primary: email,
+        note: "Possible address — low confidence; still searching",
+        source: mode === "web" ? "google.search" : "google.ai",
+        provisional: true,
+        continueSearch: true
+      }, query);
+    }
+  }
+
+  function acceptOrContinue(found, state, query, mode) {
+    if (isLowConfidenceEmail(found.primary)) {
+      reportPossibleEmail(found, query, mode);
+      requestNextAddress(state, "Possible email found, but it looks incomplete or placeholder-like. " +
+        "Keeping it and continuing the search.");
+      return;
+    }
+
+    found.source = mode === "web" ? "google.search" : "google.ai";
+    if (Date.now() - state.startedAt > CLEANUP_GIVE_UP_AFTER_MS) {
+      succeed(state, found, query);
+      return;
+    }
+    state.reported = true;
+    if (state.interval) clearInterval(state.interval);
+    startHistoryCleanupTrip(found, query);
   }
 
   // The answer is in hand, but the search that produced it is now in Google's history - and Google
@@ -1234,7 +1399,14 @@
       stableAt: 0
     };
 
-    sendProgress(1, 3, "Asking AI for " + (session.targetName || "this person") + "'s email address...");
+    var mode = currentQueryMode(session);
+    sendProgress(
+      1,
+      3,
+      mode === "web"
+        ? "Searching public Google results for " + (session.targetName || "this person") + "'s email..."
+        : "Asking AI for " + (session.targetName || "this person") + "'s email address..."
+    );
     traceHistory("run start on " + String(window.location.href) + " - the query is: " + query);
     state.interval = setInterval(tick, TICK_MS);
     tick();
@@ -1277,13 +1449,40 @@
         }
         if (state.homeStep >= 3 && Date.now() - state.startedAt > HOME_TO_SEARCH_MAX_MS) {
           state.homeStep = 4;
-          goToAiResults(query);
+          goToQueryResults(query, mode);
         }
         return;
       }
 
-      // 2. The results page: switch it into AI Mode (the "AI Mode" control is the same thing as
-      // the udm=50 search URL).
+      if (mode === "web") {
+        var waitedForWeb = Date.now() - state.startedAt;
+        var webText = searchResultsSnapshot();
+        if (webText !== state.lastText) {
+          state.lastText = webText;
+          state.stableAt = Date.now();
+        }
+
+        if (webText && Date.now() - state.stableAt >= WEB_RESULTS_STABLE_MS) {
+          var webFound = extractEmailFromSearchResults(expectedName, session.queries[session.queryIndex]);
+          if (webFound) {
+            acceptOrContinue(webFound, state, query, "web");
+            return;
+          }
+
+          requestNextAddress(
+            state,
+            "Google Search results had no email tied to this person's name and location."
+          );
+          return;
+        }
+
+        if (waitedForWeb >= WEB_RESULTS_MAX_MS) {
+          requestNextAddress(state, "No matching public email appeared in Google Search results.");
+        }
+        return;
+      }
+
+      // Only the final query for an address uses AI Mode; ordinary results were already checked.
       if (!aiModeActive()) {
         if (!state.aiClickedAt) {
           var control = findAiModeControl();
@@ -1329,18 +1528,7 @@
 
       var found = extractEmail(text, expectedName);
       if (found) {
-        // The search that produced this is now in Google's history, and Google needs a moment to record
-        // it: the run goes back to google.com, refreshes until the entry shows up, deletes it, and only
-        // then reports the answer. A run that has already taken a long time reports straight away
-        // instead, so the cleanup can never cost it the result.
-        if (Date.now() - state.startedAt > CLEANUP_GIVE_UP_AFTER_MS) {
-          traceHistory("run is already long - reporting the answer without the history cleanup trip");
-          succeed(state, found, query);
-          return;
-        }
-        state.reported = true;
-        if (state.interval) clearInterval(state.interval);
-        startHistoryCleanupTrip(found, query);
+        acceptOrContinue(found, state, query, "ai");
         return;
       }
 

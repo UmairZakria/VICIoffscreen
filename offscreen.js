@@ -17,6 +17,7 @@ const RUNNERS = {
   'amica.com': { frameId: 'frame-amica', url: 'https://www.amica.com/' },
   'unmask.com': { frameId: 'frame-unmask', url: 'https://unmask.com/' },
   'thatsthem.com': { frameId: 'frame-thatsthem', url: 'https://thatsthem.com/' },
+  'thatsthem-email.com': { frameId: 'frame-thatsthem-email', url: 'https://thatsthem.com/' },
   'google.com': { frameId: 'frame-google', url: 'https://www.google.com/' }
 };
 
@@ -70,7 +71,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       try {
         if (request.source === 'unmask.com') {
           frame.src = 'https://unmask.com/';
-        } else if (request.source === 'thatsthem.com') {
+        } else if (request.source === 'thatsthem.com' || request.source === 'thatsthem-email.com') {
           frame.src = 'https://thatsthem.com/';
         } else {
           frame.src = 'about:blank';

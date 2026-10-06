@@ -103,6 +103,18 @@ year is what every candidate is validated against:
   with its own copy button. If nothing fuller exists the user is told
   *"Only the birth year 1962 from ThatSthem – no fuller date found (searched …)"*.
   The fuller date is what goes into the Amica/Mercury quote form.
+* **DOB button searches can run in parallel.** With the matching sources enabled in settings, Unmask
+  and Google AI continue their DOB lookups while the separate ThatSthem email runner searches the
+  same name/address/phone fallback plan. A matching ThatSthem card contributes both its DOB and all
+  decoded email addresses to the card; the extension ranks and displays those together with any
+  results from the other sources.
+* ThatSthem match acceptance is based on the card's name / **"Known as:"** aliases and a birth
+  year within **±1 year** of the input record. Address, city, state, and ZIP are search context
+  only; they never veto a name-and-year match. Age is not a hard gate because it may be stale.
+* ThatSthem address searches retain the original address query and can add a narrowly detected
+  trailer-number variant when the raw address repeats a city with a trailing number (for example,
+  `WACO 30, Waco` becomes `1405 Air Base Rd Trlr 30, Waco`). The generated query follows the
+  original; other trailing numbers are not reinterpreted.
 
 Fallback order when nothing is found: every address → phone number → name + city +
 state → name + state. If Unmask answers a name search with its **"What age range best
@@ -238,22 +250,32 @@ Regression harness: `node scratch/google_history_delete_test.js`
 
 ### The email run (the card's **Email** button)
 
-The same page, the same search box, the same history sweep — a different question:
+The Email button searches public Google results first and uses AI Mode as a final fallback:
 
-    "{name} lives at {address} born in {year|Month year} any public available primary email .
-     gmail hotmail yahoo icloud are prefered"
+1. Three targeted ordinary Google queries per address: exact name + street + place; name + place +
+   birth year/month (when known); and name + place + email/contact terms.
+2. Each ordinary result is checked separately. It must name the person, include a valid email, and
+   corroborate the location (street, city/state or ZIP) or birth year with the location. Name-only
+   matches and results for another location are rejected.
+3. If those searches do not find a corroborated email, the existing AI Mode question is tried for
+   that address. This sequence then moves to the next known address.
+4. Placeholder-like addresses (for example, a local part made only of repeated `x` characters or a
+    two-character local part) are shown on the card as **possible** emails, but are not treated as a
+    final match. The run keeps searching; any stronger email it finds is added alongside them.
 
 * **Started by the Email button** on a record card (beside DOB) and governed by the *same* Settings
-  switch as the DOB run's Google leg (`DOB Sources → AI`): a user who turned AI Mode off means no
-  Google AI calls at all, whatever they are for.
-* **The birth month goes into the query when the card already has one.** `birthMonthName` reads the
-  Google row first, then Unmask's, then ThatSthem's, so a month a previous search found turns the
-  query's `born in 1950` into `born in February 1950` — which places the person far better. With no
-  month on the card the bare year is used, exactly as the hand-written query does.
-* **One Google page, one job.** The email run and the birth-month run share the one hidden runner
-  frame, so starting either supersedes the other (`startGoogleEmailLookup` ↔ `startGoogleDobLookup`).
-  That is also the order that makes sense, because the DOB answer is where the month comes from.
-* **What is reported is what the answer stated**: the first address in the answer column *before* its
+  switch as the DOB run's Google leg (`DOB Sources → AI`): turning that source off disables the
+  regular Google searches and the AI Mode fallback together.
+* **Known DOB details disambiguate the search.** The record's birth year is preferred; otherwise
+  `birthYearForQuery` reads the DOB already on the card. The known month and year are used in a
+  regular-result query and the AI prompt, but are omitted when unavailable.
+* **Google and ThatSthem run in parallel.** Google email and Google DOB still share one runner frame,
+  so those two Google jobs supersede one another. The Email button also starts a separate hidden
+  ThatSthem runner when *DOB Sources → ThatSthem* is enabled; its own session and iframe do not replace
+  an active DOB lookup. ThatSthem email mode is identified with a private query marker on that iframe's
+  search and fallback URLs, rather than relying only on `window.name`, which browsers may clear on
+  cross-site navigation.
+* **AI results remain person-checked**: the first address in the answer column *before* its
   "this household … for family/co-occupants" sentence — the one the answer itself calls primary. An
   address from the household sentence is used only when nothing primary was stated, and the row says
   `household address` when it is. The answer also has to name the record's person **in full**, so a
@@ -261,20 +283,33 @@ The same page, the same search box, the same history sweep — a different quest
   on that card; an answer that names nobody this run asked about reports nothing, and the run moves on.
 * Addresses are drawn in the card's **Email Addresses** box, **merged** with whatever Unmask /
   ThatSthem already found rather than replacing them, and written onto the person so a re-render keeps
-  them.
-* Progress is tagged **EMAIL** in the card's progress box. An address the answer never names reports
-  *"No public email address was named for this address."* and the **next address is asked** — the street
-  addresses the record carries are all completed (city + ZIP) before the run starts, so a record whose
-  addresses are street-only is asked about in full rather than through its first address alone. The run
-  ends with *"AI found no public email address for any known address."*
+  them. Email syntax cannot establish deliverability, so suspicious-looking addresses remain visible
+  as possible results while the searches continue.
+* ThatSthem uses the existing name → each known address → phone fallback plan and the same identity
+  matching rules as its DOB lookup. On a matching card it reads the email-link route encoded in
+  `x-href` (for example `/email/hillb@bellsouth.net`), which is the same address exposed at the top of
+  that site's reverse-email page. Every decoded address is retained and de-duplicated. The card shows
+  up to six ranked addresses first: name/year matches rank above common email providers, with stable
+  source order breaking ties. **Show more** expands the card to all remaining addresses, and **Show
+  less** collapses it again. The matched card's birth year/month is also saved as ThatSthem DOB evidence
+  without replacing an existing DOB value.
+* If ThatSthem returns more than two distinct email addresses for the matching person, the remaining
+  Google email queries are stopped. Later DOB results merge their email addresses with the email-button
+  results and retain the DOB evidence already collected by that button.
+* Progress is tagged **EMAIL** in the card's progress box. If the results do not identify an email
+  belonging to this person, the next targeted query is asked, then the next address if needed — the
+  street addresses the record carries are all completed (city + ZIP) before the run starts. The run
+  ends with *"Google Search and AI found no public email address for any known address."*
 
 `google_email_automation.js` is derived from `google_automation.js` by
 `node scratch/build_google_email_script.js` — that script does the mechanical half (guard name, storage
 key, message names); the answer reader (`collectEmails` / `extractEmail`) is edited in place and is
 what the harness below covers. Re-running the generator would overwrite those edits.
 
-Regression harness: `node scratch/google_email_extract_test.js` — the reader, against the two real
-Google answers this was built from (primary vs household, namesake refusal, casing, page addresses).
+Regression harnesses: `node scratch/google_email_queries_test.js`,
+`node scratch/google_email_web_test.js`, and `node scratch/google_email_extract_test.js` — targeted
+query order, search-result attribution, and the AI reader (primary vs household, namesake refusal,
+casing, page addresses).
 
 ### The gender run (the chip beside a person's name)
 
@@ -410,23 +445,17 @@ If every Unmask.com fallback fails, the very same hidden runner continues on
 
 ThatSthem result cards already carry the date of birth
 (*"Born October 1958 (67 years old)"*), so the DOB is read straight from the search
-results — no profile page has to be opened. The same rules as Unmask apply:
+results — no profile page has to be opened. Its matching rules are deliberately independent from
+location because ThatSthem can show old/current addresses or a different "Lives in" location:
 
 * **Name matching** — first + last name (middle name / initial scored), or a match
   through the card's **"Known as:"** aliases.
-* **DOB / age matching** — accepted only within **±3 years** of the record's age or
-  explicit birth year (a 1958 card can never answer a `72 yrs (1954)` record).
-* **Zip matching** — when both the record and the card know the zip, they must be equal
-  (state must match as well); the exact street match scores highest.
-* A card that only matches by name is not enough: it must also carry a DOB, otherwise
-  the run moves to the next fallback.
-
-* **Zip matching uses the card's whole address history.** A record's address is often the
-  person's *previous* address (they move), so the zip/street check looks at the card's
-  **Current Address plus every Previous Addresses entry**. This was a real miss: the
-  right card for a `2740 Kibler Rd … 44321` record had `44313` as its current address
-  and `44321` only in its previous addresses, so it used to be rejected while the older
-  same-name cards (wrong DOB) scored highest.
+* **Birth-year matching** — when the input has a birth year, the card must show a birth year
+  within **±1 year**. A card with a missing or farther-off year is rejected. Age is not used as
+  a hard gate, since it can be stale.
+* **Location is not an identity gate.** City, state, ZIP, and street are not used to reject or
+  rank cards; addresses can be historical, incomplete, or redacted. Among valid cards, the
+  strongest name / alias match and closest birth year rank highest.
 * **The security check is handed to the user.** Every ThatSthem search can answer with its
   sentinel/Cloudflare Turnstile page (`<title>Security Check</title>`,
   `meta[name="sentinel-challenge"]`, `#captcha-container`, *"Confirm you're human"*).
@@ -991,13 +1020,14 @@ a **real, whole-extension restart** — one `RESTART_EXTENSION` message, handled
    user's own tab back exactly as a normal finish does — and the warm Amica page is dropped
    (`setAmicaWarm(false)`).
 2. **The pending-run storage those runs wrote** (`amica_pending_quote`, `mercury_pending_quote`,
-   `unmask_pending_lookup`, `thatsthem_pending_lookup`, `google_pending_lookup`) is cleared, so a
+   `unmask_pending_lookup`, `thatsthem_pending_lookup`, `thatsthem_email_pending_lookup`,
+   `google_pending_lookup`) is cleared, so a
    cancelled run cannot be picked up by the next page load.
 3. **The tab is remembered** (`widget_reinject_after_reload`), then the worker replies — the reply is
    deliberately sent *before* the reload, because the reload destroys the worker that would send it.
 4. **`chrome.runtime.reload()`** reloads the whole extension, front and back: the service worker is
    torn down and started again, the offscreen document and every runner frame inside it (both record
-   frames, Amica, Unmask, ThatSthem, Google) are destroyed and rebuilt, the static
+   frames, Amica, Unmask, the two ThatSthem runners, Google) are destroyed and rebuilt, the static
    `declarativeNetRequest` rules are re-registered, and the popup / detached window are closed and
    reopen fresh afterwards.
 5. **Every open widget takes itself out of its page** (`EXTENSION_RELOADING`): the reload invalidates all

@@ -11,12 +11,26 @@ const path = require('path');
 const DIR = path.join(__dirname, '..');
 const themSrc = fs.readFileSync(path.join(DIR, 'thatsthem_automation.js'), 'utf8');
 const bgSrc = fs.readFileSync(path.join(DIR, 'background.js'), 'utf8');
+const offscreenSrc = fs.readFileSync(path.join(DIR, 'offscreen.js'), 'utf8');
+const offscreenHtml = fs.readFileSync(path.join(DIR, 'offscreen.html'), 'utf8');
+const widgetSrc = fs.readFileSync(path.join(DIR, 'widget.js'), 'utf8');
 
 function slice(src, start, end) {
   const a = src.indexOf(start);
   const b = src.indexOf(end);
   if (a === -1 || b === -1 || b <= a) throw new Error(`Could not slice ${start} .. ${end}`);
   return src.slice(a, b);
+}
+
+function liftFunction(src, name) {
+  const start = src.indexOf(`function ${name}(`);
+  if (start < 0) throw new Error(`Could not find ${name}`);
+  let depth = 0;
+  for (let i = src.indexOf('{', start); i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) return src.slice(start, i + 1);
+  }
+  throw new Error(`Unbalanced function ${name}`);
 }
 
 // ---- content script: helpers + name/age rules + parsers + matching --------
@@ -27,7 +41,8 @@ const them = new Function(
     '\nreturn { parseBornText, parseLivesIn, parseKnownAs, parseCityStateZip, parseAddressBlock,' +
     ' parseNameDetails, matchNameScore, evaluateAliasMatch, isAgeWithinTolerance, matchAgeScore,' +
     ' evaluateRecord, buildTarget, streetKey, normalizeZip, stateToCode, cleanText,' +
-    ' readRecord, readRecords, readAddressList, isNoResultsPage,' +
+    ' readRecord, readRecords, readAddressList, readEmailAddresses, decodeEmailHref, selectEmailAddresses,' +
+    ' emailRecordsFingerprint, EMAIL_CARD_SETTLE_MS, isNoResultsPage,' +
     ' isBrowserCheckPage, CHALLENGE_WAIT_MS,' +
     ' CARDS_SETTLE_MS, PAGE_TIMEOUT_MS, recordsFingerprint };'
 )();
@@ -42,7 +57,25 @@ const bgBlock =
 const bg = new Function(
   bgBlock +
     '\nreturn { buildThatsThemNameUrl, buildThatsThemAddressUrl, buildThatsThemPhoneUrl,' +
-    ' splitStreetAndLocation, buildThatsThemPlan, primaryZipForSession };'
+    ' splitStreetAndLocation, buildThatsThemAddressVariants, buildThatsThemPlan, primaryZipForSession };'
+)();
+
+const emailRunnerUrlBlock = slice(
+  bgSrc,
+  'function thatsThemEmailRunnerUrl',
+  'async function finishThatsThemEmailLookup'
+);
+const emailRunnerUrl = new Function(`${emailRunnerUrlBlock}\nreturn thatsThemEmailRunnerUrl;`)();
+const uniqueEmailAddressCount = new Function(
+  `${liftFunction(bgSrc, 'uniqueEmailAddressCount')}\nreturn uniqueEmailAddressCount;`
+)();
+const widgetEmailHelpers = new Function(
+  `${liftFunction(widgetSrc, 'mergeUniqueEmails')}\n${liftFunction(widgetSrc, 'mergeDobLookupResult')}` +
+    '\nreturn { mergeUniqueEmails, mergeDobLookupResult };'
+)();
+const widgetEmailDisplay = new Function(
+  `${liftFunction(widgetSrc, 'rankEmailAddresses')}\n${liftFunction(widgetSrc, 'visibleEmailAddresses')}` +
+    '\nreturn { rankEmailAddresses, visibleEmailAddresses };'
 )();
 
 let passed = 0;
@@ -90,6 +123,112 @@ check('lives in with full state name', them.parseLivesIn('Lives in Houston, Texa
 check('lives in with 2 word city', them.parseLivesIn('Lives in Coral Springs, FL'), { city: 'Coral Springs', state: 'FL' });
 check('no lives-in line', them.parseLivesIn(CARD_BORN), null);
 
+console.log('\n== ThatSthem email links and preference policy ==\n');
+
+const emailHref = (email) => Buffer.from(`/email/${email}`).toString('base64');
+const emailLinkCard = (encodedEmails) => {
+  const links = encodedEmails.map((encoded) => ({
+    getAttribute: (name) => name === 'x-href' ? encoded : ''
+  }));
+  const heading = {
+    textContent: 'Email Addresses:',
+    parentElement: { querySelectorAll: () => links }
+  };
+  return { querySelectorAll: (selector) => selector === 'h3' ? [heading] : [] };
+};
+
+check(
+  'masked x-href route decodes to the full email',
+  them.decodeEmailHref({ getAttribute: (name) => name === 'x-href' ? emailHref('hillb@bellsouth.net') : '' }),
+  'hillb@bellsouth.net'
+);
+check(
+  'masked email links are collected from the Email Addresses card section',
+  them.readEmailAddresses(emailLinkCard([emailHref('hillb@bellsouth.net'), emailHref('unicab@aol.com')])),
+  ['hillb@bellsouth.net', 'unicab@aol.com']
+);
+check(
+  'all decoded addresses are returned in stable unique order',
+  them.selectEmailAddresses([
+    'first@bellsouth.net',
+    'second@aol.com',
+    'third@proton.me',
+    'fourth@fastmail.com',
+    'preferred@gmail.com',
+    'preferred@yahoo.com',
+    'FIRST@BELLSOUTH.NET',
+  ]),
+  ['first@bellsouth.net', 'second@aol.com', 'third@proton.me', 'fourth@fastmail.com', 'preferred@gmail.com', 'preferred@yahoo.com']
+);
+const rankedEmailExamples = [
+  'unknown@random.net',
+  'person1982@random.net',
+  'firstlast@random.net',
+  'anything@gmail.com',
+  'first@yahoo.com',
+  'last1982@bellsouth.net',
+  'xxxxxxxxxx@gmail.com',
+];
+const rankedDisplay = widgetEmailDisplay.visibleEmailAddresses(
+  rankedEmailExamples,
+  { name: 'First Last', age: '44 yrs (1982)' },
+  false
+);
+check('emails matching name/year rank ahead of popular-domain-only addresses', rankedDisplay.ranked.slice(0, 3), [
+  'firstlast@random.net',
+  'last1982@bellsouth.net',
+  'first@yahoo.com',
+]);
+check('popular providers are ranked after name/year matches', rankedDisplay.ranked.indexOf('anything@gmail.com') >
+  rankedDisplay.ranked.indexOf('person1982@random.net'), true);
+check('email card initially renders at most six addresses', rankedDisplay.visible.length, 6);
+check('show more exposes every remaining unique address', widgetEmailDisplay.visibleEmailAddresses(
+  rankedEmailExamples,
+  { name: 'First Last', age: '44 yrs (1982)' },
+  true
+).visible.length, rankedDisplay.ranked.length);
+check('remaining-address count drives the Show more control', rankedDisplay.remaining, 1);
+console.log('\n== Merging email-button results with later DOB results ==\n');
+
+const previouslyFound = {
+  emails: ['hillb@bellsouth.net', 'unicab@aol.com', 'preferred@gmail.com'],
+  dob2: 'October 1910',
+  dob2Source: 'thatsthem.com',
+};
+const mergedDobResult = widgetEmailHelpers.mergeDobLookupResult(previouslyFound, {
+  dob: 'August 1911',
+  source: 'unmask.com',
+  emails: ['new.address@yahoo.com', 'HILLB@bellsouth.net'],
+});
+check('later DOB result preserves and deduplicates earlier email results', mergedDobResult.emails, [
+  'hillb@bellsouth.net',
+  'unicab@aol.com',
+  'preferred@gmail.com',
+  'new.address@yahoo.com',
+]);
+check('later DOB result retains earlier ThatSthem DOB evidence', [
+  mergedDobResult.firstDob,
+  mergedDobResult.secondDob,
+  mergedDobResult.secondDobSource,
+], ['August 1911', 'October 1910', 'thatsthem.com']);
+check('new Unmask DOB is still retained as the first result', [
+  mergedDobResult.firstDob,
+  mergedDobResult.firstDobSource,
+  mergedDobResult.bestDob,
+], ['August 1911', 'unmask.com', 'August 1911']);
+check(
+  'DOB result handler renders merged person emails, not only the latest message',
+  /renderDiscoveredEmails\(record, person\.emails, person\)/.test(widgetSrc),
+  true
+);
+check('email runner waits for links to stabilize', them.EMAIL_CARD_SETTLE_MS >= 1000, true);
+check(
+  'email card fingerprint changes when asynchronous links appear',
+  them.emailRecordsFingerprint([{ name: 'Bertha Hill', emails: ['hillb@bellsouth.net'] }]) !==
+    them.emailRecordsFingerprint([{ name: 'Bertha Hill', emails: [] }]),
+  true
+);
+
 const aliases = them.parseKnownAs(CARD_KNOWN_AS);
 check('known as -> all 7 aliases', aliases.length, 7);
 check('known as first + last alias', [aliases[0], aliases[6]], ['Deborah D. Clifton', 'Deborah A. Williams']);
@@ -128,6 +267,7 @@ function card(opts) {
     dob: null,
     year: null,
     age: null,
+    emails: opts.emails || [],
     city: opts.city || '',
     state: opts.state || '',
     zip: opts.zip || '',
@@ -142,7 +282,7 @@ function card(opts) {
   return record;
 }
 
-console.log('\n== ThatSthem matching (name + DOB/age + zip) ==\n');
+console.log('\n== ThatSthem matching (name/alias + birth year) ==\n');
 
 const target = them.buildTarget({
   targetName: 'Deborah Williams',
@@ -163,6 +303,168 @@ const good = them.evaluateRecord(target, goodCard);
 check('the real card matches', !!good, true);
 check('reported DOB comes from the card', good && good.dob.label, 'October 1958');
 check('score clears the accept threshold', good && good.score >= 80, true);
+const emailMatch = them.evaluateRecord(
+  target,
+  card({
+    name: 'Deborah Williams',
+    born: CARD_BORN,
+    city: 'Houston',
+    state: 'TX',
+    zip: '77047',
+    street: '3724 Kildare Dr',
+    emails: ['hillb@bellsouth.net', 'unicab@aol.com'],
+  })
+);
+check('emails stay attached to the identity-matched card', emailMatch && emailMatch.emails, [
+  'hillb@bellsouth.net',
+  'unicab@aol.com',
+]);
+
+const fernandesTarget = them.buildTarget({
+  targetName: 'Clair S Fernandes',
+  targetAge: 84,
+  targetYear: 1942,
+  city: 'San Antonio',
+  state: 'TX',
+  addresses: [{ street: '9103 Honey Creek Dr', city: 'San Antonio', state: 'TX', zip: '78230' }],
+});
+const fernandezCard = card({
+  name: 'Clara Severina Fernandez',
+  born: 'Born September 1941 (84 years old)',
+  city: 'San Antonio',
+  state: 'TX',
+  zip: '78230',
+  street: '9103 Honey Creek Dr',
+  emails: ['gfernandes@cs.com', 'clara.fernandes@aol.com'],
+});
+const fernandezMatch = them.evaluateRecord(fernandesTarget, fernandezCard);
+check('Clair Fernandes matches the strongly corroborated Clara Fernandez card', !!fernandezMatch, true);
+check('near-spelling match reports the matched card name and year', [
+  fernandezMatch && fernandezMatch.name,
+  fernandezMatch && fernandezMatch.year,
+], ['Clara Severina Fernandez', 1941]);
+check('near-spelling match returns the card DOB', fernandezMatch && fernandezMatch.dob.label, 'September 1941');
+check('near-spelling match returns card emails', fernandezMatch && fernandezMatch.emails, [
+  'gfernandes@cs.com',
+  'clara.fernandes@aol.com',
+]);
+check(
+  'near-spelling name and DOB match without address corroboration',
+  !!them.evaluateRecord(fernandesTarget, card({
+    name: 'Clara Severina Fernandez',
+    born: 'Born September 1941 (84 years old)',
+    city: 'Different City',
+    state: 'CA',
+    zip: '90001',
+    street: '99 Other St',
+  })),
+  true
+);
+check(
+  'similar name and address do not match when birth year is outside one year',
+  them.evaluateRecord(fernandesTarget, card({
+    name: 'Clara Severina Fernandez',
+    born: 'Born September 1939 (84 years old)',
+    city: 'San Antonio',
+    state: 'TX',
+    zip: '78230',
+    street: '9103 Honey Creek Dr',
+  })),
+  null
+);
+
+const gabrielTarget = them.buildTarget({
+  targetName: 'Gabriel J Fernandes',
+  targetAge: 90,
+  targetYear: 1936,
+  city: 'San Antonio',
+  state: 'TX',
+  addresses: [{ street: '8918 Fall River Dr', city: 'San Antonio', state: 'TX', zip: '78250' }],
+});
+const gabrielCard = card({
+  name: 'Gabriel Fernandes',
+  aliases: ['Gabriel J. Fernandes', 'Gabriel S. Fernandes'],
+  born: 'Born March 1936 (90 years old)',
+  city: 'San Antonio',
+  state: 'TX',
+  addresses: [
+    { street: '3711 Medical Dr Apt 918', city: 'San Antonio', state: 'TX', zip: '78229' },
+    { street: '9103 Honey Creek Dr', city: 'San Antonio', state: 'TX', zip: '78230' },
+    { street: '4226 Dumaine St', city: 'New Orleans', state: 'LA', zip: '70119' },
+  ],
+  emails: ['fernandes@uthscsa.edu', 'headhunter716@gmail.com', 'jaywright7878@gmail.com'],
+});
+const gabrielMatch = them.evaluateRecord(gabrielTarget, gabrielCard);
+check('exact Known as name and birth year match despite location differences', !!gabrielMatch, true);
+check('moved-address match returns the ThatSthem emails', gabrielMatch && gabrielMatch.emails, [
+  'fernandes@uthscsa.edu',
+  'headhunter716@gmail.com',
+  'jaywright7878@gmail.com',
+]);
+check(
+  'Known as name with a birth year outside one year is rejected',
+  them.evaluateRecord(gabrielTarget, card({
+    name: 'Gabriel Fernandes',
+    aliases: ['Gabriel J. Fernandes'],
+    born: 'Born March 1934 (90 years old)',
+    city: 'San Antonio',
+    state: 'TX',
+    addresses: [{ street: '3711 Medical Dr Apt 918', city: 'San Antonio', state: 'TX', zip: '78229' }],
+  })),
+  null
+);
+check(
+  'matching name and birth year are accepted despite different city and state',
+  !!them.evaluateRecord(gabrielTarget, card({
+    name: 'Gabriel Fernandes',
+    aliases: ['Gabriel J. Fernandes'],
+    born: 'Born March 1936 (90 years old)',
+    city: 'Houston',
+    state: 'TX',
+    addresses: [{ street: '3711 Medical Dr Apt 918', city: 'Houston', state: 'TX', zip: '78229' }],
+  })),
+  true
+);
+
+const ashuTarget = them.buildTarget({
+  targetName: 'Ashu Noel Fernandes',
+  targetAge: 59,
+  targetYear: 1967,
+  city: 'San Antonio',
+  state: 'TX',
+  addresses: [{ street: '9103 Honey Creek Dr', city: 'San Antonio', state: 'TX', zip: '78230' }],
+});
+const ashuCard = card({
+  name: 'Ashu N. Fernandes',
+  aliases: ['Ashu Noel Fernandes', 'Ashu B. Fernandes', 'Fernandes Ashu'],
+  born: 'Born December 1967 (58 years old)',
+  city: 'Fishers',
+  state: 'IN',
+  addresses: [
+    { street: '11712 Steamboat Dr Apt 2122', city: 'Fishers', state: 'IN', zip: '46037' },
+    { street: '9103 Honey Creek Dr', city: 'San Antonio', state: 'TX', zip: '78230' },
+  ],
+  emails: ['fernandes.ashu@yahoo.com', 'afernandesdls@gmail.com', 'ashu.fernandes@invitae.com'],
+});
+const ashuMatch = them.evaluateRecord(ashuTarget, ashuCard);
+check('exact prior address overrides the card current-location mismatch', !!ashuMatch, true);
+check('Ashu exact-address match returns its emails', ashuMatch && ashuMatch.emails, [
+  'fernandes.ashu@yahoo.com',
+  'afernandesdls@gmail.com',
+  'ashu.fernandes@invitae.com',
+]);
+check(
+  'matching name and birth year do not require the target address on the card',
+  !!them.evaluateRecord(ashuTarget, card({
+    name: 'Ashu N. Fernandes',
+    aliases: ['Ashu Noel Fernandes'],
+    born: 'Born December 1967 (58 years old)',
+    city: 'Fishers',
+    state: 'IN',
+    addresses: [{ street: '11712 Steamboat Dr Apt 2122', city: 'Fishers', state: 'IN', zip: '46037' }],
+  })),
+  true
+);
 
 const aliasCard = card({
   name: 'Deborah Clifton',
@@ -184,24 +486,29 @@ check(
   null
 );
 check(
-  'age 5 years off rejected even with the right year',
-  them.evaluateRecord(target, card({ name: 'Deborah Williams', born: 'Born October 1958 (72 years old)', city: 'Houston', state: 'TX', zip: '77047' })),
-  null
-);
-check(
-  'within +/-3 years accepted',
-  !!them.evaluateRecord(target, card({ name: 'Deborah Williams', born: 'Born October 1960 (65 years old)', city: 'Houston', state: 'TX', zip: '77047' })),
+  'stale age does not override an exact name and birth year',
+  !!them.evaluateRecord(target, card({ name: 'Deborah Williams', born: 'Born October 1958 (72 years old)', city: 'Houston', state: 'TX', zip: '77047' })),
   true
 );
+check(
+  'one-year birth-year difference accepted',
+  !!them.evaluateRecord(target, card({ name: 'Deborah Williams', born: 'Born October 1959 (66 years old)', city: 'Houston', state: 'TX', zip: '77047' })),
+  true
+);
+check(
+  'two-year birth-year difference rejected',
+  them.evaluateRecord(target, card({ name: 'Deborah Williams', born: 'Born October 1960 (65 years old)', city: 'Houston', state: 'TX', zip: '77047' })),
+  null
+);
 
-// gates
-check('different zip rejected', them.evaluateRecord(target, card({ name: 'Deborah Williams', born: CARD_BORN, city: 'Houston', state: 'TX', zip: '77099' })), null);
-check('different state rejected', them.evaluateRecord(target, card({ name: 'Deborah Williams', born: CARD_BORN, city: 'Sacramento', state: 'CA', zip: '77047' })), null);
+// Location is search context, not an identity gate.
+check('different ZIP does not reject matching name and birth year', !!them.evaluateRecord(target, card({ name: 'Deborah Williams', born: CARD_BORN, city: 'Houston', state: 'TX', zip: '77099' })), true);
+check('different state does not reject matching name and birth year', !!them.evaluateRecord(target, card({ name: 'Deborah Williams', born: CARD_BORN, city: 'Sacramento', state: 'CA', zip: '77047' })), true);
 check('first-name-only match rejected', them.evaluateRecord(target, card({ name: 'Michael R. Williams', born: CARD_BORN, city: 'Houston', state: 'TX', zip: '77047' })), null);
 check('different last name rejected', them.evaluateRecord(target, card({ name: 'Deborah Smith', born: CARD_BORN, city: 'Houston', state: 'TX', zip: '77047' })), null);
 
 const partial = them.evaluateRecord(target, card({ name: 'Deborah Williams', born: CARD_BORN, city: 'Houston', state: 'TX', zip: '77047', street: '99 Elm St' }));
-check('exact street match outranks the rest', good.score > partial.score, true);
+check('location does not affect the match score', good.score, partial.score);
 
 const noZipTarget = them.buildTarget({ targetName: 'Deborah Williams', targetAge: 67, targetYear: 1958, state: 'TX', addresses: [] });
 check(
@@ -210,13 +517,52 @@ check(
   true
 );
 check(
-  'card without a DOB has no label to report',
-  !them.evaluateRecord(target, card({ name: 'Deborah Williams', city: 'Houston', state: 'TX', zip: '77047' })).dob,
-  true
+  'target birth year rejects a card with no DOB year',
+  them.evaluateRecord(target, card({ name: 'Deborah Williams', city: 'Houston', state: 'TX', zip: '77047' })),
+  null
 );
 
 // ---- URL builders ----------------------------------------------------------
 console.log('\n== ThatSthem URL builders (background.js) ==\n');
+
+check('email lookup uses a separate named hidden frame', /id="frame-thatsthem-email" name="thatsthem-email"/.test(offscreenHtml), true);
+check('email runner has its own source-to-frame mapping', /'thatsthem-email\.com': \{ frameId: 'frame-thatsthem-email'/.test(offscreenSrc), true);
+check('email lookup persists under a separate session key', bgSrc.includes("const THATSTHEM_EMAIL_STORAGE_KEY = 'thatsthem_email_pending_lookup'"), true);
+check('email lookup reuses the standard name-address-phone plan', /session\.steps = buildThatsThemPlan\(session\)/.test(bgSrc), true);
+check('ThatSthem threshold counts unique email addresses', uniqueEmailAddressCount([
+  'a@gmail.com', 'A@gmail.com', 'b@yahoo.com', 'c@outlook.com'
+]), 3);
+check('two unique ThatSthem emails do not meet the stop threshold', uniqueEmailAddressCount([
+  'a@gmail.com', 'a@gmail.com', 'b@yahoo.com'
+]), 2);
+check('three or more ThatSthem emails stop the matching Google run', /foundEmailCount > 2[\s\S]*?finishGoogleEmailLookup\(true\)/.test(bgSrc), true);
+check(
+  'DOB lookup starts ThatSthem DOB/email scan alongside Unmask',
+  /if \(sources && sources\.thatsthem\) \{\s*startThatsThemEmailLookup\(\{\s*person,\s*record: recordSource/.test(
+    slice(bgSrc, 'async function startDobLookup(person', '// ---------------------------------------------------------------------------\n// ThatSthem phase:')
+  ),
+  true
+);
+check(
+  'DOB button connects the parallel ThatSthem run to the card session',
+  /emailSession\.thatsthemRunning = automationSetting\("dob\.thatsthem"\)/.test(widgetSrc),
+  true
+);
+check(
+  'email runner URL carries a distinct marker',
+  new URL(emailRunnerUrl('https://thatsthem.com/name/Bertha-Hill/NY')).searchParams.get('__vici_email_runner'),
+  '1'
+);
+check(
+  'ThatSthem runner selects email mode from its URL marker',
+  /new URLSearchParams\(window\.location\.search\)\.has\("__vici_email_runner"\)/.test(themSrc),
+  true
+);
+check(
+  'fallback navigations keep the email runner marker',
+  /nextUrl: thatsThemEmailRunnerUrl\(nextStep\.url\)/.test(bgSrc),
+  true
+);
 
 check('name url', bg.buildThatsThemNameUrl('Deborah Williams', 'Houston', 'TX', '77047'), 'https://thatsthem.com/name/Deborah-Williams/Houston-TX-77047');
 check('name url without zip', bg.buildThatsThemNameUrl('Deborah Williams', 'Houston', 'TX', ''), 'https://thatsthem.com/name/Deborah-Williams/Houston-TX');
@@ -234,6 +580,39 @@ check(
   'address url from a combined street string',
   bg.buildThatsThemAddressUrl({ street: '3724 Kildare Dr, Houston, TX 77047' }),
   'https://thatsthem.com/address/3724-Kildare-Dr-Houston-TX-77047'
+);
+check(
+  'Clair Fernandes address URL matches the manual ThatSthem search',
+  bg.buildThatsThemAddressUrl({
+    street: '9103 Honey Creek Dr',
+    city: 'San Antonio',
+    state: 'TX',
+    zip: '78230',
+  }),
+  'https://thatsthem.com/address/9103-Honey-Creek-Dr-San-Antonio-TX-78230'
+);
+const wacoAddress = {
+  street: '1405 Air Base Rd',
+  city: 'WACO 30, Waco',
+  state: 'TX',
+  zip: '76705',
+  full: '1405 Air Base Rd, WACO 30, Waco, Texas 76705',
+};
+check(
+  'Waco address variant moves the embedded trailing number into a trailer unit',
+  bg.buildThatsThemAddressVariants(wacoAddress),
+  [{ street: '1405 Air Base Rd Trlr 30', city: 'Waco', state: 'TX', zip: '76705' }]
+);
+check(
+  'normal city ending in a number is not rewritten without the repeated-city pattern',
+  bg.buildThatsThemAddressVariants({
+    street: '1405 Air Base Rd',
+    city: 'Waco 30',
+    state: 'TX',
+    zip: '76705',
+    full: '1405 Air Base Rd, Waco 30, Texas 76705',
+  }),
+  []
 );
 check('phone url', bg.buildThatsThemPhoneUrl('7132526330'), 'https://thatsthem.com/phone/713-252-6330');
 check('phone url from a formatted number', bg.buildThatsThemPhoneUrl('(713) 252-6330'), 'https://thatsthem.com/phone/713-252-6330');
@@ -254,6 +633,17 @@ check('plan urls', plan.map((s) => s.url), [
   'https://thatsthem.com/address/3724-Kildare-Dr-Houston-TX-77047',
   'https://thatsthem.com/address/99-Elm-St-Houston-TX-77002',
   'https://thatsthem.com/phone/713-252-6330',
+]);
+const wacoPlan = bg.buildThatsThemPlan({
+  targetName: 'Target Person',
+  city: 'Waco',
+  state: 'TX',
+  addresses: [wacoAddress],
+});
+check('Waco trailer-format query follows the original address query', wacoPlan.map((s) => s.url), [
+  'https://thatsthem.com/name/Target-Person/Waco-TX-76705',
+  'https://thatsthem.com/address/1405-Air-Base-Rd-Waco-30-Waco-TX-76705',
+  'https://thatsthem.com/address/1405-Air-Base-Rd-Trlr-30-Waco-TX-76705',
 ]);
 check('plan label describes the step', plan[0].label, 'name (Deborah Williams in Houston TX 77047)');
 check('empty session plans nothing', bg.buildThatsThemPlan({ addresses: [] }).length, 0);
@@ -290,7 +680,7 @@ const loughryMatch = them.evaluateRecord(loughryTarget, loughryCard);
 check('the real card is accepted', !!loughryMatch, true);
 check('the month is extracted, not just the year', loughryMatch && loughryMatch.dob.label, 'December 1962');
 check('zip + state come from the card', [loughryMatch.zip, loughryMatch.state, loughryMatch.city], ['44321', 'OH', 'Copley']);
-check('years 1963 vs 1962 stay inside the +/-3 window', loughryMatch && loughryMatch.score >= 80, true);
+check('years 1963 vs 1962 stay inside the +/-1 window', loughryMatch && loughryMatch.score >= 80, true);
 
 // a year-only card for the same person must lose against the full date
 const yearOnlyCard = card({ name: 'Charles Loughry', born: 'Born 1962', city: 'Copley', state: 'OH', zip: '44321' });
@@ -335,7 +725,7 @@ check(
   realMatch && realMatch.addresses.some((a) => a.zip === '44321'),
   true
 );
-check('the street came from a previous address too', realMatch && realMatch.score >= 150, true);
+check('the card is accepted independently of street scoring', !!realMatch, true);
 
 // the other three cards on that page are different (older) people
 [
@@ -353,7 +743,7 @@ check('the street came from a previous address too', realMatch && realMatch.scor
   check(`card with "${born}" is rejected`, them.evaluateRecord(pageFourTarget, other), null);
 });
 
-// a same-name card whose addresses never touch the record's zip is still rejected
+// A same-name card can match even when its location history differs.
 const wrongZipCard = card({
   name: 'Charles Loughry',
   born: 'Born December 1962 (63 years old)',
@@ -361,7 +751,7 @@ const wrongZipCard = card({
   state: 'OH',
   addresses: [{ street: '99 Elm St', city: 'Dayton', state: 'OH', zip: '45402' }],
 });
-check('a card with no matching zip anywhere is rejected', them.evaluateRecord(pageFourTarget, wrongZipCard), null);
+check('a card with no matching ZIP still matches its name and birth year', !!them.evaluateRecord(pageFourTarget, wrongZipCard), true);
 
 // ---- DOM layer: readRecord() against the real card structure ---------------
 console.log('\n== ThatSthem DOM extraction (card markup) ==\n');
@@ -373,7 +763,18 @@ const addressWrapper = {
 };
 const addressHeading = {
   textContent: 'Current Address:',
-  parentElement: { querySelectorAll: (sel) => (sel === 'span[x-href]' ? [addressWrapper] : []) },
+  parentElement: { querySelectorAll: (sel) => (sel === 'span' ? [addressWrapper] : []) },
+};
+const maskedEmailLinks = ['hillb@bellsouth.net', 'unicab@aol.com'].map((email) => ({
+  getAttribute: (name) => name === 'x-href' ? emailHref(email) : '',
+}));
+const emailHeading = {
+  textContent: 'Email Addresses:',
+  parentElement: {
+    querySelectorAll: (sel) => (
+      sel === 'span[x-href], a[x-href], span[data-href], a[data-href]' ? maskedEmailLinks : []
+    ),
+  },
 };
 
 const aliasNames = [
@@ -403,7 +804,7 @@ const liveCard = {
         paragraph(' Known as: ' + aliasNames.join(' • '), aliasNames.map((n) => ({ textContent: ' ' + n + ' ' }))),
       ];
     }
-    if (sel === 'h3') return [addressHeading];
+    if (sel === 'h3') return [addressHeading, emailHeading];
     return [];
   },
 };
@@ -414,7 +815,26 @@ check('readRecord: DOB + age', [liveRecord.dob.label, liveRecord.age], ['October
 check('readRecord: location', [liveRecord.city, liveRecord.state], ['Houston', 'TX']);
 check('readRecord: address + zip', [liveRecord.street, liveRecord.zip], ['3724 Kildare Dr', '77047']);
 check('readRecord: aliases from the Known-as line', [liveRecord.aliases.length, liveRecord.aliases[0]], [7, 'Deborah D. Clifton']);
+check('readRecord: decodes masked email links from the matching card', liveRecord.emails, [
+  'hillb@bellsouth.net',
+  'unicab@aol.com',
+]);
 check('readRecord -> match pipeline reports the card DOB', them.evaluateRecord(target, liveRecord).dob.label, 'October 1958');
+
+const plainHoneyCreekWrapper = {
+  querySelectorAll: (sel) => (
+    sel === 'div'
+      ? [{ textContent: ' 9103 Honey Creek Dr ' }, { textContent: 'San Antonio, TX 78230' }]
+      : []
+  ),
+};
+check(
+  'readAddressList includes unlinked previous-address entries',
+  them.readAddressList({
+    querySelectorAll: (sel) => (sel === 'span' ? [plainHoneyCreekWrapper] : []),
+  }),
+  [{ street: '9103 Honey Creek Dr', city: 'San Antonio', state: 'TX', zip: '78230' }]
+);
 
 // card whose own name differs but lists our person under "Known as"
 const aliasOnlyCard = {
@@ -630,4 +1050,3 @@ check('the run does not wait forever', them.CHALLENGE_WAIT_MS <= 600000, true);
 
 console.log(`\n=== TOTAL: ${passed} passed, ${failed} failed ===\n`);
 process.exit(failed === 0 ? 0 : 1);
-

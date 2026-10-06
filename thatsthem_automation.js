@@ -9,7 +9,8 @@
 // The result cards already carry the date of birth, e.g.
 //   <p> Born October 1958 (67 years old) </p>
 // so the DOB is read straight from the search results - no profile page has to be
-// opened. Name / age(DOB) / zip matching is the same as the Unmask automation's.
+// opened. Cards are matched by name / "Known as" aliases and birth year; location
+// and age are not used as identity gates.
 
 (function () {
   "use strict";
@@ -18,10 +19,14 @@
   window.__thatsThemAutomationLoaded = true;
 
   var SESSION_KEY = "thatsthem_pending_lookup";
+  var EMAIL_SESSION_KEY = "thatsthem_email_pending_lookup";
+  var IS_EMAIL_RUNNER =
+    window.parent !== window &&
+    (window.name === "thatsthem-email" || new URLSearchParams(window.location.search).has("__vici_email_runner"));
 
   // ---- same rules as unmask_automation.js ----------------------------------
   var MATCH_AGE_TOLERANCE = 3;
-  var DOB_YEAR_TOLERANCE = 3;
+  var DOB_YEAR_TOLERANCE = 1;
   var MIN_BIRTH_YEAR = 1912;
   var MAX_PLAUSIBLE_AGE = 110;
   var ACCEPT_SCORE = 80;
@@ -29,6 +34,7 @@
   // ---- timing --------------------------------------------------------------
   var TICK_MS = 150; // how often the page state is re-checked
   var CARDS_SETTLE_MS = 500; // unchanged card list for this long -> move on
+  var EMAIL_CARD_SETTLE_MS = 2000;
   var PAGE_TIMEOUT_MS = 7000; // loaded page that renders nothing at all
   var PAGE_LOADING_TIMEOUT_MS = 12000; // ...while the document is still loading
   // How long thatSthem's check is left to the user before the run moves on. Nothing is ever
@@ -44,6 +50,44 @@
     try {
       chrome.runtime.sendMessage({ action: "FOCUS_LOOKUP_TAB" });
     } catch (e) {}
+  }
+
+  function decodeEmailHref(element) {
+    var encoded = element && (element.getAttribute("x-href") || element.getAttribute("data-href"));
+    if (!encoded) return "";
+    try {
+      var decoded = atob(encoded);
+      var match = decoded.match(/(?:^|\/)email\/([^/?#]+)/i);
+      if (!match) return "";
+      var email = decodeURIComponent(match[1]).trim().toLowerCase();
+      return /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(email) ? email : "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function selectEmailAddresses(addresses) {
+    var unique = [];
+    var seen = Object.create(null);
+    (addresses || []).forEach(function (address) {
+      var normalized = String(address || "").trim().toLowerCase();
+      if (/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9.-]+\.[a-z]{2,}$/i.test(normalized) && !seen[normalized]) {
+        seen[normalized] = true;
+        unique.push(normalized);
+      }
+    });
+
+    return unique;
+  }
+
+  function readEmailAddresses(card) {
+    var heading = Array.from(card.querySelectorAll("h3")).find(function (element) {
+      return /^email addresses:?$/i.test(cleanText(element.textContent));
+    });
+    if (!heading) return [];
+    var container = heading.parentElement || heading;
+    var links = Array.from(container.querySelectorAll("span[x-href], a[x-href], span[data-href], a[data-href]"));
+    return selectEmailAddresses(links.map(decodeEmailHref).filter(Boolean));
   }
 
   // Tells the background the check is done with: the tab it was solved in is put back into the
@@ -231,7 +275,8 @@
         step: step,
         totalSteps: totalSteps,
         message: message,
-        record: sessionRecord()
+        record: sessionRecord(),
+        runId: currentSession && currentSession.runId
       });
     } catch (e) {}
   }
@@ -456,6 +501,34 @@
     return 0;
   }
 
+  function nameSimilarity(left, right) {
+    var a = String(left || "");
+    var b = String(right || "");
+    if (!a || !b) return 0;
+    var previous = [];
+    for (var j = 0; j <= b.length; j++) previous[j] = j;
+    for (var i = 1; i <= a.length; i++) {
+      var current = [i];
+      for (var k = 1; k <= b.length; k++) {
+        current[k] = Math.min(
+          current[k - 1] + 1,
+          previous[k] + 1,
+          previous[k - 1] + (a.charAt(i - 1) === b.charAt(k - 1) ? 0 : 1)
+        );
+      }
+      previous = current;
+    }
+    return 1 - previous[b.length] / Math.max(a.length, b.length);
+  }
+
+  function nearNameScore(target, candidate) {
+    if (!target.first || !candidate.first || !target.last || !candidate.last) return 0;
+    if (target.first.charAt(0) !== candidate.first.charAt(0)) return 0;
+    if (nameSimilarity(target.first, candidate.first) < 0.6) return 0;
+    if (nameSimilarity(target.last, candidate.last) < 0.78) return 0;
+    return 70;
+  }
+
   function matchAgeScore(targetAge, cardAge) {
     if (!targetAge || !cardAge) return 15; // Unknown age: neutral
     var diff = Math.abs(targetAge - cardAge);
@@ -613,8 +686,9 @@
   // check has to look at the whole list, not just the current address.
   function readAddressList(container) {
     var addresses = [];
-    var wrappers = Array.from(container.querySelectorAll("span[x-href]"));
-    if (wrappers.length === 0) wrappers = Array.from(container.querySelectorAll("span"));
+    var wrappers = Array.from(container.querySelectorAll("span")).filter(function (wrapper) {
+      return wrapper.querySelectorAll("div").length >= 2;
+    });
 
     wrappers.forEach(function (wrapper) {
       var lines = Array.from(wrapper.querySelectorAll("div"))
@@ -657,7 +731,8 @@
       state: "",
       zip: "",
       street: "",
-      addresses: []
+      addresses: [],
+      emails: readEmailAddresses(card)
     };
 
     // "Lives in Houston, TX" / "Born October 1958 (67 years old)" / "Known as: ..."
@@ -738,6 +813,12 @@
       .filter(Boolean);
   }
 
+  function emailRecordsFingerprint(records) {
+    return recordsFingerprint(records) + "|" + (records || []).map(function (record) {
+      return (record.emails || []).join(",");
+    }).join("|");
+  }
+
   function isNoResultsPage() {
     var headings = Array.from(document.querySelectorAll("h1, h2, h3"));
     for (var i = 0; i < headings.length; i++) {
@@ -760,65 +841,40 @@
     return /no results found/i.test(body);
   }
 
-  // ---- matching: name + age/DOB + zip, exactly like the Unmask run ---------
+  // ---- matching: name / alias + birth year -------------------------------
   function evaluateRecord(target, record) {
     var directScore = matchNameScore(target.details, record.nameDetails);
     var isDirect = directScore > 0;
+    var fuzzyScore = isDirect ? 0 : nearNameScore(target.details, record.nameDetails);
     var bestAliasScore = 0;
     var bestAliasName = "";
 
     record.aliases.forEach(function (alias) {
-      var aliasScore = evaluateAliasMatch(target.details, alias, target.age, record.age);
+      var aliasScore = evaluateAliasMatch(target.details, alias, null, null);
       if (aliasScore > bestAliasScore) {
         bestAliasScore = aliasScore;
         bestAliasName = alias;
       }
     });
 
-    // No name match at all -> this card is somebody else
-    if (!isDirect && bestAliasScore < ACCEPT_SCORE) return null;
+    // Search records carry an expected birth year. Age and location can be stale or
+    // describe a previous residence, so identity matching uses name and birth year.
+    if (target.year && (!record.year || Math.abs(target.year - record.year) > DOB_YEAR_TOLERANCE)) return null;
 
-    // Age / DOB gate: a 1958 card can never answer a "72 yrs (1954)" record
-    if (target.age && record.age && !isAgeWithinTolerance(target.age, record.age)) return null;
-    if (target.year && record.year && Math.abs(target.year - record.year) > DOB_YEAR_TOLERANCE) return null;
+    var aliasMatch = bestAliasScore >= ACCEPT_SCORE;
+    var nearNameMatch = fuzzyScore > 0 && !!target.year && !!record.year;
+    if (!isDirect && !aliasMatch && !nearNameMatch) return null;
 
-    // Zip / street gate: the record's address counts when it appears ANYWHERE on the
-    // card - current address or any previous address. People move, and the record often
-    // holds the older address, so checking only the current zip rejects the right card.
-    var cardZips = (record.addresses || [])
-      .map(function (addr) {
-        return addr.zip;
-      })
-      .filter(Boolean);
-    if (target.zip && cardZips.length > 0 && cardZips.indexOf(target.zip) === -1) return null;
-
-    var cardStreets = (record.addresses || [])
-      .map(function (addr) {
-        return addr.street;
-      })
-      .filter(Boolean);
-    var streetMatches = !!target.street && cardStreets.some(function (s) {
-      var a = streetKey(s);
-      var b = streetKey(target.street);
-      return a && b && (a === b || a.indexOf(b) !== -1 || b.indexOf(a) !== -1);
-    });
-
-    if (target.state && record.state && target.state !== record.state) return null;
-
-    var score = isDirect ? directScore : bestAliasScore;
-    score += matchAgeScore(target.age, record.age);
+    var score = Math.max(directScore, bestAliasScore, fuzzyScore);
+    if (target.year && record.year) score += target.year === record.year ? 20 : 10;
     // A date with a month (and day) is far more useful than a bare birth year, so it
     // wins when a page holds both kinds of card.
     if (record.dob && record.dob.month) score += 25;
-    if (target.zip && cardZips.indexOf(target.zip) !== -1) score += 25;
-    if (target.city && record.city && sameWord(target.city, record.city)) score += 10;
-    if (target.state && record.state && target.state === record.state) score += 5;
-    if (streetMatches) score += 30;
 
     return {
       score: score,
       name: record.name,
-      matchedAs: isDirect ? record.name : bestAliasName,
+      matchedAs: aliasMatch && bestAliasScore > directScore ? bestAliasName : record.name,
       isDirect: isDirect,
       dob: record.dob,
       year: record.year,
@@ -827,7 +883,8 @@
       state: record.state,
       zip: record.zip,
       street: record.street,
-      addresses: record.addresses
+      addresses: record.addresses,
+      emails: record.emails || []
     };
   }
 
@@ -866,8 +923,13 @@
   confirmRunnerIsOurs(function (isOurs) {
     if (!isOurs) return;
 
-    chrome.storage.local.get([SESSION_KEY], function (res) {
+    chrome.storage.local.get([SESSION_KEY, EMAIL_SESSION_KEY], function (res) {
+      var emailSession = res ? res[EMAIL_SESSION_KEY] : null;
       var session = res ? res[SESSION_KEY] : null;
+      if (IS_EMAIL_RUNNER) {
+        if (emailSession && emailSession.status === "searching") runThatsThemEmail(emailSession);
+        return;
+      }
       if (!session || session.stage !== "thatsthem") return;
       if (window.location.pathname === "/" || window.location.pathname === "") return;
       runThatsThem(session);
@@ -1023,6 +1085,177 @@
         next("ThatSthem: page timed out. Checking next...");
       }
     }, TICK_MS);
+  }
+
+  function runThatsThemEmail(session) {
+    currentSession = session;
+    var target = buildTarget(session);
+    if (!target.details.last || !Array.isArray(session.steps) || !session.steps.length) {
+      sendEmailEmpty("", "ThatSthem has no usable name, address, or phone to search.");
+      return;
+    }
+
+    var state = {
+      processed: false,
+      startedAt: Date.now(),
+      cardsSeenAt: 0,
+      cardsSignature: "",
+      bestDob: session.bestDob || "",
+      challengeAt: 0,
+      challengeReported: false
+    };
+    var interval = null;
+    var step = session.steps[session.stepIndex] || {};
+    var where = [target.city, target.state].filter(Boolean).join(", ");
+    sendEmailProgress(
+      session.stepIndex + 1,
+      session.steps.length,
+      "ThatSthem: matching " + (target.name || "target") + (where ? " (" + where + ")" : "") + "..."
+    );
+
+    function advance(message) {
+      if (state.processed) return;
+      state.processed = true;
+      if (interval) clearInterval(interval);
+      requestNextThatsThemEmailStep(session, state.bestDob, message);
+    }
+
+    interval = setInterval(function () {
+      if (state.processed) return;
+
+      var records = readRecords();
+      if (records.length) {
+        var fingerprint = emailRecordsFingerprint(records);
+        if (fingerprint !== state.cardsSignature) {
+          state.cardsSignature = fingerprint;
+          state.cardsSeenAt = Date.now();
+        }
+        if (!state.cardsSeenAt) state.cardsSeenAt = Date.now();
+
+        var matches = records.map(function (record) {
+          return evaluateRecord(target, record);
+        }).filter(function (match) {
+          return match && match.score >= ACCEPT_SCORE;
+        }).sort(function (a, b) {
+          return b.score - a.score;
+        });
+        var best = matches[0] || null;
+        if (best) {
+          if (!state.bestDob && best.dob && best.dob.label) state.bestDob = best.dob.label;
+          var emails = selectEmailAddresses(best.emails || []);
+          if (emails.length) {
+            state.processed = true;
+            if (interval) clearInterval(interval);
+            sendEmailResult(emails, state.bestDob, true);
+            return;
+          }
+          if (Date.now() - state.cardsSeenAt > EMAIL_CARD_SETTLE_MS) {
+            advance("ThatSthem matched the person but found no visible email; checking the next search.");
+          }
+          return;
+        }
+        if (Date.now() - state.cardsSeenAt > EMAIL_CARD_SETTLE_MS) {
+          advance("ThatSthem: no matching record here. Checking the next search...");
+        }
+        return;
+      }
+
+      if (isNoResultsPage()) {
+        advance("ThatSthem: no records found. Checking the next search...");
+        return;
+      }
+
+      if (isBrowserCheckPage()) {
+        if (!state.challengeReported) {
+          state.challengeReported = true;
+          sendEmailProgress(
+            session.stepIndex + 1,
+            session.steps.length,
+            "ThatSthem is showing a security check; Google search continues in parallel."
+          );
+        }
+        if (!state.challengeAt) state.challengeAt = Date.now();
+        if (Date.now() - state.challengeAt > 45000) {
+          advance("ThatSthem security check was not cleared; checking the next search.");
+        }
+        return;
+      }
+
+      if (Date.now() - state.startedAt > PAGE_TIMEOUT_MS) {
+        advance("ThatSthem page timed out. Checking the next search...");
+      }
+    }, TICK_MS);
+  }
+
+  function sendEmailProgress(step, totalSteps, message) {
+    try {
+      chrome.runtime.sendMessage({
+        action: "THATSTHEM_EMAIL_PROGRESS",
+        step: step,
+        totalSteps: totalSteps,
+        message: message,
+        record: sessionRecord()
+      });
+    } catch (error) {}
+  }
+
+  function sendEmailResult(emails, dob, done) {
+    try {
+      chrome.runtime.sendMessage({
+        action: "THATSTHEM_EMAIL_RESULT",
+        emails: emails || [],
+        dob: dob || "",
+        done: !!done,
+        record: sessionRecord(),
+        runId: currentSession && currentSession.runId
+      });
+    } catch (error) {}
+  }
+
+  function sendEmailEmpty(dob, message) {
+    try {
+      chrome.runtime.sendMessage({
+        action: "THATSTHEM_EMAIL_EMPTY",
+        dob: dob || "",
+        message: message || "ThatSthem found no matching email address.",
+        record: sessionRecord(),
+        runId: currentSession && currentSession.runId
+      });
+    } catch (error) {}
+  }
+
+  function requestNextThatsThemEmailStep(session, bestDob, message, attempt) {
+    var tries = attempt || 0;
+    try {
+      chrome.runtime.sendMessage(
+        {
+          action: "THATSTHEM_EMAIL_NEXT",
+          record: session.record || "",
+          bestDob: bestDob || "",
+          message: message || "",
+          runId: session.runId,
+          force: tries >= 3
+        },
+        function (response) {
+          if (chrome.runtime.lastError) {
+            sendEmailEmpty(bestDob, "ThatSthem could not continue its email search.");
+            return;
+          }
+          if (response && response.nextUrl) {
+            if (window.location.href !== response.nextUrl) window.location.href = response.nextUrl;
+            return;
+          }
+          if (response && response.error) {
+            return;
+          }
+          if (response && response.ignored && tries < 4) {
+            setTimeout(function () {
+              requestNextThatsThemEmailStep(session, bestDob, "", tries + 1);
+            }, 500);
+          }
+        }
+      );
+    } catch (error) {}
   }
 
   // The hand-back for a run that was promoted into a tab so the user could clear a check: once the page

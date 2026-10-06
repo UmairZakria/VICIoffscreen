@@ -1392,6 +1392,11 @@
       gap: 4px;
     }
 
+    .email-show-more-btn {
+      align-self: flex-start;
+      margin-top: 2px;
+    }
+
     .email-badge-item {
       display: flex;
       align-items: center;
@@ -3543,6 +3548,7 @@
               <span class="sub-label" id="email-results-count-label">Email Addresses</span>
             </div>
             <div class="email-badges-container" id="email-badges-container"></div>
+            <button class="mini-btn email-show-more-btn hidden" id="email-show-more-btn" type="button">Show more</button>
           </div>
         </div>
       `;
@@ -3737,7 +3743,7 @@
 
       // If this person already had emails discovered, render them
       if (p.emails && p.emails.length > 0) {
-        renderDiscoveredEmails(source, p.emails);
+        renderDiscoveredEmails(source, p.emails, p);
       } else {
         const emailBox = recordElement(source, "card-email-results");
         if (emailBox) emailBox.classList.add("hidden");
@@ -4599,18 +4605,90 @@
     }
   }
 
-  function renderDiscoveredEmails(recordSource, emails) {
+  function rankEmailAddresses(emails, person) {
+    const nameParts = String(person?.name || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .filter((part) => part.length >= 3);
+    const nameTokens = new Set(nameParts.length > 2 ? [nameParts[0], nameParts[nameParts.length - 1]] : nameParts);
+    const years = new Set();
+    [person?.age, person?.dob, person?.dob1, person?.dob2, person?.dob3, person?.thatsthemEmailDob]
+      .forEach((value) => {
+        const matches = String(value || "").match(/\b(?:19|20)\d{2}\b/g) || [];
+        matches.forEach((year) => years.add(year));
+      });
+    const preferredDomains = new Set(["gmail.com", "yahoo.com", "icloud.com", "outlook.com", "hotmail.com"]);
+    const commonDomains = new Set([
+      "aol.com", "live.com", "msn.com", "comcast.net", "att.net", "bellsouth.net",
+      "verizon.net", "ymail.com", "proton.me", "protonmail.com"
+    ]);
+    const seen = new Set();
+
+    return (Array.isArray(emails) ? emails : [])
+      .map((value, index) => {
+        const email = String(value || "").trim();
+        const normalized = email.toLowerCase();
+        if (!email || seen.has(normalized)) return null;
+        seen.add(normalized);
+
+        const separator = normalized.lastIndexOf("@");
+        const localPart = separator > 0 ? normalized.slice(0, separator) : normalized;
+        const domain = separator > 0 ? normalized.slice(separator + 1) : "";
+        let hasIdentityEvidence = false;
+        nameTokens.forEach((token) => {
+          if (localPart.includes(token)) hasIdentityEvidence = true;
+        });
+        years.forEach((year) => {
+          if (localPart.includes(year)) hasIdentityEvidence = true;
+        });
+        let score = hasIdentityEvidence ? 1000 : 0;
+        nameTokens.forEach((token) => {
+          if (localPart.includes(token)) score += 200;
+        });
+        years.forEach((year) => {
+          if (localPart.includes(year)) score += 150;
+        });
+        if (preferredDomains.has(domain)) score += 40;
+        else if (commonDomains.has(domain)) score += 20;
+        if (/^(?:x{3,}|test|unknown|none)\d*$/i.test(localPart)) score -= 50;
+
+        return { email, index, score };
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.score - a.score || a.index - b.index)
+      .map((entry) => entry.email);
+  }
+
+  function visibleEmailAddresses(emails, person, showAll) {
+    const ranked = rankEmailAddresses(emails, person);
+    return {
+      ranked,
+      visible: showAll ? ranked : ranked.slice(0, 6),
+      remaining: Math.max(0, ranked.length - 6)
+    };
+  }
+
+  function renderDiscoveredEmails(recordSource, emails, person) {
     const box = recordElement(recordSource, "card-email-results");
     const container = recordElement(recordSource, "email-badges-container");
+    const showMoreButton = recordElement(recordSource, "email-show-more-btn");
 
-    if (!box || !container) return;
+    if (!box || !container || !showMoreButton) return;
 
     if (!emails || emails.length === 0) {
       box.classList.add("hidden");
+      showMoreButton.classList.add("hidden");
       return;
     }
 
-    container.innerHTML = emails
+    const isExpanded = !!(person && person.showAllEmails);
+    const emailDisplay = visibleEmailAddresses(emails, person, isExpanded);
+    const visibleEmails = emailDisplay.visible;
+    const remainingCount = emailDisplay.remaining;
+
+    container.innerHTML = visibleEmails
       .map(
         (em) => `
       <div class="email-badge-item">
@@ -4630,7 +4708,118 @@
       });
     });
 
+    showMoreButton.classList.toggle("hidden", emailDisplay.ranked.length <= 6);
+    showMoreButton.textContent = isExpanded ? "Show less" : `Show more (${remainingCount})`;
+    showMoreButton.onclick = () => {
+      if (person) person.showAllEmails = !person.showAllEmails;
+      renderDiscoveredEmails(recordSource, emails, person);
+    };
+
     box.classList.remove("hidden");
+  }
+
+  function emailLookupIsRunning(session) {
+    return !!(session && (session.googleRunning || session.thatsthemRunning));
+  }
+
+  function mergeUniqueEmails(existing, incoming) {
+    const merged = [];
+    const seen = new Set();
+    [...(Array.isArray(existing) ? existing : []), ...(Array.isArray(incoming) ? incoming : [])]
+      .forEach((value) => {
+        const email = String(value || "").trim();
+        const key = email.toLowerCase();
+        if (email && !seen.has(key)) {
+          seen.add(key);
+          merged.push(email);
+        }
+      });
+    return merged;
+  }
+
+  function mergeDobLookupResult(person, msg) {
+    const firstDob = msg.dob1 || (msg.dob2 ? "" : msg.dob);
+    const secondDob = msg.dob2 || "";
+    const bestDob = secondDob || firstDob || msg.dob;
+    const dob1Source = msg.dob1Source || msg.source || "unmask.com";
+    const dob1Note = msg.dob1Note || (msg.yearOnly ? "year only" : msg.placeholder ? "month/day unknown" : "");
+    const dob2Source = msg.dob2Source || (secondDob ? msg.source || "" : "");
+
+    if (person) {
+      if (firstDob) {
+        person.dob1 = firstDob;
+        person.dob1Source = dob1Source;
+        person.dob1Note = dob1Note;
+      }
+      if (secondDob) {
+        person.dob2 = secondDob;
+        person.dob2Source = dob2Source;
+      }
+      if (bestDob) person.dob = bestDob;
+      if (Array.isArray(msg.emails) && msg.emails.length > 0) {
+        person.emails = mergeUniqueEmails(person.emails, msg.emails);
+      }
+    }
+
+    return {
+      firstDob: person && person.dob1 ? person.dob1 : firstDob,
+      firstDobSource: person && person.dob1Source ? person.dob1Source : dob1Source,
+      firstDobNote: person && person.dob1Note ? person.dob1Note : dob1Note,
+      secondDob: person && person.dob2 ? person.dob2 : secondDob,
+      secondDobSource: person && person.dob2Source ? person.dob2Source : dob2Source,
+      bestDob,
+      emails: person && Array.isArray(person.emails) ? person.emails : (msg.emails || [])
+    };
+  }
+
+  function renderEmailLookupDob(record, person, dob) {
+    if (!person || !dob) return;
+    person.thatsthemEmailDob = dob;
+    if (!person.dob2) {
+      person.dob2 = dob;
+      person.dob2Source = "thatsthem.com";
+    }
+    if (!person.dob) person.dob = dob;
+
+    renderDiscoveredDob(record, {
+      dob1: person.dob1 || "",
+      dob1Source: person.dob1Source || "",
+      dob1Note: person.dob1Note || "",
+      dob2: person.dob2 || "",
+      dob2Source: person.dob2Source || "",
+      dob3: person.dob3 || "",
+      dob3Source: person.dob3Source || "",
+      dob3Note: person.dob3Note || ""
+    });
+  }
+
+  function updateEmailLookupProgress(record, session, completeMessage, emptyMessage) {
+    if (emailLookupIsRunning(session)) {
+      const waitingFor = [
+        session.googleRunning ? "Google" : "",
+        session.thatsthemRunning ? "ThatSthem" : ""
+      ].filter(Boolean).join(" and ");
+      showVehicleProgress(
+        "EMAIL",
+        80,
+        completeMessage ? `${completeMessage} ${waitingFor} search continues...` : `Searching ${waitingFor} for email...`,
+        false,
+        record
+      );
+      return;
+    }
+
+    showVehicleProgress("EMAIL", 100, completeMessage || emptyMessage || "Email search complete.", !completeMessage, record);
+    setTimeout(() => hideVehicleProgress("EMAIL", record), 4000);
+  }
+
+  function emailFoundSummary(session) {
+    const count = session && session.person && Array.isArray(session.person.emails)
+      ? mergeUniqueEmails(session.person.emails, []).length
+      : 0;
+    return count
+      ? `Email search complete: ${count} ${count === 1 ? "address" : "addresses"} found.`
+      : "";
   }
 
   // A DOB run belongs to the record card that asked for it, and every line the run produces has to
@@ -4676,6 +4865,15 @@
 
   function startDobAutomation(person, recordSource) {
     const record = recordSource || "";
+    const existingEmailSession = emailSessionsByRecord[record];
+    const emailSession = existingEmailSession || { person, record };
+    emailSession.person = person;
+    emailSession.googleRunning = false;
+    emailSession.thatsthemRunning = automationSetting("dob.thatsthem");
+    emailSessionsByRecord[record] = emailSession;
+    activeEmailSession = emailSession;
+    lookupRecordByProvider.email = record;
+
     // Only one DOB run exists at a time, so a run the other card started cannot be finished any
     // more: its progress box is closed instead of being left spinning forever.
     const supersededRecord = lookupRecord("dob");
@@ -4715,7 +4913,12 @@
   // answer, so the card is never left spinning when Google names no address.
   function startGoogleEmailAutomation(person, recordSource) {
     const record = recordSource || "";
-    const session = { person, record };
+    const session = {
+      person,
+      record,
+      googleRunning: true,
+      thatsthemRunning: automationSetting("dob.thatsthem")
+    };
     emailSessionsByRecord[record] = session;
     activeEmailSession = session;
     lookupRecordByProvider.email = record;
@@ -4822,28 +5025,8 @@
     } else if (msg.action === "DOB_LOOKUP_SUCCESS") {
       const record = dobMessageRecord(msg);
       const session = dobSessionFor(record);
-      const firstDob = msg.dob1 || (msg.dob2 ? "" : msg.dob);
-      const secondDob = msg.dob2 || "";
-      const bestDob = secondDob || firstDob || msg.dob;
-      const dob1Source = msg.dob1Source || msg.source || "unmask.com";
-      const dob1Note = msg.dob1Note || (msg.yearOnly ? "year only" : msg.placeholder ? "month/day unknown" : "");
-      const dob2Source = msg.dob2Source || (secondDob ? msg.source || "" : "");
-
-      if (session && session.person) {
-        if (firstDob) {
-          session.person.dob1 = firstDob;
-          session.person.dob1Source = dob1Source;
-          session.person.dob1Note = dob1Note;
-        }
-        if (secondDob) {
-          session.person.dob2 = secondDob;
-          session.person.dob2Source = dob2Source;
-        }
-        session.person.dob = bestDob;
-        if (msg.emails && msg.emails.length > 0) {
-          session.person.emails = msg.emails;
-        }
-      }
+      const person = session && session.person ? session.person : null;
+      const merged = mergeDobLookupResult(person, msg);
 
       // The AI row lives on the person as dob3, and it has to be carried into every re-render: this
       // handler draws the Unmask / ThatSthem dates, so without it the AI answer that arrived first
@@ -4853,30 +5036,32 @@
       const aiNote = session && session.person ? session.person.dob3Note || "" : "";
 
       renderDiscoveredDob(record, {
-        dob1: firstDob,
-        dob1Source,
-        dob1Note,
-        dob2: secondDob,
-        dob2Source,
+        dob1: merged.firstDob,
+        dob1Source: merged.firstDobSource,
+        dob1Note: merged.firstDobNote,
+        dob2: merged.secondDob,
+        dob2Source: merged.secondDobSource,
         dob3: aiDob,
         dob3Source: aiSource,
         dob3Note: aiNote
       });
-      if (msg.emails && msg.emails.length > 0) {
-        renderDiscoveredEmails(record, msg.emails);
+      if (person && person.emails && person.emails.length > 0) {
+        renderDiscoveredEmails(record, person.emails, person);
+      } else if (msg.emails && msg.emails.length > 0) {
+        renderDiscoveredEmails(record, msg.emails, person);
       }
-      copyText(bestDob);
+      copyText(merged.bestDob);
 
       if (msg.searchContinues) {
         // Only a placeholder / year-only value so far - DOB 1 is already on screen and
         // the run keeps looking for a fuller date.
-        showVehicleProgress("DOB", 60, `${dob1Source === "thatsthem.com" ? "ThatSthem" : "Unmask"} ${firstDob} - checking for a fuller date...`, false, record);
+        showVehicleProgress("DOB", 60, `${merged.firstDobSource === "thatsthem.com" ? "ThatSthem" : "Unmask"} ${merged.firstDob} - checking for a fuller date...`, false, record);
       } else {
         showVehicleProgress(
           "DOB",
           100,
-          secondDob
-            ? `DOB 1 (${dob1Source === "thatsthem.com" ? "ThatSthem" : "Unmask"}): ${firstDob}  •  DOB 2 (ThatSthem): ${secondDob}`
+          merged.secondDob
+            ? `DOB 1 (${merged.firstDobSource === "thatsthem.com" ? "ThatSthem" : "Unmask"}): ${merged.firstDob}  •  DOB 2 (ThatSthem): ${merged.secondDob}`
             : `DOB discovered: ${msg.dob}!`,
           false,
           record
@@ -4929,33 +5114,73 @@
       const found = Array.isArray(msg.emails) ? msg.emails.filter(Boolean) : [];
 
       if (person && found.length > 0) {
-        const merged = Array.isArray(person.emails) ? person.emails.slice() : [];
-        found.forEach((email) => {
-          if (merged.indexOf(email) < 0) merged.push(email);
-        });
-        person.emails = merged;
+        person.emails = mergeUniqueEmails(person.emails, found);
       }
 
+      if (session && !msg.continueSearch) session.googleRunning = false;
       const all = person && Array.isArray(person.emails) && person.emails.length > 0 ? person.emails : found;
-      if (all.length > 0) renderDiscoveredEmails(record, all);
+      if (all.length > 0) renderDiscoveredEmails(record, all, person);
 
-      showVehicleProgress(
-        "EMAIL",
-        100,
-        found.length > 0 ? `Email discovered: ${found[0]}` : "No public email address was named for this address.",
-        found.length === 0,
-        record
-      );
-      setTimeout(() => {
-        hideVehicleProgress("EMAIL", record);
-      }, 4000);
+      const completeMessage = found.length > 0
+        ? (msg.continueSearch
+          ? `Possible email found: ${found[0]}.`
+          : `Google found ${found.length === 1 ? "an email" : `${found.length} emails`}.`)
+        : "";
+      const emptyMessage = "Google found no public email address.";
+      updateEmailLookupProgress(record, session, completeMessage, emptyMessage);
       updateRawSummary();
     } else if (msg.action === "GOOGLE_EMAIL_EMPTY") {
       const record = emailMessageRecord(msg);
-      showVehicleProgress("EMAIL", 100, msg.message || "AI found no email address", true, record);
-      setTimeout(() => {
-        hideVehicleProgress("EMAIL", record);
-      }, 4000);
+      const session = emailSessionsByRecord[record] || activeEmailSession || null;
+      if (session) session.googleRunning = false;
+      updateEmailLookupProgress(
+        record,
+        session,
+        emailFoundSummary(session),
+        msg.message || "Google found no email address."
+      );
+    } else if (msg.action === "THATSTHEM_EMAIL_PROGRESS") {
+      const record = emailMessageRecord(msg);
+      const pct = Math.round((msg.step / msg.totalSteps) * 100);
+      showVehicleProgress("EMAIL", pct, msg.message || "Searching ThatSthem for email...", false, record);
+    } else if (msg.action === "THATSTHEM_EMAIL_RESULT") {
+      const record = emailMessageRecord(msg);
+      const session = emailSessionsByRecord[record] || activeEmailSession || null;
+      const person = session && session.person ? session.person : null;
+      const found = Array.isArray(msg.emails) ? msg.emails.filter(Boolean) : [];
+      if (person && found.length) {
+        const merged = mergeUniqueEmails(person.emails, found);
+        person.emails = merged;
+        renderDiscoveredEmails(record, merged, person);
+      }
+      if (person && msg.dob) renderEmailLookupDob(record, person, String(msg.dob));
+      if (person && person.emails && person.emails.length > 0) {
+        renderDiscoveredEmails(record, person.emails, person);
+      }
+      if (session && msg.done) session.thatsthemRunning = false;
+      const completeMessage = found.length
+        ? `ThatSthem found ${found.length === 1 ? "an email" : `${found.length} emails`}.`
+        : "";
+      updateEmailLookupProgress(
+        record,
+        session,
+        completeMessage,
+        "ThatSthem found no public email address."
+      );
+      updateRawSummary();
+    } else if (msg.action === "THATSTHEM_EMAIL_EMPTY") {
+      const record = emailMessageRecord(msg);
+      const session = emailSessionsByRecord[record] || activeEmailSession || null;
+      const person = session && session.person ? session.person : null;
+      if (person && msg.dob) renderEmailLookupDob(record, person, String(msg.dob));
+      if (session) session.thatsthemRunning = false;
+      updateEmailLookupProgress(
+        record,
+        session,
+        emailFoundSummary(session),
+        msg.message || "ThatSthem found no public email address."
+      );
+      updateRawSummary();
     } else if (msg.action === "GOOGLE_GENDER_PROGRESS") {
       const pct = Math.round((msg.step / msg.totalSteps) * 100);
       showVehicleProgress("GENDER", pct, msg.message, false, genderMessageRecord(msg));
@@ -5042,7 +5267,7 @@
         hideVehicleProgress("ADDRESS", record);
       }, 5000);
       if (person && person.emails && person.emails.length > 0) {
-        renderDiscoveredEmails(record, person.emails);
+        renderDiscoveredEmails(record, person.emails, person);
       }
       updateRawSummary();
     } else if (msg.action === "GOOGLE_ADDRESS_EMPTY") {
