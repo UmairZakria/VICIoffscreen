@@ -66,6 +66,23 @@
     }
   }
 
+  function decodePhoneHref(element) {
+    var encoded = element && (element.getAttribute("x-href") || element.getAttribute("data-href"));
+    if (!encoded) return "";
+    try {
+      var decoded = atob(encoded);
+      var match = decoded.match(/(?:^|\/)phone\/([^/?#]+)/i);
+      return match ? decodeURIComponent(match[1]).replace(/\D/g, "").slice(-10) : "";
+    } catch (error) {
+      return "";
+    }
+  }
+
+  function normalizePhone(value) {
+    var digits = String(value || "").replace(/\D/g, "");
+    return digits.length >= 10 ? digits.slice(-10) : "";
+  }
+
   function selectEmailAddresses(addresses) {
     var unique = [];
     var seen = Object.create(null);
@@ -88,6 +105,11 @@
     var container = heading.parentElement || heading;
     var links = Array.from(container.querySelectorAll("span[x-href], a[x-href], span[data-href], a[data-href]"));
     return selectEmailAddresses(links.map(decodeEmailHref).filter(Boolean));
+  }
+
+  function readPhoneNumbers(card) {
+    var links = Array.from(card.querySelectorAll("span[x-href], a[x-href], span[data-href], a[data-href]"));
+    return Array.from(new Set(links.map(decodePhoneHref).filter(Boolean)));
   }
 
   // Tells the background the check is done with: the tab it was solved in is put back into the
@@ -205,7 +227,18 @@
     var parts = [String(records.length)];
     for (var i = 0; i < records.length; i++) {
       var r = records[i];
-      parts.push([r.name, r.year || "", r.age || "", r.zip || "", r.street || ""].join("~"));
+      var addressData = (r.addresses || []).map(function (address) {
+        return [address.street, address.city, address.state, address.zip].join(",");
+      }).join(";");
+      parts.push([
+        r.name,
+        r.year || "",
+        r.age || "",
+        r.zip || "",
+        r.street || "",
+        addressData,
+        (r.phoneNumbers || []).join(",")
+      ].join("~"));
     }
     return parts.join("|");
   }
@@ -732,7 +765,8 @@
       zip: "",
       street: "",
       addresses: [],
-      emails: readEmailAddresses(card)
+      emails: readEmailAddresses(card),
+      phoneNumbers: readPhoneNumbers(card)
     };
 
     // "Lives in Houston, TX" / "Born October 1958 (67 years old)" / "Known as: ..."
@@ -865,8 +899,18 @@
     var nearNameMatch = fuzzyScore > 0 && !!target.year && !!record.year;
     if (!isDirect && !aliasMatch && !nearNameMatch) return null;
 
+    var addressEvidence = matchAddressEvidence(target.addresses, record.addresses, record.city, record.state);
+    var phoneMatch = matchPhoneEvidence(target.phones, record.phoneNumbers);
     var score = Math.max(directScore, bestAliasScore, fuzzyScore);
     if (target.year && record.year) score += target.year === record.year ? 20 : 10;
+    if (target.age && record.age) {
+      var ageDifference = Math.abs(target.age - record.age);
+      if (ageDifference === 0) score += 10;
+      else if (ageDifference === 1) score += 6;
+      else if (ageDifference === 2) score += 2;
+    }
+    score += addressEvidence;
+    if (phoneMatch) score += 100;
     // A date with a month (and day) is far more useful than a bare birth year, so it
     // wins when a page holds both kinds of card.
     if (record.dob && record.dob.month) score += 25;
@@ -876,6 +920,8 @@
       name: record.name,
       matchedAs: aliasMatch && bestAliasScore > directScore ? bestAliasName : record.name,
       isDirect: isDirect,
+      aliasMatch: aliasMatch,
+      isNearName: nearNameMatch,
       dob: record.dob,
       year: record.year,
       age: record.age,
@@ -884,8 +930,61 @@
       zip: record.zip,
       street: record.street,
       addresses: record.addresses,
-      emails: record.emails || []
+      emails: record.emails || [],
+      addressEvidence: addressEvidence,
+      phoneMatch: phoneMatch
     };
+  }
+
+  function matchAddressEvidence(targetAddresses, recordAddresses, recordCity, recordState) {
+    var best = 0;
+    (targetAddresses || []).forEach(function (targetAddress) {
+      (recordAddresses || []).forEach(function (recordAddress) {
+        var sameZip = !!targetAddress.zip && targetAddress.zip === recordAddress.zip;
+        var sameCity = !!targetAddress.city && !!recordAddress.city &&
+          sameWord(targetAddress.city, recordAddress.city);
+        var sameState = !!targetAddress.state && !!recordAddress.state &&
+          stateToCode(targetAddress.state) === stateToCode(recordAddress.state);
+        var targetStreet = streetKey(targetAddress.street || targetAddress.full);
+        var recordStreet = streetKey(recordAddress.street || recordAddress.full);
+
+        if (sameZip && targetStreet && targetStreet === recordStreet) {
+          best = Math.max(best, 80);
+        } else if (sameZip && sameCity && sameState) {
+          best = Math.max(best, 35);
+        } else if (sameCity && sameState) {
+          best = Math.max(best, 20);
+        }
+      });
+    });
+    if (best === 0 && targetAddresses && targetAddresses.some(function (targetAddress) {
+      return targetAddress &&
+        targetAddress.city &&
+        targetAddress.state &&
+        sameWord(targetAddress.city, recordCity) &&
+        stateToCode(targetAddress.state) === stateToCode(recordState);
+    })) {
+      best = 20;
+    }
+    return best;
+  }
+
+  function matchPhoneEvidence(targetPhones, recordPhones) {
+    var expected = (targetPhones || []).map(normalizePhone).filter(Boolean);
+    var found = (recordPhones || []).map(normalizePhone).filter(Boolean);
+    return expected.some(function (phone) {
+      return found.indexOf(phone) !== -1;
+    });
+  }
+
+  function isCorroboratedSearchMatch(match, searchKind) {
+    if (!match) return false;
+    if (searchKind === "name") {
+      if (match.phoneMatch) return true;
+      if (match.addressEvidence >= 80) return true;
+      return (match.isDirect || match.aliasMatch) && match.addressEvidence >= 35;
+    }
+    return true;
   }
 
   function buildTarget(session) {
@@ -911,6 +1010,15 @@
       state: state,
       zip: zip,
       street: primary.street || primary.full || "",
+      addresses: addresses,
+      phones: [
+        session && session.phone,
+        session && session.person && session.person.phone,
+        session && session.person && session.person.phoneNumber
+      ].concat(
+        session && session.person && Array.isArray(session.person.phones) ? session.person.phones : [],
+        session && session.person && Array.isArray(session.person.phoneNumbers) ? session.person.phoneNumbers : []
+      ),
       person: (session && session.person) || null
     };
   }
@@ -956,12 +1064,12 @@
     };
     var interval = null;
 
-    function finish(dob) {
+    function finish(dob, emails) {
       if (state.processed) return;
       state.processed = true;
       if (interval) clearInterval(interval);
       copyToClipboard(dob);
-      sendSuccess(dob, target.person);
+      sendSuccess(dob, target.person, emails || []);
     }
 
     function next(reason) {
@@ -991,7 +1099,15 @@
         var candidates = [];
         records.forEach(function (record) {
           var match = evaluateRecord(target, record);
-          if (match && match.dob && match.dob.label) candidates.push(match);
+          var step = (session.themSteps || [])[session.themIndex || 0] || {};
+          if (
+            match &&
+            match.dob &&
+            match.dob.label &&
+            isCorroboratedSearchMatch(match, step.kind)
+          ) {
+            candidates.push(match);
+          }
         });
         candidates.sort(function (a, b) {
           return b.score - a.score;
@@ -999,7 +1115,7 @@
 
         var best = candidates[0] || null;
         if (best && best.score >= ACCEPT_SCORE && best.dob.month) {
-          finish(best.dob.label);
+          finish(best.dob.label, best.emails);
           return;
         }
 
@@ -1011,7 +1127,7 @@
           state.processed = true;
           if (interval) clearInterval(interval);
           copyToClipboard(best.dob.label);
-          sendSuccess(best.dob.label, target.person, [], { continueSearch: true, yearOnly: true });
+          sendSuccess(best.dob.label, target.person, best.emails || [], { continueSearch: true, yearOnly: true });
           sendProgress(5, 6, "ThatSthem only shows the birth year " + best.dob.label + " - checking the next step...");
           return;
         }
@@ -1135,7 +1251,10 @@
         var matches = records.map(function (record) {
           return evaluateRecord(target, record);
         }).filter(function (match) {
-          return match && match.score >= ACCEPT_SCORE;
+          var currentStep = session.steps[session.stepIndex] || {};
+          return match &&
+            match.score >= ACCEPT_SCORE &&
+            isCorroboratedSearchMatch(match, currentStep.kind);
         }).sort(function (a, b) {
           return b.score - a.score;
         });

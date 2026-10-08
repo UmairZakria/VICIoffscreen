@@ -303,7 +303,10 @@ ok(
   'every candidate is gated on an internal profile before it can win',
   /candidates\[cf\]\.reportUrl = isInternalProfileUrl\(candidates\[cf\]\.reportUrl, currentUrl\)/.test(src)
 );
-ok('the candidate gate drops what it cannot resolve', /if \(candidates\[cf\]\.reportUrl\) followableCandidates\.push/.test(src));
+ok(
+  'the candidate gate drops unresolved and already-visited profiles',
+  /candidates\[cf\]\.reportUrl &&[\s\S]{0,100}!unmaskProfileWasVisited\(session, candidates\[cf\]\.reportUrl\)[\s\S]{0,80}followableCandidates\.push/.test(src)
+);
 ok('the see-all control is checked before it is clicked', /!isExternalAnchor\(seeAllBtn\)/.test(src));
 ok('the old uuid sniffing is gone', !/hasProfileUuid/.test(src));
 ok('the old hand written skip list is gone', !/href\.includes\("login"\)/.test(src));
@@ -311,7 +314,7 @@ ok('the old hand written skip list is gone', !/href\.includes\("login"\)/.test(s
 // The target profile's own DOB is read first: the relative scan, and with it the only
 // scrollIntoView of the relatives section, lives behind the "we are not on the target
 // profile" guard.
-const guardIndex = src.indexOf('if (!isTargetProfile) {');
+const guardIndex = src.lastIndexOf('if (!isTargetProfile) {');
 ok('the relative scan only runs off the target profile', guardIndex !== -1);
 const guardBlock = src.slice(guardIndex, src.indexOf('// Profile timeout after 12 seconds'));
 ok('the relatives section is only scrolled inside that guard', guardBlock.includes('relativesSec.scrollIntoView'));
@@ -319,8 +322,8 @@ ok('the relative scan lives inside that guard', guardBlock.includes('pickRelativ
 ok('exactly one place scrolls the relatives section', (src.match(/relativesSec\.scrollIntoView/g) || []).length === 1);
 ok(
   'the DOB read is wired before that guard',
-  src.indexOf('extractDobFromText(summaryText, targetAge, targetYear)') !== -1 &&
-    src.indexOf('extractDobFromText(summaryText, targetAge, targetYear)') < guardIndex
+  /extractDobFromText\(summaryText, targetAge, targetYear, profileDobYearTolerance\)/.test(src) &&
+    src.indexOf('extractDobFromText(summaryText, targetAge, targetYear, profileDobYearTolerance)') < guardIndex
 );
 ok(
   'a matched profile still waits for its DOB before giving up',

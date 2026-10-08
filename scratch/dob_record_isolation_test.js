@@ -163,9 +163,10 @@ console.log('\n== wiring inside the shipped files ==\n');
   ok(
     'the DOB is drawn on and stored for that record only',
     /renderDiscoveredDob\(record, \{/.test(widgetSrc) &&
-      /renderDiscoveredEmails\(record, msg\.emails\)/.test(widgetSrc) &&
       /const session = dobSessionFor\(record\);/.test(widgetSrc) &&
-      /if \(session && session\.person\) \{/.test(widgetSrc) &&
+      /const person = session && session\.person \? session\.person : null;/.test(widgetSrc) &&
+      /const merged = mergeDobLookupResult\(person, msg\);/.test(widgetSrc) &&
+      /renderDiscoveredEmails\(record, person\.emails, person\)/.test(widgetSrc) &&
       !/activeDobSession\.person\.dob/.test(widgetSrc)
   );
   ok(
@@ -194,9 +195,9 @@ console.log('\n== wiring inside the shipped files ==\n');
   );
   ok(
     'the lines the background produces itself carry the record too',
-    // One per Unmask step (address, phone, name+city, name only), the session itself, and the line
-    // the ThatSthem-only run announces when Unmask is switched off in Settings.
-    (bgSrc.match(/record: recordSource/g) || []).length === 6 &&
+    // The parallel ThatSthem runner, the Unmask session, its four initial search messages, and the
+    // initial progress message when Unmask is switched off in Settings.
+    (bgSrc.match(/record: recordSource/g) || []).length === 7 &&
       /error: err\.message,\s*\n\s*record: err\.record \|\| recordSource/.test(bgSrc)
   );
   ok(

@@ -85,22 +85,32 @@ year is what every candidate is validated against:
 * A card/profile is only used when its age is within **±3 years** of the record's age
   (`72 yrs` → accepts 1951‑1957, rejects 1958 because it is 4 years off).
 * On a profile page every date is collected (born on … / DOB: … / month day, year /
-  month year) and only dates within **±1 year** of the expected birth year are eligible;
-  the **closest** eligible year wins — not the first date on the page — so a two-year
-  mismatch or a relative's birth year can never leak into the result.
+  month year). When the record has an explicit birth year, that exact year is required
+unless the profile name or an explicit profile alias has the exact target first/last name
+and either an exact phone, exact street + ZIP, or matching age plus ZIP/city/state evidence.
+This supports married-name profiles such as Carole Andrews with the alias Carole A
+Montemayor, while still requiring strong address/phone evidence before allowing a
+**±1 year** difference. Matching first/last name plus matching profile age and
+ZIP/city/state also allows a **±1 year** difference, covering
+  Unmask cards where a phone digit is missing and an apartment suffix is inconsistent.
+  Age-only records use **±1 year**. The closest eligible date wins — not the first date
+  on the page — so a namesake or relative's birth year cannot leak into the result.
+* A profile is checked against the target's displayed name and its explicit aliases;
+  a selected link or matching URL slug alone is not enough to authorize DOB/email extraction.
 * If a profile only shows dates that contradict the record's age, the extension
   reports **no DOB** and keeps searching instead of reporting a wrong date.
 * A matched profile whose summary has **no birth date at all** (e.g. Unmask shows only
   *"Cristian currently lives in Houston, TX"* plus the address) is abandoned ~0.5 s after
   the summary stops rendering — the run moves straight to the next fallback instead of
   waiting out the 12 s profile timeout.
-* **Placeholder / partial dates are never trusted alone.** When a source only offers a
-  *January* date (`January 1954`, `January 1, 1954`, `01/01/1954` — Unmask's
-  month/day-unknown placeholder) or a bare birth year (`1962`), that value is still
-  shown and copied as **DOB 1** (marked *"month/day unknown"* / *"year only"*), but the
-  run immediately keeps searching — Unmask continues on ThatSthem, ThatSthem continues
-  with its next step — and the fuller date is displayed next to it as **DOB 2**, each
-  with its own copy button. If nothing fuller exists the user is told
+* **Placeholder / partial dates are never trusted alone.** When an Unmask profile only offers
+  January 1 (`January 1, 1954`, `01/01/1954` — Unmask's month/day-unknown placeholder), the
+  runner returns to that search's results and checks the other matching profiles first. If it
+  finds a fuller DOB, that wins. If none of those profiles has one, the placeholder is shown and
+  the run continues on ThatSthem. A January month without a day, or a bare birth year (`1962`),
+  is shown as **DOB 1** (marked *"month/day unknown"* / *"year only"*) while the remaining
+  fallback searches continue; a fuller date is displayed next to it as **DOB 2**, each with its
+  own copy button. If nothing fuller exists the user is told
   *"Only the birth year 1962 from ThatSthem – no fuller date found (searched …)"*.
   The fuller date is what goes into the Amica/Mercury quote form.
 * **DOB button searches can run in parallel.** With the matching sources enabled in settings, Unmask
@@ -108,9 +118,19 @@ year is what every candidate is validated against:
   same name/address/phone fallback plan. A matching ThatSthem card contributes both its DOB and all
   decoded email addresses to the card; the extension ranks and displays those together with any
   results from the other sources.
-* ThatSthem match acceptance is based on the card's name / **"Known as:"** aliases and a birth
-  year within **±1 year** of the input record. Address, city, state, and ZIP are search context
-  only; they never veto a name-and-year match. Age is not a hard gate because it may be stale.
+* Name-search candidates on ThatSthem and Unmask are not accepted on name / birth year alone.
+  Unmask results routes with either a state suffix (`/Name/TX/`) or only a name slug
+  (`/Name/`, such as `/Cathleen-Mattox/`) are scanned as name searches. An exact first/last-name
+  card with a compatible age may be opened
+  even when that card does not expose the target address or phone. This is only candidate discovery:
+  the profile must still show the target phone, exact street + ZIP (common suffixes such as `Rd`
+  and `Road` are normalized), or matching ZIP/city/state plus exact age before its DOB can be
+  accepted. Profiles without an acceptable DOB return to the
+  originating results to check other unvisited matching cards before the next fallback. ThatSthem
+  accepts ZIP + city + state evidence when the card has a strong direct-name or known-as match;
+  near-spelling names still require exact street + ZIP or phone. Weaker city/state-only similarities
+  do not confirm a name-search result, so address and phone fallbacks continue. Location differences
+  never veto an exact historical address match. Age is supporting evidence, not a hard gate.
 * ThatSthem address searches retain the original address query and can add a narrowly detected
   trailer-number variant when the raw address repeats a city with a trailing number (for example,
   `WACO 30, Waco` becomes `1405 Air Base Rd Trlr 30, Waco`). The generated query follows the
@@ -453,9 +473,15 @@ location because ThatSthem can show old/current addresses or a different "Lives 
 * **Birth-year matching** — when the input has a birth year, the card must show a birth year
   within **±1 year**. A card with a missing or farther-off year is rejected. Age is not used as
   a hard gate, since it can be stale.
-* **Location is not an identity gate.** City, state, ZIP, and street are not used to reject or
-  rank cards; addresses can be historical, incomplete, or redacted. Among valid cards, the
-  strongest name / alias match and closest birth year rank highest.
+* **Name-search corroboration** — a name-search card also needs matching address-history or phone
+  evidence; otherwise it is skipped and the address/phone fallbacks continue. On ThatSthem, an exact
+  street + ZIP or phone match is sufficient; ZIP + city + state also confirms a strong direct-name
+  or known-as match when the street is masked. Near-spelling matches still need exact street + ZIP or
+  phone. City/state alone is not confirmation. The full address history is checked, so a different
+  current location does not veto an exact historical match.
+* **Address and phone searches** — the search itself is corroboration, but the result still needs
+  a matching name / alias and the birth-year check above. Candidate emails and DOBs are only read
+  from the same accepted result card/profile.
 * **The security check is handed to the user.** Every ThatSthem search can answer with its
   sentinel/Cloudflare Turnstile page (`<title>Security Check</title>`,
   `meta[name="sentinel-challenge"]`, `#captcha-container`, *"Confirm you're human"*).

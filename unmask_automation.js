@@ -553,6 +553,54 @@
     return matchNameScore(target, cand) >= 80;
   }
 
+  function profileMatchesTarget(targetName, profileName, aliases) {
+    var target = parseNameDetails(targetName);
+    if (matchNameScore(target, parseNameDetails(profileName)) >= 80) return true;
+    return (aliases || []).some(function (alias) {
+      return matchNameScore(target, parseNameDetails(alias)) >= 80;
+    });
+  }
+
+  function hasStrongUnmaskIdentityEvidence(evidence, targetAge, profileAge) {
+    if (!evidence) return false;
+    return !!(
+      evidence.phone ||
+      evidence.address >= 80 ||
+      (evidence.address >= 35 && targetAge && profileAge && targetAge === profileAge)
+    );
+  }
+
+  function canInspectNameSearchCandidate(targetName, candidateName, targetAge, candidateAge, evidence) {
+    if (evidence && (evidence.phone || evidence.address >= 80)) return true;
+    if (!targetAge || !candidateAge || !isAgeWithinTolerance(targetAge, candidateAge)) return false;
+
+    var target = parseNameDetails(targetName);
+    var candidate = parseNameDetails(candidateName);
+    return !!(
+      target.first &&
+      target.first === candidate.first &&
+      target.last &&
+      target.last === candidate.last &&
+      matchNameScore(target, candidate) >= 80
+    );
+  }
+
+  function unmaskProfileWasVisited(session, profileUrl) {
+    var visited = session && Array.isArray(session.unmaskVisitedProfiles)
+      ? session.unmaskVisitedProfiles
+      : [];
+    return visited.indexOf(profileUrl) !== -1;
+  }
+
+  function rememberUnmaskProfile(session, profileUrl, resultsUrl) {
+    if (!session || !profileUrl) return;
+    if (!Array.isArray(session.unmaskVisitedProfiles)) session.unmaskVisitedProfiles = [];
+    if (!session.unmaskVisitedProfiles.includes(profileUrl)) {
+      session.unmaskVisitedProfiles.push(profileUrl);
+    }
+    if (resultsUrl) session.unmaskSearchUrl = resultsUrl;
+  }
+
   function parseAge(str) {
     if (!str) return null;
     if (String(str).includes("80+")) return 80;
@@ -586,6 +634,11 @@
   var PROFILE_PATH_PATTERN = /^\/[A-Za-z0-9_.'-]+\/[A-Za-z]{2}(?:-[A-Za-z0-9_.'-]+)?\/[a-f0-9-]{10,}\/?$/;
   var NAME_STATE_PATH_PATTERN = /^\/[A-Za-z0-9_.'-]+\/[A-Za-z]{2}(?:-[A-Za-z0-9_.'-]+)?\/?$/;
   var NAME_SLUG_PATH_PATTERN = /^\/[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\/?$/;
+
+  function isUnmaskNameSearchPath(pathname) {
+    var path = String(pathname || "");
+    return NAME_STATE_PATH_PATTERN.test(path) || NAME_SLUG_PATH_PATTERN.test(path);
+  }
 
   function hostOf(name) {
     return String(name || "").toLowerCase().replace(/^www\./, "");
@@ -784,6 +837,36 @@
     return null;
   }
 
+  function getDobYearTolerance(targetYear) {
+    return /\b(?:19\d{2}|20[0-1]\d)\b/.test(String(targetYear || ""))
+      ? 0
+      : DOB_YEAR_TOLERANCE;
+  }
+
+  function getProfileDobYearTolerance(
+    targetYear,
+    targetName,
+    profileName,
+    evidence,
+    targetAge,
+    profileAge,
+    profileAliases
+  ) {
+    var target = parseNameDetails(targetName);
+    var profile = parseNameDetails(profileName);
+    var exactCoreName = target.first && target.first === profile.first &&
+      target.last && target.last === profile.last;
+    if (!exactCoreName && target.first && target.last) {
+      exactCoreName = (profileAliases || []).some(function (alias) {
+        var aliasDetails = parseNameDetails(alias);
+        return aliasDetails.first === target.first && aliasDetails.last === target.last;
+      });
+    }
+    return exactCoreName && hasStrongUnmaskIdentityEvidence(evidence, targetAge, profileAge)
+      ? DOB_YEAR_TOLERANCE
+      : getDobYearTolerance(targetYear);
+  }
+
   // "January 1954" / "January 1, 1954" / "01/01/1954" is the placeholder Unmask shows
   // when the real month and day are unknown: 50/50 real, so it is reported but never
   // trusted on its own.
@@ -820,9 +903,9 @@
   // Extracts the DOB of the person the record describes.
   // Dates that do not line up with the record's age (e.g. 1954 expected, 1958 on
   // the page) are ignored instead of reported - a wrong DOB is worse than none.
-  function extractDobFromText(text, targetAge, targetYear) {
+  function extractDobFromText(text, targetAge, targetYear, yearTolerance) {
     if (!text) return null;
-    var best = pickBestDobCandidate(collectDobCandidates(text), targetAge, targetYear);
+    var best = pickBestDobCandidate(collectDobCandidates(text), targetAge, targetYear, yearTolerance);
     return best ? best.text : null;
   }
 
@@ -895,14 +978,15 @@
     return list;
   }
 
-  // Picks the birth date that best matches the record's age: the closest year to
-  // the age-implied birth year wins, explicit "born ..." wording outranks a bare
-  // date. Anything further than DOB_YEAR_TOLERANCE years away belongs to somebody
-  // else and is never returned.
-  function pickBestDobCandidate(candidates, targetAge, targetYear) {
+  // An explicit record birth year must match exactly; age-only records allow the
+  // existing one-year tolerance. Explicit "born ..." wording outranks a bare date.
+  function pickBestDobCandidate(candidates, targetAge, targetYear, yearTolerance) {
     if (!candidates || candidates.length === 0) return null;
 
     var expectedYear = getExpectedBirthYear(targetAge, targetYear);
+    var allowedYearDifference = yearTolerance === undefined
+      ? getDobYearTolerance(targetYear)
+      : yearTolerance;
 
     if (expectedYear) {
       var best = null;
@@ -910,7 +994,7 @@
       for (var i = 0; i < candidates.length; i++) {
         var c = candidates[i];
         var diff = Math.abs(c.year - expectedYear);
-        if (diff > DOB_YEAR_TOLERANCE) continue; // Different person: 1958 vs 1954
+        if (diff > allowedYearDifference) continue;
         var score = (c.priority * 10) - diff;
         if (!best || score > bestScore || (score === bestScore && c.index < best.index)) {
           best = c;
@@ -942,10 +1026,13 @@
 
   // Closest date that had to be rejected, so the UI can explain the skip instead
   // of silently reporting nothing.
-  function describeClosestRejectedDob(text, targetAge, targetYear) {
+  function describeClosestRejectedDob(text, targetAge, targetYear, yearTolerance) {
     var candidates = collectDobCandidates(text);
     var expectedYear = getExpectedBirthYear(targetAge, targetYear);
     if (!candidates.length || !expectedYear) return null;
+    var allowedYearDifference = yearTolerance === undefined
+      ? getDobYearTolerance(targetYear)
+      : yearTolerance;
 
     var closest = null;
     var closestDiff = Infinity;
@@ -957,7 +1044,12 @@
       }
     }
     if (!closest) return null;
-    return { text: closest.text, year: closest.year, diff: closestDiff };
+    return {
+      text: closest.text,
+      year: closest.year,
+      diff: closestDiff,
+      outsideTolerance: closestDiff > allowedYearDifference
+    };
   }
 
   // Cheap fingerprint of the rendered card list: any name/age/address that streams in
@@ -1194,6 +1286,95 @@
     return selectBestEmails(rawEmails, personName);
   }
 
+  function normalizeEvidenceDigits(value) {
+    var digits = String(value || "").replace(/\D/g, "");
+    return digits.length >= 10 ? digits.slice(-10) : "";
+  }
+
+  function normalizeEvidenceAddress(value) {
+    return String(value || "")
+      .toLowerCase()
+      .replace(/\b(?:avenue|ave)\b/g, "ave")
+      .replace(/\b(?:boulevard|blvd)\b/g, "blvd")
+      .replace(/\b(?:circle|cir)\b/g, "cir")
+      .replace(/\b(?:court|ct)\b/g, "ct")
+      .replace(/\b(?:drive|dr)\b/g, "dr")
+      .replace(/\b(?:highway|hwy)\b/g, "hwy")
+      .replace(/\b(?:lane|ln)\b/g, "ln")
+      .replace(/\b(?:parkway|pkwy)\b/g, "pkwy")
+      .replace(/\b(?:place|pl)\b/g, "pl")
+      .replace(/\b(?:road|rd)\b/g, "rd")
+      .replace(/\b(?:street|st)\b/g, "st")
+      .replace(/\b(?:terrace|ter)\b/g, "ter")
+      .replace(/\b(?:trail|trl)\b/g, "trl")
+      .replace(/\b(?:turnpike|tpke)\b/g, "tpke")
+      .replace(/[^a-z0-9]/g, "");
+  }
+
+  function matchUnmaskCardAddress(card, targetAddresses) {
+    if (!card || !targetAddresses || !targetAddresses.length) return 0;
+    var compactCardText = normalizeEvidenceAddress(card.textContent || "");
+    var best = 0;
+
+    targetAddresses.forEach(function (address) {
+      if (!address) return;
+      var street = normalizeEvidenceAddress(address.street || address.full);
+      var zip = String(address.zip || "").replace(/\D/g, "").slice(0, 5);
+      var city = normalizeEvidenceAddress(address.city);
+      var state = normalizeEvidenceAddress(address.state);
+
+      if (zip && compactCardText.includes(zip) && street && compactCardText.includes(street)) {
+        best = Math.max(best, 80);
+      } else if (zip && compactCardText.includes(zip) && city && state &&
+        compactCardText.includes(city) && compactCardText.includes(state)) {
+        best = Math.max(best, 35);
+      } else if (
+        city &&
+        state &&
+        compactCardText.includes(city) &&
+        compactCardText.includes(state)
+      ) {
+        best = Math.max(best, 20);
+      }
+    });
+    return best;
+  }
+
+  function matchUnmaskCardPhone(card, targetPhones) {
+    if (!card || !targetPhones || !targetPhones.length) return false;
+    var expected = targetPhones.map(normalizeEvidenceDigits).filter(Boolean);
+    if (!expected.length) return false;
+
+    var values = Array.from(card.querySelectorAll('[itemprop="telephone"], .person__data, a[href^="tel:"]'))
+      .map(function (element) {
+        return element.getAttribute && element.getAttribute("href")
+          ? element.getAttribute("href")
+          : element.textContent;
+      });
+    var phonePattern = /(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]+\d{3}[\s.-]+\d{4}/g;
+    var found = (values.join(" ") + " " + (card.textContent || "")).match(phonePattern) || [];
+    return found.some(function (phone) {
+      return expected.indexOf(normalizeEvidenceDigits(phone)) !== -1;
+    });
+  }
+
+  function unmaskNameCardEvidence(card, session) {
+    var person = session && session.person ? session.person : {};
+    var addresses = (session && session.addresses) || [];
+    var phones = [
+      session && session.phone,
+      person.phone,
+      person.phoneNumber
+    ].concat(
+      Array.isArray(person.phones) ? person.phones : [],
+      Array.isArray(person.phoneNumbers) ? person.phoneNumbers : []
+    ).filter(Boolean);
+    return {
+      address: matchUnmaskCardAddress(card, addresses),
+      phone: matchUnmaskCardPhone(card, phones)
+    };
+  }
+
   // Automation runner
   function runUnmaskAutomation(session) {
     currentSession = session;
@@ -1214,7 +1395,7 @@
       !isAddressPage &&
       !isPhonePage &&
       !isProfilePage &&
-      /^\/[A-Za-z0-9_-]+\/[A-Za-z]{2}(?:-[A-Za-z0-9_-]+)?\/?$/i.test(pathname);
+      isUnmaskNameSearchPath(pathname);
 
     var state = {
       checkboxClicked: false,
@@ -1224,6 +1405,7 @@
       cardsReported: -1,
       startedAt: Date.now(),
       processed: false,
+      revisitingResults: false,
       dobExtractLogged: false,
       profileReadyAt: 0,
       profileSnapshot: "",
@@ -1256,6 +1438,25 @@
       } catch (e) {}
     }
 
+    async function revisitUnmaskSearchResults(reason) {
+      if (!session.unmaskSearchUrl || window.location.href === session.unmaskSearchUrl) return false;
+      state.revisitingResults = true;
+      sendProgress(3, 4, reason || "Checking the next matching Unmask profile...");
+      try {
+        await chrome.storage.local.set({ unmask_pending_lookup: session });
+      } catch (error) {
+        console.error("[Unmask Automation] Could not resume Unmask search results:", error);
+        state.revisitingResults = false;
+        advanceToNextAddress("Could not resume Unmask results. Trying the next fallback...");
+        return true;
+      }
+      state.processed = true;
+      if (interval) clearInterval(interval);
+      if (watchdogTimer) clearTimeout(watchdogTimer);
+      window.location.href = session.unmaskSearchUrl;
+      return true;
+    }
+
     watchdogTimer = setTimeout(function () {
       if (!state.processed) {
         advanceToNextAddress("Address timed out (watchdog). Trying next address...");
@@ -1265,7 +1466,7 @@
     sendProgress(1, 4, "Connecting to Unmask (" + (targetName || "Target") + ")...");
 
     interval = setInterval(async function () {
-      if (state.processed) return;
+      if (state.processed || state.revisitingResults) return;
       try {
         // ==========================================
         // SCENARIO 0: Cloudflare Turnstile Challenge Intercept
@@ -1328,6 +1529,21 @@
             ? summarySec.querySelector(".um-profile-summary__name, h1.um-profile-summary__name, h1")
             : document.querySelector(".um-profile-summary__name, h1");
           var profileName = profileNameEl ? profileNameEl.textContent.trim() : "";
+          var profileAliasEl = summarySec
+            ? summarySec.querySelector(".um-profile-summary__aliases")
+            : document.querySelector(".um-profile-summary__aliases");
+          var profileAliases = profileAliasEl
+            ? profileAliasEl.textContent
+                .replace(/^\s*aliases\s*:\s*/i, "")
+                .split(/[,;|]/)
+                .map(function (alias) { return alias.trim(); })
+                .filter(Boolean)
+            : [];
+          var profileLocationAgeEl = summarySec
+            ? summarySec.querySelector(".um-profile-summary__location-age")
+            : document.querySelector(".um-profile-summary__location-age");
+          var profileAge = profileLocationAgeEl ? parseAge(profileLocationAgeEl.textContent) : null;
+          var profileIdentityEvidence = unmaskNameCardEvidence(summarySec, session);
 
           var summaryTextEl = summarySec
             ? summarySec.querySelector(".um-profile-summary__text, .um-profile-summary__footer p")
@@ -1337,10 +1553,27 @@
             : (summarySec ? summarySec.textContent : (document.body ? document.body.innerText : ""));
 
           // Check if this profile belongs to our target person
-          var targetSlug = (targetName || "").toLowerCase().replace(/[^a-z0-9]+/g, "-");
-          var isSlugMatch = targetSlug && pathname.toLowerCase().includes("/" + targetSlug + "/");
-          var isTargetProfile =
-            session.status === "on_target_profile" || isSlugMatch || isNameMatch(targetName, profileName);
+          var profileNameMatches = profileMatchesTarget(targetName, profileName, profileAliases);
+          var isTargetProfile = profileNameMatches &&
+            (!session.unmaskCandidateNeedsEvidence ||
+             hasStrongUnmaskIdentityEvidence(profileIdentityEvidence, targetAge, profileAge));
+
+          if (!isTargetProfile) {
+            if (session.unmaskSearchUrl && await revisitUnmaskSearchResults(
+              profileNameMatches
+                ? "Name matched, but this profile lacked enough identity evidence. Checking the next Unmask profile..."
+                : "Profile name did not match. Checking the next Unmask profile..."
+            )) {
+              return;
+            }
+            advanceToNextAddress(
+              profileNameMatches
+                ? "Unmask profile lacked enough identity evidence. Trying the next search..."
+                : "Unmask profile name does not match " + (targetName || "the target") +
+                  ". Trying the next search..."
+            );
+            return;
+          }
 
           if (isTargetProfile) {
             if (!state.dobExtractLogged) {
@@ -1348,14 +1581,46 @@
               sendProgress(4, 4, "Extracting DOB & Emails from profile...");
             }
 
+            var profileDobYearTolerance = getProfileDobYearTolerance(
+              targetYear,
+              targetName,
+              profileName,
+              profileIdentityEvidence,
+              targetAge,
+              profileAge,
+              profileAliases
+            );
             var profileBodyText = document.body ? document.body.innerText : "";
             var dob =
-              extractDobFromText(summaryText, targetAge, targetYear) ||
-              extractDobFromText(profileBodyText, targetAge, targetYear);
+              extractDobFromText(summaryText, targetAge, targetYear, profileDobYearTolerance) ||
+              extractDobFromText(profileBodyText, targetAge, targetYear, profileDobYearTolerance);
 
             if (dob) {
-              var emails = extractEmailsFromPage(targetName);
               var isPlaceholder = isPlaceholderDob(dob);
+              if (isPlaceholder && session.unmaskSearchUrl) {
+                if (!session.unmaskPlaceholderDob) {
+                  session.unmaskPlaceholderDob = dob;
+                }
+                state.processed = true;
+                clearInterval(interval);
+                if (watchdogTimer) clearTimeout(watchdogTimer);
+                sendProgress(4, 5, "Unmask returned a month/day placeholder. Checking its other matching profiles...");
+                try {
+                  await chrome.storage.local.set({ unmask_pending_lookup: session });
+                  window.location.href = session.unmaskSearchUrl;
+                } catch (error) {
+                  console.error("[Unmask Automation] Could not continue to the other matching profiles:", error);
+                  copyToClipboard(dob);
+                  sendSuccess(dob, session.person, [], {
+                    placeholder: true,
+                    continueSearch: true
+                  });
+                  sendProgress(5, 6, "Could not resume Unmask results. Checking ThatSthem...");
+                }
+                return;
+              }
+
+              var emails = extractEmailsFromPage(targetName);
               state.processed = true;
               clearInterval(interval);
               if (watchdogTimer) clearTimeout(watchdogTimer);
@@ -1390,13 +1655,18 @@
               if (Date.now() - state.profileReadyAt > PROFILE_NO_DOB_SETTLE_MS) {
                 var noDobReason = "No DOB on " + (profileName || targetName || "this") + "'s profile";
                 var rejected =
-                  describeClosestRejectedDob(summaryText, targetAge, targetYear) ||
-                  describeClosestRejectedDob(profileBodyText, targetAge, targetYear);
-                if (rejected && rejected.diff > DOB_YEAR_TOLERANCE) {
+                  describeClosestRejectedDob(summaryText, targetAge, targetYear, profileDobYearTolerance) ||
+                  describeClosestRejectedDob(profileBodyText, targetAge, targetYear, profileDobYearTolerance);
+                if (rejected && rejected.outsideTolerance) {
                   noDobReason +=
-                    " (ignored " + rejected.text + ", expected around " +
-                    getExpectedBirthYear(targetAge, targetYear) + " for age " +
-                    (targetAge || "?") + ")";
+                    " (ignored " + rejected.text + ", expected birth year " +
+                    getExpectedBirthYear(targetAge, targetYear) +
+                    (profileDobYearTolerance === 0 ? ")" : " within one year)");
+                }
+                if (session.unmaskSearchUrl && await revisitUnmaskSearchResults(
+                  noDobReason + ". Checking the next matching Unmask profile..."
+                )) {
+                  return;
                 }
                 advanceToNextAddress(noDobReason + ". Trying next...");
                 return;
@@ -1453,6 +1723,11 @@
 
           // Profile safety timeout after 9 seconds if DOB could not be extracted.
           if (Date.now() - state.startedAt > 9000) {
+            if (session.unmaskSearchUrl && await revisitUnmaskSearchResults(
+              "Could not extract a DOB from this profile. Checking the next Unmask profile..."
+            )) {
+              return;
+            }
             advanceToNextAddress("Could not extract DOB from profile. Trying next address...");
             return;
           }
@@ -1498,7 +1773,6 @@
 
           var targetDetails = parseNameDetails(targetName);
           var candidates = [];
-          var ageSkipped = [];
 
           for (var cIdx = 0; cIdx < personCards.length; cIdx++) {
             var card = personCards[cIdx];
@@ -1517,6 +1791,16 @@
 
             var ageEl = card.querySelector(".person__age-amount, .person__age");
             var cardAge = ageEl ? parseAge(ageEl.textContent) : null;
+            var cardEvidence = isNameSearchPage
+              ? unmaskNameCardEvidence(card, session)
+              : { address: 0, phone: false };
+            var mayUseCandidate = !isNameSearchPage || canInspectNameSearchCandidate(
+              targetName,
+              cardName,
+              targetAge,
+              cardAge,
+              cardEvidence
+            );
             var reportLink =
               card.querySelector('a.person__header-text[href]') ||
               card.querySelector('a[href*="/"][class*="header"]') ||
@@ -1610,18 +1894,9 @@
             var cardNameDetails = parseNameDetails(cardName);
             var directNameScore = matchNameScore(targetDetails, cardNameDetails);
 
-            // The card is named like the target but its age contradicts the record
-            // (record: 72 yrs -> 1954, card: 68 -> 1958). That is a different person,
-            // so the card and its self-references must never be used.
-            var cardAgeMismatch = directNameScore > 0 && !isAgeWithinTolerance(targetAge, cardAge);
-
-            if (cardAgeMismatch) {
-              ageSkipped.push(cardName + " (age " + cardAge + " vs " + targetAge + ")");
-            }
-
             // If card text mentions target person anywhere, ensure it's tracked as a relative
             if (
-              !cardAgeMismatch &&
+              mayUseCandidate &&
               targetName && card.textContent &&
               card.textContent.toLowerCase().includes(targetName.toLowerCase())
             ) {
@@ -1630,9 +1905,11 @@
               }
             }
 
-            if (directNameScore > 0 && !cardAgeMismatch) {
+            if (directNameScore > 0 && mayUseCandidate) {
               var score = directNameScore + 60; // Direct card holder bonus
               score += matchAgeScore(targetAge, cardAge);
+              score += cardEvidence.address;
+              if (cardEvidence.phone) score += 100;
 
               // Check aliases bonus
               var aliasBonus = 0;
@@ -1648,7 +1925,8 @@
                 isDirect: true,
                 name: cardName,
                 age: cardAge,
-                ageDiff: (targetAge && cardAge) ? Math.abs(targetAge - cardAge) : 999
+                ageDiff: (targetAge && cardAge) ? Math.abs(targetAge - cardAge) : 999,
+                identityEvidence: cardEvidence
               });
             }
 
@@ -1657,22 +1935,23 @@
             var bestAliasMatchScore = 0;
             var matchedAliasName = "";
             for (var alIdx = 0; alIdx < aliases.length; alIdx++) {
-              var aScore = evaluateAliasMatch(targetDetails, aliases[alIdx], targetAge, cardAge);
+              var aScore = evaluateAliasMatch(targetDetails, aliases[alIdx], null, null);
               if (aScore > bestAliasMatchScore) {
                 bestAliasMatchScore = aScore;
                 matchedAliasName = aliases[alIdx];
               }
             }
 
-            if (bestAliasMatchScore >= 80) {
+            if (bestAliasMatchScore >= 80 && mayUseCandidate) {
               candidates.push({
                 cardIndex: cIdx,
-                score: bestAliasMatchScore,
+                score: bestAliasMatchScore + cardEvidence.address + (cardEvidence.phone ? 100 : 0),
                 reportUrl: reportHref,
                 isDirect: true, // It is the same person via alias!
                 name: cardName + " (aka " + matchedAliasName + ")",
                 age: cardAge,
-                ageDiff: (targetAge && cardAge) ? Math.abs(targetAge - cardAge) : 999
+                ageDiff: (targetAge && cardAge) ? Math.abs(targetAge - cardAge) : 999,
+                identityEvidence: cardEvidence
               });
             }
 
@@ -1681,8 +1960,10 @@
               var relObj = relatives[relI];
               var relNameDetails = parseNameDetails(relObj.name);
               var relNameScore = matchNameScore(targetDetails, relNameDetails);
-              if (relNameScore > 0) {
+              if (relNameScore > 0 && mayUseCandidate) {
                 var relScore = relNameScore + 25; // Relative base score (e.g. 100 + 25 = 125)
+                relScore += cardEvidence.address;
+                if (cardEvidence.phone) relScore += 100;
                 // Only an internal person profile is worth the hop. A social, external or
                 // furniture anchor that answered to the name falls back to the card's own
                 // report link - which the candidate gate below checks as well.
@@ -1694,7 +1975,8 @@
                   isDirect: !!relProfileUrl,
                   name: relObj.name + " (Relative of " + cardName + ")",
                   age: null,
-                  ageDiff: 999
+                  ageDiff: 999,
+                  identityEvidence: cardEvidence
                 });
               }
             }
@@ -1706,7 +1988,12 @@
           var followableCandidates = [];
           for (var cf = 0; cf < candidates.length; cf++) {
             candidates[cf].reportUrl = isInternalProfileUrl(candidates[cf].reportUrl, currentUrl);
-            if (candidates[cf].reportUrl) followableCandidates.push(candidates[cf]);
+            if (
+              candidates[cf].reportUrl &&
+              !unmaskProfileWasVisited(session, candidates[cf].reportUrl)
+            ) {
+              followableCandidates.push(candidates[cf]);
+            }
           }
           candidates = followableCandidates;
 
@@ -1719,11 +2006,20 @@
           var bestCandidate = candidates.length > 0 ? candidates[0] : null;
 
           if (bestCandidate && bestCandidate.score >= 80 && bestCandidate.reportUrl) {
+            session.status = bestCandidate.isDirect ? "on_target_profile" : "on_relative_profile";
+            session.unmaskCandidateNeedsEvidence = isNameSearchPage &&
+              !(bestCandidate.identityEvidence.phone || bestCandidate.identityEvidence.address >= 80);
+            rememberUnmaskProfile(session, bestCandidate.reportUrl, window.location.href);
+            try {
+              await chrome.storage.local.set({ unmask_pending_lookup: session });
+            } catch (error) {
+              console.error("[Unmask Automation] Could not save the selected profile:", error);
+              advanceToNextAddress("Could not save the selected Unmask profile. Trying the next fallback...");
+              return;
+            }
             state.processed = true;
             clearInterval(interval);
             if (watchdogTimer) clearTimeout(watchdogTimer);
-            session.status = bestCandidate.isDirect ? "on_target_profile" : "on_relative_profile";
-            chrome.storage.local.set({ unmask_pending_lookup: session }).catch(function () {});
 
             var matchLabel = bestCandidate.name + (bestCandidate.age ? " (Age " + bestCandidate.age + ")" : "");
             sendProgress(4, 4, "Matched ideal candidate: " + matchLabel + ". Loading profile...");
@@ -1742,10 +2038,21 @@
           }
 
           if (Date.now() - state.cardsDetectedAt > CARDS_SETTLE_MS) {
-            var ageNote = ageSkipped.length > 0
-              ? "Skipped wrong DOB: " + ageSkipped.slice(0, 3).join(", ") + ". "
-              : "";
-            advanceToNextAddress(ageNote + "No matching candidate on this " + pageTypeLabel + ". Checking next...");
+            if (session.unmaskPlaceholderDob) {
+              state.processed = true;
+              clearInterval(interval);
+              if (watchdogTimer) clearTimeout(watchdogTimer);
+              copyToClipboard(session.unmaskPlaceholderDob);
+              sendSuccess(session.unmaskPlaceholderDob, session.person, [], {
+                placeholder: true,
+                continueSearch: true
+              });
+              sendProgress(5, 6, "No fuller DOB on the other Unmask profiles. Checking ThatSthem...");
+              return;
+            }
+            advanceToNextAddress(
+              "No corroborated name candidate on this " + pageTypeLabel + ". Checking next..."
+            );
             return;
           }
         } else {

@@ -41,7 +41,8 @@ const them = new Function(
     '\nreturn { parseBornText, parseLivesIn, parseKnownAs, parseCityStateZip, parseAddressBlock,' +
     ' parseNameDetails, matchNameScore, evaluateAliasMatch, isAgeWithinTolerance, matchAgeScore,' +
     ' evaluateRecord, buildTarget, streetKey, normalizeZip, stateToCode, cleanText,' +
-    ' readRecord, readRecords, readAddressList, readEmailAddresses, decodeEmailHref, selectEmailAddresses,' +
+    ' matchAddressEvidence, matchPhoneEvidence, isCorroboratedSearchMatch, normalizePhone,' +
+    ' readRecord, readRecords, readAddressList, readEmailAddresses, readPhoneNumbers, decodePhoneHref, decodeEmailHref, selectEmailAddresses,' +
     ' emailRecordsFingerprint, EMAIL_CARD_SETTLE_MS, isNoResultsPage,' +
     ' isBrowserCheckPage, CHALLENGE_WAIT_MS,' +
     ' CARDS_SETTLE_MS, PAGE_TIMEOUT_MS, recordsFingerprint };'
@@ -141,6 +142,12 @@ check(
   'masked x-href route decodes to the full email',
   them.decodeEmailHref({ getAttribute: (name) => name === 'x-href' ? emailHref('hillb@bellsouth.net') : '' }),
   'hillb@bellsouth.net'
+);
+const phoneHref = (phone) => Buffer.from(`/phone/${phone}`).toString('base64');
+check(
+  'masked phone x-href decodes to its normalized number',
+  them.decodePhoneHref({ getAttribute: (name) => name === 'x-href' ? phoneHref('210-555-1212') : '' }),
+  '2105551212'
 );
 check(
   'masked email links are collected from the Email Addresses card section',
@@ -273,6 +280,7 @@ function card(opts) {
     zip: opts.zip || '',
     street: opts.street || '',
     addresses,
+    phoneNumbers: opts.phoneNumbers || [],
   };
   if (opts.born) {
     record.dob = them.parseBornText(opts.born);
@@ -360,6 +368,20 @@ check(
   })),
   true
 );
+const nearNameOnlyMatch = them.evaluateRecord(fernandesTarget, card({
+  name: 'Clara Severina Fernandez',
+  born: 'Born September 1941 (84 years old)',
+  city: 'Different City',
+  state: 'CA',
+  zip: '90001',
+  street: '99 Other St',
+}));
+check('name search does not confirm a name/year-only near match', them.isCorroboratedSearchMatch(nearNameOnlyMatch, 'name'), false);
+check('near-name match needs at least ZIP/city/state support', them.isCorroboratedSearchMatch({
+  ...nearNameOnlyMatch,
+  addressEvidence: 20,
+}, 'name'), false);
+check('address search may confirm the same name/year candidate', them.isCorroboratedSearchMatch(nearNameOnlyMatch, 'address'), true);
 check(
   'similar name and address do not match when birth year is outside one year',
   them.evaluateRecord(fernandesTarget, card({
@@ -396,6 +418,8 @@ const gabrielCard = card({
 });
 const gabrielMatch = them.evaluateRecord(gabrielTarget, gabrielCard);
 check('exact Known as name and birth year match despite location differences', !!gabrielMatch, true);
+check('matching city/state is weaker corroboration despite a different ZIP', gabrielMatch && gabrielMatch.addressEvidence, 20);
+check('city/state-only name candidate continues to address and phone fallbacks', them.isCorroboratedSearchMatch(gabrielMatch, 'name'), false);
 check('moved-address match returns the ThatSthem emails', gabrielMatch && gabrielMatch.emails, [
   'fernandes@uthscsa.edu',
   'headhunter716@gmail.com',
@@ -465,6 +489,33 @@ check(
   })),
   true
 );
+const phoneTarget = them.buildTarget({
+  targetName: 'Gabriel J Fernandes',
+  targetAge: 90,
+  targetYear: 1936,
+  phone: '210-555-1212',
+});
+const phoneCandidate = them.evaluateRecord(phoneTarget, card({
+  name: 'Gabriel Fernandes',
+  aliases: ['Gabriel J. Fernandes'],
+  born: 'Born March 1936 (90 years old)',
+  phoneNumbers: ['2105551212'],
+}));
+check('an exact phone match strongly corroborates a name-search candidate', phoneCandidate && phoneCandidate.phoneMatch, true);
+check('the exact phone match permits a name-search candidate', them.isCorroboratedSearchMatch(phoneCandidate, 'name'), true);
+const exactAddressCandidate = them.evaluateRecord(gabrielTarget, card({
+  name: 'Gabriel Fernandes',
+  aliases: ['Gabriel J. Fernandes'],
+  born: 'Born March 1936 (90 years old)',
+  addresses: [{ street: '8918 Fall River Dr', city: 'San Antonio', state: 'TX', zip: '78250' }],
+}));
+check('an exact street and ZIP match permits a name-search candidate', them.isCorroboratedSearchMatch(exactAddressCandidate, 'name'), true);
+check(
+  'the selected ThatSthem DOB candidate sends its own emails with the DOB',
+  /finish\(best\.dob\.label, best\.emails\)/.test(themSrc) &&
+    /sendSuccess\(dob, target\.person, emails \|\| \[\]\)/.test(themSrc),
+  true
+);
 
 const aliasCard = card({
   name: 'Deborah Clifton',
@@ -478,6 +529,32 @@ const aliasMatch = them.evaluateRecord(target, aliasCard);
 check('card matched through a "Known as" alias', !!aliasMatch, true);
 check('the alias that matched is reported', aliasMatch && aliasMatch.matchedAs, 'Deborah S. Williams');
 check('alias match is not a direct match', aliasMatch && aliasMatch.isDirect, false);
+
+const timothyTarget = them.buildTarget({
+  targetName: 'Timothy Dalton',
+  targetAge: 48,
+  targetYear: 1978,
+  city: 'Ashland',
+  state: 'OH',
+  addresses: [{ street: '1956 State Route 511', city: 'Ashland', state: 'OH', zip: '44805' }],
+});
+const timothyCard = them.evaluateRecord(timothyTarget, card({
+  name: 'Timothy C. Dalton',
+  aliases: ['Timothy Curtis Dalton'],
+  born: 'Born December 1977 (48 years old)',
+  city: 'Perrysville',
+  state: 'OH',
+  addresses: [
+    { street: '1172 2256 County Rd', city: 'Perrysville', state: 'OH', zip: '44864' },
+    { street: '**** State Rte', city: 'Ashland', state: 'OH', zip: '44805' },
+  ],
+  emails: ['tammy.dalton@yahoo.com'],
+}));
+check('Timothy Dalton exact-name and known-as card matches birth year within ±1', !!timothyCard, true);
+check('redacted historical street retains exact ZIP/city/state evidence', timothyCard && timothyCard.addressEvidence, 35);
+check('strong name plus ZIP/city/state permits this name-search match', them.isCorroboratedSearchMatch(timothyCard, 'name'), true);
+check('the matched Timothy card keeps its December 1977 DOB', timothyCard && timothyCard.dob.label, 'December 1977');
+check('the Timothy card emails remain attached to the matched result', timothyCard && timothyCard.emails, ['tammy.dalton@yahoo.com']);
 
 // DOB rules (same as Unmask)
 check(
@@ -508,7 +585,7 @@ check('first-name-only match rejected', them.evaluateRecord(target, card({ name:
 check('different last name rejected', them.evaluateRecord(target, card({ name: 'Deborah Smith', born: CARD_BORN, city: 'Houston', state: 'TX', zip: '77047' })), null);
 
 const partial = them.evaluateRecord(target, card({ name: 'Deborah Williams', born: CARD_BORN, city: 'Houston', state: 'TX', zip: '77047', street: '99 Elm St' }));
-check('location does not affect the match score', good.score, partial.score);
+check('exact street and ZIP corroboration outrank a different street', good.score > partial.score, true);
 
 const noZipTarget = them.buildTarget({ targetName: 'Deborah Williams', targetAge: 67, targetYear: 1958, state: 'TX', addresses: [] });
 check(

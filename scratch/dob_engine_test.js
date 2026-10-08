@@ -18,10 +18,18 @@ if (start === -1 || end === -1 || end <= start) {
 }
 
 const block = src.slice(start, end);
+const nameHelpers = src.slice(
+  src.indexOf('function normalizeName(str) {'),
+  src.indexOf('function isElementVisible(el) {')
+);
+const identityEvidenceHelper = src.slice(
+  src.indexOf('function hasStrongUnmaskIdentityEvidence('),
+  src.indexOf('function canInspectNameSearchCandidate(')
+);
 const engine = new Function(
-  block +
+  nameHelpers + identityEvidenceHelper + block +
     '\nreturn { extractDobFromText, collectDobCandidates, pickBestDobCandidate, getExpectedBirthYear,' +
-    ' describeClosestRejectedDob, isProfileSummarySettled, cleanSummaryText,' +
+    ' getProfileDobYearTolerance, describeClosestRejectedDob, isProfileSummarySettled, cleanSummaryText,' +
     ' DOB_YEAR_TOLERANCE, PROFILE_NO_DOB_SETTLE_MS, CARDS_SETTLE_MS };'
 )();
 
@@ -150,6 +158,137 @@ check(
   'explicit record year rejects 1958',
   engine.extractDobFromText('Benita Cantu, born on April 4, 1958.', null, YEAR_1954),
   null
+);
+check(
+  'explicit record year rejects a one-year mismatch',
+  engine.extractDobFromText(
+    'Gerald Busch was born in January 15th, 1940 and is 86 years old. Gerald currently lives in Homosassa, FL.',
+    85,
+    1941
+  ),
+  null
+);
+check(
+  'strongly corroborated exact-name profile allows a one-year DOB difference',
+  engine.extractDobFromText(
+    'Jerry Busch was born in July 31st, 1940 and is 86 years old.',
+    85,
+    1941,
+    engine.getProfileDobYearTolerance(1941, 'Jerry Busch', 'Jerry Busch', { address: 0, phone: true })
+  ),
+  'July 31, 1940'
+);
+check(
+  'exact-name profile without exact phone or address keeps strict year matching',
+  engine.getProfileDobYearTolerance(1941, 'Jerry Busch', 'Jerry Busch', { address: 35, phone: false }, 85, 86),
+  0
+);
+check(
+  'exact first/last name, matching age, and ZIP/city/state allow a one-year DOB difference',
+  engine.getProfileDobYearTolerance(
+    1961,
+    'Sharon M Ross',
+    'Sharon Ross',
+    { address: 35, phone: false },
+    65,
+    65
+  ),
+  1
+);
+check(
+  'Sharon Ross December 31, 1960 is accepted for the corroborated 65-year-old profile',
+  engine.extractDobFromText(
+    'Sharon Ross was born in December 31st, 1960 and is 65 years old.',
+    65,
+    1961,
+    engine.getProfileDobYearTolerance(
+      1961,
+      'Sharon M Ross',
+      'Sharon Ross',
+      { address: 35, phone: false },
+      65,
+      65
+    )
+  ),
+  'December 31, 1960'
+);
+check(
+  'exact target first/last name in a corroborating profile alias allows one-year tolerance',
+  engine.getProfileDobYearTolerance(
+    1967,
+    'Carole Montemayor',
+    'Carole Andrews',
+    { address: 80, phone: false },
+    59,
+    59,
+    ['Carole S Amontemayor', 'Carole A Montemayor']
+  ),
+  1
+);
+check(
+  'Carole Andrews profile returns its alias-verified November 1966 DOB',
+  engine.extractDobFromText(
+    'Carole Andrews was born in November 7th, 1966 and is 59 years old.',
+    59,
+    1967,
+    engine.getProfileDobYearTolerance(
+      1967,
+      'Carole Montemayor',
+      'Carole Andrews',
+      { address: 80, phone: false },
+      59,
+      59,
+      ['Carole S Amontemayor', 'Carole A Montemayor']
+    )
+  ),
+  'November 7, 1966'
+);
+check(
+  'alias name without strong address or phone evidence keeps explicit year strict',
+  engine.getProfileDobYearTolerance(
+    1967,
+    'Carole Montemayor',
+    'Carole Andrews',
+    { address: 0, phone: false },
+    59,
+    59,
+    ['Carole A Montemayor']
+  ),
+  0
+);
+check(
+  'exact first/last name and ZIP/city/state are not enough when age differs',
+  engine.getProfileDobYearTolerance(
+    1961,
+    'Sharon M Ross',
+    'Sharon Ross',
+    { address: 35, phone: false },
+    65,
+    56
+  ),
+  0
+);
+check(
+  'exact first/last name and matching age are not enough with city/state only',
+  engine.getProfileDobYearTolerance(
+    1961,
+    'Sharon M Ross',
+    'Sharon Ross',
+    { address: 20, phone: false },
+    65,
+    65
+  ),
+  0
+);
+check(
+  'alias-only profile keeps strict year matching',
+  engine.getProfileDobYearTolerance(1941, 'Jerry Busch', 'Gerald Busch', { address: 80, phone: true }),
+  0
+);
+check(
+  'explicit record year accepts only its matching year',
+  engine.extractDobFromText('Jerry Busch was born on January 15, 1941.', 85, 1941),
+  'January 15, 1941'
 );
 
 // 11. No age on the record at all -> explicit phrase still works.
